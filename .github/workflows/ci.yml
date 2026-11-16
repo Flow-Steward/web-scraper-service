@@ -1,0 +1,45 @@
+# Every push to main and every pull request runs the whole test suite the way the
+# repository runs it: in the dev image (target `dev` of the Dockerfile) with the working
+# tree mounted read-only (scripts/test.sh), never on the runner's own Python.
+# The Release workflow runs this same workflow before it builds anything.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests in the dev image (linux/amd64)
+    runs-on: ubuntu-24.04
+    # The suite takes about 35 minutes on 4 CPUs; a 2-CPU runner needs longer.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Disk before the build
+        run: df -h /
+      - name: Build the dev image
+        env:
+          # authenticates the Camoufox release lookup (the build secret github_token)
+          GITHUB_TOKEN: ${{ github.token }}
+        run: docker build --secret id=github_token,env=GITHUB_TOKEN --target dev -t web-scraper-service:dev-ci .
+      - name: Disk after the build
+        run: df -h /
+      - name: Test settings
+        # scripts/test.sh asks for 4 CPUs by default; the runner may have fewer.
+        run: printf 'WSS_TEST_CPUS=%s\n' "$(nproc)" >> "$GITHUB_ENV"
+      - name: Unit tests
+        env:
+          WSS_TEST_IMAGE: web-scraper-service:dev-ci
+        run: scripts/test.sh tests/unit -q
+      - name: Integration tests
+        env:
+          WSS_TEST_IMAGE: web-scraper-service:dev-ci
+        run: scripts/test.sh tests/integration -q -rf

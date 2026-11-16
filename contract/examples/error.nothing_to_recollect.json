@@ -1,0 +1,16 @@
+{
+  "error": {
+    "code": "nothing_to_recollect",
+    "message": "the run has no unextracted URLs with these reasons",
+    "request_id": "req_01JCXB0000000000000000000A",
+    "details": {
+      "reasons": [
+        "fetch_failed",
+        "blocked"
+      ],
+      "unextracted_by_reason": {
+        "not_found": 3
+      }
+    }
+  }
+}

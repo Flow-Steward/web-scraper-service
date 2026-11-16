@@ -1,0 +1,30 @@
+{
+  "items": [
+    {
+      "url": "https://www.lumen-shop.example/ersatzteile/dimmer-modul-dm2",
+      "site": "lumen-shop.example",
+      "reason": "not_found",
+      "template_id": null,
+      "http_status": 404,
+      "attempts": 1,
+      "last_error": "HTTP 404",
+      "last_seen_at": "2026-11-13T07:06:40Z"
+    },
+    {
+      "url": "https://www.lumen-shop.example/ersatzteile/trafo-12v-60va",
+      "source_key": "A-1077",
+      "site": "lumen-shop.example",
+      "reason": "incomplete",
+      "template_id": "spare_part",
+      "missing_fields": [
+        "price"
+      ],
+      "http_status": 200,
+      "attempts": 1,
+      "last_error": "Required field price empty under spare_part v2 (\"Preis auf Anfrage\")",
+      "last_seen_at": "2026-11-13T07:06:58Z"
+    }
+  ],
+  "next_cursor": null,
+  "total": 2
+}

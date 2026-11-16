@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "template_id": "lens_cover",
+  "label": "Lens cover (WooCommerce variable product)",
+  "match": {
+    "url_patterns": [
+      "/product/[^/]+/$"
+    ],
+    "selector": "form.variations_form"
+  },
+  "fields": [
+    {
+      "name": "title",
+      "type": "text",
+      "required": true,
+      "sources": [
+        {
+          "kind": "jsonld",
+          "schema_type": "Product",
+          "path": "name"
+        },
+        {
+          "kind": "css",
+          "selector": "h1.product_title",
+          "extract": "text"
+        }
+      ]
+    },
+    {
+      "name": "price",
+      "type": "price",
+      "required": true,
+      "sources": [
+        {
+          "kind": "microdata",
+          "schema_type": "Product",
+          "path": "offers.price"
+        },
+        {
+          "kind": "css",
+          "selector": "p.price .amount",
+          "extract": "text"
+        }
+      ]
+    },
+    {
+      "name": "currency",
+      "type": "currency",
+      "sources": [
+        {
+          "kind": "css",
+          "selector": "p.price .amount",
+          "extract": "text",
+          "transforms": [
+            {
+              "op": "currency",
+              "default_currency": "EUR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sku",
+      "type": "text",
+      "sources": [
+        {
+          "kind": "css",
+          "selector": ".sku",
+          "extract": "text"
+        }
+      ]
+    },
+    {
+      "name": "image_url",
+      "type": "image_url",
+      "sources": [
+        {
+          "kind": "meta",
+          "name": "og:image"
+        }
+      ]
+    }
+  ],
+  "variants": {
+    "sources": [
+      {
+        "kind": "embedded_json",
+        "selector": "form.variations_form",
+        "attribute": "data-product_variations",
+        "format": "woocommerce"
+      },
+      {
+        "kind": "shop_json",
+        "platform": "woocommerce"
+      }
+    ],
+    "fields": [
+      {
+        "name": "price",
+        "path": "price"
+      },
+      {
+        "name": "markings",
+        "option": "Lens cover markings"
+      },
+      {
+        "name": "image_url",
+        "path": "image",
+        "type": "image_url"
+      }
+    ]
+  }
+}

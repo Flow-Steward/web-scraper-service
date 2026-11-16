@@ -1,0 +1,19 @@
+# Runtime dependencies (top level, pinned). The image installs requirements.lock
+# (every transitive package pinned with hashes), generated from this file:
+#   scripts/lock.sh
+crawlee[adaptive-crawler,parsel,playwright]==1.11.2
+playwright==1.62.0
+camoufox[geoip]==0.5.9
+extruct==0.18.0
+fastapi==0.162.5
+uvicorn[standard]==0.54.0
+jsonschema[format-nocolor]==4.26.0
+referencing==0.37.0
+cryptography==50.0.2
+httpx[socks]==0.28.1
+python-ulid==4.1.0
+idna==3.20
+lxml==6.1.3
+lxml_html_clean==0.4.6
+cssselect==1.6.0
+pyyaml==6.0.3

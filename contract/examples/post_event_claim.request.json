@@ -1,0 +1,7 @@
+{
+  "claimant": {
+    "job_id": "job_e2a8d4410b",
+    "workflow_id": "wf_scraper_events_lumen",
+    "step_id": "claim_event"
+  }
+}

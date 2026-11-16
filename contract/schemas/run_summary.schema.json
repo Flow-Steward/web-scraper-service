@@ -1,0 +1,1649 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/run_summary.schema.json",
+  "title": "Run summary",
+  "description": "Response of `GET /v1/runs/{id}` (and of start, stop and resume). Also holds the shared primitives of the contract in `$defs`.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "state",
+    "outcome",
+    "stop_reason",
+    "site",
+    "created_at",
+    "started_at",
+    "updated_at",
+    "finished_at",
+    "platform",
+    "idempotency_key",
+    "config",
+    "resolved",
+    "profile",
+    "secrets",
+    "progress",
+    "counters",
+    "protection",
+    "templates",
+    "mapping_requests",
+    "events",
+    "errors",
+    "error",
+    "result"
+  ],
+  "properties": {
+    "run_id": {
+      "$ref": "#/$defs/run_id"
+    },
+    "state": {
+      "$ref": "#/$defs/run_state"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/outcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/stop_reason"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "site": {
+      "$ref": "#/$defs/site"
+    },
+    "sites": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/site"
+      },
+      "description": "Every site of the job (more than one only in `url_list` mode)."
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "platform": {
+      "$ref": "#/$defs/platform_context"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/idempotency_key"
+    },
+    "config": {
+      "$ref": "job_config.schema.json"
+    },
+    "resolved": {
+      "type": "object",
+      "required": [
+        "discovery_mode"
+      ],
+      "properties": {
+        "discovery_mode": {
+          "anyOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/resolved_discovery_mode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "browser": {
+          "anyOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/browser_name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Choices the service made for `auto` values; `null` until decided."
+    },
+    "profile": {
+      "$ref": "connection_profile.schema.json#/$defs/profile_summary"
+    },
+    "secrets": {
+      "type": "object",
+      "required": [
+        "proxy_and_solver",
+        "signing_secret"
+      ],
+      "properties": {
+        "proxy_and_solver": {
+          "$ref": "#/$defs/secret_status"
+        },
+        "signing_secret": {
+          "$ref": "#/$defs/secret_status"
+        }
+      }
+    },
+    "progress": {
+      "$ref": "#/$defs/progress"
+    },
+    "counters": {
+      "$ref": "#/$defs/counters"
+    },
+    "protection": {
+      "$ref": "#/$defs/protection_counters"
+    },
+    "templates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/template_entry"
+      }
+    },
+    "mapping_requests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mapping_request_entry"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "event.schema.json#/$defs/event_record"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/run_error"
+      },
+      "maxItems": 100,
+      "description": "Newest last; at most 100 kept."
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/run_error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "result_descriptor.schema.json#/$defs/service_result"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "explanation": {
+      "type": "object",
+      "required": [
+        "sentence"
+      ],
+      "additionalProperties": false,
+      "description": "Added 2026-11-14. In plain words: while running, the progress; at the end, why the run stopped and what was collected; `advice` = what to do next.",
+      "properties": {
+        "sentence": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "advice": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "Added 2026-11-14. Notable moments: `started`, `resumed`, `discovery_decided`, `first_block`, `tier_change`, `paused`, `problem`, `repair_requested`, `repair_done`, `stop`, `stopped`, `finished`. At most 50 (the first 10 and the last 40).",
+      "items": {
+        "type": "object",
+        "required": [
+          "at",
+          "kind",
+          "message"
+        ],
+        "properties": {
+          "at": {
+            "$ref": "#/$defs/timestamp"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    "completeness": {
+      "type": "object",
+      "required": [
+        "target_pages_found",
+        "pages_collected",
+        "records",
+        "not_collected",
+        "not_collected_by_reason",
+        "sentence"
+      ],
+      "description": "Added 2026-11-14. Target pages found = collected pages + the unextracted list; `records` may exceed `pages_collected` with variants; `progress` only while running (`estimate` until discovery has finished, or always for a crawl).",
+      "properties": {
+        "target_pages_found": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pages_collected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_collected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_collected_by_reason": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "sentence": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "progress": {
+          "type": "object",
+          "required": [
+            "collected",
+            "expected",
+            "estimate",
+            "text"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer"
+            },
+            "expected": {
+              "type": "integer"
+            },
+            "estimate": {
+              "type": "boolean"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "target_pages_found",
+        "pages_collected",
+        "records",
+        "not_collected",
+        "change"
+      ],
+      "description": "Added 2026-11-14. The previous completed run of the same site that was not a `max_records` trial (absent when there is none, or this run is a trial); `change` = this run minus that one; `warning` when records fell by more than the service's threshold (default 20%), saying whether fewer target pages were found or found pages were not collected.",
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_pages_found": {
+          "type": "integer"
+        },
+        "pages_collected": {
+          "type": "integer"
+        },
+        "records": {
+          "type": "integer"
+        },
+        "not_collected": {
+          "type": "integer"
+        },
+        "change": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "warning": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    },
+    "recollect_of": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "reasons",
+        "url_count",
+        "by_reason"
+      ],
+      "description": "Added 2026-11-14. On a re-collect run: the run whose missed pages it collects again, the unextracted reasons taken, how many URLs (README 4.10).",
+      "properties": {
+        "run_id": {
+          "$ref": "run_summary.schema.json#/$defs/run_id"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unextracted_reason"
+          }
+        },
+        "url_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "by_reason": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/unextracted_reason"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "recollected_by": {
+      "type": "array",
+      "description": "Added 2026-11-14. Re-collect runs started from this run (absent when none).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "state",
+          "created_at"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "run_summary.schema.json#/$defs/run_id"
+          },
+          "state": {
+            "$ref": "#/$defs/run_state"
+          },
+          "created_at": {
+            "$ref": "#/$defs/timestamp"
+          }
+        }
+      }
+    },
+    "queued_reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "run_id",
+        "message"
+      ],
+      "description": "Added 2026-11-14. Only while `queued`: why the run has not started.",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "same_site_running",
+            "no_free_slot"
+          ]
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/run_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "politeness": {
+      "type": "object",
+      "required": [
+        "preset",
+        "text"
+      ],
+      "description": "Added 2026-11-14. The run's effective politeness: `preset` (`gentle`/`normal`/`fast`), `text` (\"normal: 2–5 s, 2 at a time, 30/min, page timeout 60 s\"), and `slowed_hosts` while the automatic slow-down has widened a host's delay: host → {`factor` (× the configured delay), `since`, `reason`} (README 4.15).",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "enum": [
+            "gentle",
+            "normal",
+            "fast"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "slowed_hosts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "factor": {
+                "type": "number",
+                "minimum": 1
+              },
+              "since": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/timestamp"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 300
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$",
+      "description": "RFC 3339, UTC, `Z` suffix."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run_[A-Za-z0-9]{1,64}$"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^evt_[A-Za-z0-9]{1,64}$"
+    },
+    "mapping_request_id": {
+      "type": "string",
+      "pattern": "^mrq_[A-Za-z0-9]{1,64}$"
+    },
+    "claim_id": {
+      "type": "string",
+      "pattern": "^clm_[A-Za-z0-9]{1,64}$"
+    },
+    "sample_id": {
+      "type": "string",
+      "pattern": "^smp_[A-Za-z0-9]{1,64}$"
+    },
+    "site": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$",
+      "maxLength": 260,
+      "description": "Site key: ASCII (punycode) lower-case host without a leading `www.`, with `:port` when not the scheme's default."
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9:._-]{1,255}$"
+    },
+    "platform_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "step_id",
+        "project_id",
+        "connection_id"
+      ],
+      "description": "Platform ids of the caller. Stored for links and filters; never interpreted otherwise.",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "step_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "loop_position": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)*$",
+              "maxLength": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workflow_id": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "account_id": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "connection_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "run_state": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "waiting_for_credentials",
+        "stopping",
+        "completed",
+        "failed"
+      ]
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial"
+      ]
+    },
+    "stop_reason": {
+      "type": "string",
+      "enum": [
+        "finished",
+        "max_records",
+        "max_pages",
+        "max_duration",
+        "max_result_size",
+        "stopped",
+        "blocked",
+        "site_unavailable",
+        "stalled"
+      ],
+      "description": "`site_unavailable` (added 2026-11-14): a run of server errors, timeouts or network errors on a host, after growing pauses. `stalled` (added 2026-11-14): no page finished and no record was written for twice `stall_seconds` while work waited."
+    },
+    "template_status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "repairing",
+        "repaired",
+        "failed"
+      ]
+    },
+    "page_class": {
+      "type": "string",
+      "enum": [
+        "extracted",
+        "not_target",
+        "fetch_failed",
+        "blocked",
+        "incomplete",
+        "no_template",
+        "duplicate"
+      ],
+      "description": "`duplicate` (added 2026-11-14): a page whose canonical address was already collected in this run; not extracted, links not followed."
+    },
+    "unextracted_reason": {
+      "type": "string",
+      "enum": [
+        "fetch_failed",
+        "not_found",
+        "blocked",
+        "incomplete",
+        "no_template",
+        "template_failed",
+        "stopped",
+        "robots_disallowed",
+        "private_address_refused"
+      ]
+    },
+    "protection_step": {
+      "type": "string",
+      "enum": [
+        "http",
+        "chromium",
+        "camoufox",
+        "next_proxy_tier",
+        "wait",
+        "click",
+        "solver"
+      ]
+    },
+    "discovery_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "finished",
+        "cut"
+      ]
+    },
+    "result_status": {
+      "type": "string",
+      "enum": [
+        "not_started",
+        "writing",
+        "written",
+        "not_available"
+      ]
+    },
+    "secret_status": {
+      "type": "string",
+      "enum": [
+        "kept",
+        "missing",
+        "discarded",
+        "not_configured"
+      ]
+    },
+    "mapping_request_status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "resolved",
+        "failed",
+        "expired",
+        "cancelled"
+      ]
+    },
+    "mapping_request_reason": {
+      "type": "string",
+      "enum": [
+        "incomplete",
+        "no_template"
+      ]
+    },
+    "problem_code": {
+      "type": "string",
+      "enum": [
+        "template_failed",
+        "block_rate_high",
+        "challenge_limit_reached",
+        "store_limit_reached",
+        "waiting_for_credentials",
+        "site_unavailable",
+        "sitemap_outdated",
+        "stalled"
+      ],
+      "description": "Added 2026-11-14: `site_unavailable` (the run stopped, see `stop_reason`), `sitemap_outdated` (a high share of the sitemap's URLs answered 404; in `auto` discovery the link crawl was added). `stalled` (added 2026-11-14): no progress for `stall_seconds`; the message says what is stuck."
+    },
+    "run_error_code": {
+      "type": "string",
+      "enum": [
+        "crash_loop",
+        "storage_error",
+        "start_url_unreachable",
+        "robots_disallowed",
+        "secrets_unavailable",
+        "solver_error",
+        "proxy_error",
+        "internal_error",
+        "debug",
+        "page_fetch_failed",
+        "canonical_ignored",
+        "trap_suspected",
+        "dynamic_parameter_ignored"
+      ],
+      "description": "`page_fetch_failed` (added 2026-11-13, severity `warning`): one entry per page that ended `fetch_failed`, the URL and the reason (HTTP status, timeout, a page that did not finish loading, a network error; no secrets). Added 2026-11-14 (severity `warning`): `canonical_ignored` (the run stopped trusting canonical addresses), `trap_suspected` (a URL pattern stopped being followed), `dynamic_parameter_ignored` (a query parameter learned as dynamic)."
+    },
+    "run_error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "at"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/run_error_code"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "url": {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        },
+        "template_id": {
+          "$ref": "mapping.schema.json#/$defs/template_id"
+        },
+        "severity": {
+          "$ref": "#/$defs/error_severity"
+        }
+      }
+    },
+    "error_severity": {
+      "type": "string",
+      "enum": [
+        "error",
+        "warning",
+        "debug"
+      ]
+    },
+    "progress": {
+      "type": "object",
+      "required": [
+        "discovery",
+        "queue_pending",
+        "in_progress",
+        "open_mapping_requests",
+        "pending_reextraction",
+        "result_status"
+      ],
+      "description": "Exactly the inputs of the completion condition (README).",
+      "properties": {
+        "discovery": {
+          "$ref": "#/$defs/discovery_status"
+        },
+        "queue_pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "in_progress": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open_mapping_requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pending_reextraction": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "result_status": {
+          "$ref": "#/$defs/result_status"
+        }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "required": [
+        "urls_discovered",
+        "urls_skipped",
+        "pages_fetched",
+        "pages_by_class",
+        "http_fetches",
+        "browser_fetches",
+        "retries",
+        "records_extracted",
+        "unextracted",
+        "stored_pages",
+        "refetch_after_repair",
+        "repairs_started",
+        "repairs_succeeded",
+        "proxy_requests_by_tier",
+        "current_proxy_tier",
+        "result_bytes",
+        "required_fill_rate"
+      ],
+      "properties": {
+        "urls_discovered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "urls_skipped": {
+          "type": "object",
+          "required": [
+            "filtered",
+            "robots",
+            "private_address",
+            "duplicate"
+          ],
+          "properties": {
+            "filtered": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "robots": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "private_address": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "duplicate": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "scope": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Added 2026-11-14: links of walked pages not queued because they leave `crawl_include` / `stay_in_section` and do not look like target pages (counted per occurrence). Absent = 0."
+            }
+          }
+        },
+        "pages_fetched": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Counts against `max_pages`."
+        },
+        "pages_by_class": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/page_class"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "http_fetches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "browser_fetches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "records_extracted": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Distinct `record_id`s; counts against `max_records`."
+        },
+        "unextracted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stored_pages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refetch_after_repair": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "URLs kept without their page because the store was full."
+        },
+        "repairs_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repairs_succeeded": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proxy_requests_by_tier": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(none|[1-3])$"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "Requests per tier; `none` = without a proxy."
+        },
+        "current_proxy_tier": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required_fill_rate": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "records_dropped_over_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Added 2026-11-13. Records dropped when the result was written because it held more than `max_records` (pages that were already in progress, re-extracted stored pages); the first `max_records` in `record_id` order are kept (README 4.8). Optional: absent means 0."
+        },
+        "links_skipped": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "job_config.schema.json#/$defs/link_rule"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "Added 2026-11-14. Links not followed, per rule (README 4.11), counted per occurrence; `canonical` counts duplicate pages. Absent or missing keys = 0."
+        },
+        "soft_errors": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Added 2026-11-14. Answers with status 200 that were not the page (empty, truncated, an error or maintenance page, a page that lost its template's marks); each was retried like a server error (README 4.16)."
+        },
+        "soft_errors_by_reason": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "Added 2026-11-14. `soft_errors` by reason: `empty`, `truncated`, `error_page`, `too_small`, `lost_template`."
+        },
+        "repairs_avoided": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Added 2026-11-14. Repairs not opened because the pages that triggered them were fine when fetched again (README 4.6)."
+        }
+      }
+    },
+    "protection_counters": {
+      "type": "object",
+      "required": [
+        "challenges_met",
+        "passed_by_step",
+        "frame_not_found",
+        "failed",
+        "hard_blocks",
+        "clicks_used",
+        "clicks_limit",
+        "solves_used",
+        "solves_limit",
+        "sessions_retired"
+      ],
+      "description": "Section 7.2 point 6 of the task document.",
+      "properties": {
+        "challenges_met": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed_by_step": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/protection_step"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "Challenged pages that passed, keyed by the route step that made them pass."
+        },
+        "frame_not_found": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Click attempts where no challenge frame was found."
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Challenged pages that no allowed step passed (they end `blocked`)."
+        },
+        "hard_blocks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Refusals (\"Sorry, you have been blocked\", error 1020, 403 without a challenge). Not counted in `challenges_met` (README 4.7)."
+        },
+        "clicks_used": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clicks_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "solves_used": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "solves_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sessions_retired": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tier_escalations": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Added 2026-11-13. Moves of a host to the next selected proxy tier (after a hard block, or after a challenge the wait did not pass). Optional: absent means 0."
+        },
+        "traces": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "$ref": "analysis.schema.json#/$defs/protection_trace"
+          },
+          "description": "Added 2026-11-13. The protection route's trace for the first 5 challenged pages of the job. Optional."
+        }
+      }
+    },
+    "template_entry": {
+      "type": "object",
+      "required": [
+        "template_id",
+        "status",
+        "mapping_version",
+        "record_count",
+        "unextracted_count",
+        "stored_pages_pending",
+        "repairs_used",
+        "open_mapping_request_id"
+      ],
+      "properties": {
+        "template_id": {
+          "$ref": "mapping.schema.json#/$defs/template_id"
+        },
+        "status": {
+          "$ref": "#/$defs/template_status"
+        },
+        "mapping_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The version active for this job now."
+        },
+        "mapping_versions_used": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unextracted_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stored_pages_pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repairs_used": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open_mapping_request_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/mapping_request_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_fill_rate": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "mapping_request_entry": {
+      "type": "object",
+      "required": [
+        "mapping_request_id",
+        "reason",
+        "status",
+        "template_id",
+        "created_at"
+      ],
+      "properties": {
+        "mapping_request_id": {
+          "$ref": "#/$defs/mapping_request_id"
+        },
+        "reason": {
+          "$ref": "#/$defs/mapping_request_reason"
+        },
+        "status": {
+          "$ref": "#/$defs/mapping_request_status"
+        },
+        "template_id": {
+          "anyOf": [
+            {
+              "$ref": "mapping.schema.json#/$defs/template_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "closed_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "run_create_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config",
+        "profile",
+        "platform"
+      ],
+      "description": "Body of `POST /v1/runs` (header `Idempotency-Key` required). `config` is the merged configuration returned by `POST /v1/config/validate`; the service validates it again. `profile.webhook` is required; `profile.defaults` is ignored.",
+      "properties": {
+        "config": {
+          "$ref": "job_config.schema.json"
+        },
+        "profile": {
+          "allOf": [
+            {
+              "$ref": "connection_profile.schema.json"
+            },
+            {
+              "required": [
+                "webhook"
+              ],
+              "properties": {
+                "webhook": {
+                  "type": "object"
+                }
+              }
+            }
+          ]
+        },
+        "platform": {
+          "$ref": "#/$defs/platform_context"
+        }
+      }
+    },
+    "run_stop_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "run_resume_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile"
+      ],
+      "description": "Sends the job's secrets again (current values of the connection).",
+      "properties": {
+        "profile": {
+          "$ref": "connection_profile.schema.json"
+        }
+      }
+    },
+    "run_list_item": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "state",
+        "outcome",
+        "stop_reason",
+        "site",
+        "created_at",
+        "finished_at",
+        "platform",
+        "pages_fetched",
+        "records_extracted",
+        "required_fill_rate"
+      ],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        },
+        "state": {
+          "$ref": "#/$defs/run_state"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/outcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/stop_reason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "site": {
+          "$ref": "#/$defs/site"
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "platform": {
+          "$ref": "#/$defs/platform_context"
+        },
+        "pages_fetched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "records_extracted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required_fill_rate": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "events_pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completeness": {
+          "$ref": "#/$defs/list_completeness"
+        },
+        "queued_reason": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "run_id",
+            "message"
+          ],
+          "description": "Added 2026-11-14. Only while `queued`: why the run has not started.",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "same_site_running",
+                "no_free_slot"
+              ]
+            },
+            "run_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/run_id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        }
+      }
+    },
+    "run_list": {
+      "type": "object",
+      "required": [
+        "items",
+        "next_cursor"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/run_list_item"
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "unextracted_page": {
+      "type": "object",
+      "required": [
+        "url",
+        "site",
+        "reason",
+        "template_id",
+        "http_status",
+        "attempts",
+        "last_seen_at"
+      ],
+      "description": "One URL that ended without a record. Also the line format of the `application/x-ndjson` form of the list.",
+      "properties": {
+        "url": {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        },
+        "requested_url": {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        },
+        "source_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "site": {
+          "$ref": "#/$defs/site"
+        },
+        "reason": {
+          "$ref": "#/$defs/unextracted_reason"
+        },
+        "template_id": {
+          "anyOf": [
+            {
+              "$ref": "mapping.schema.json#/$defs/template_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "missing_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "mapping.schema.json#/$defs/field_name"
+          }
+        },
+        "mapping_gaps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "variants_not_used",
+              "price_not_extracted"
+            ]
+          },
+          "description": "Added 2026-11-14. With `reason: incomplete`: what the page shows that the active mapping does not read (README 4.5); `last_error` says it in plain words."
+        },
+        "http_status": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_error": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "last_seen_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "unextracted_list": {
+      "type": "object",
+      "required": [
+        "items",
+        "next_cursor",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unextracted_page"
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "run_recollect_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "platform"
+      ],
+      "description": "Added 2026-11-14. Body of `POST /v1/runs/{run_id}/recollect` (header `Idempotency-Key` required). `profile` and `platform` as for `POST /v1/runs` (the parent's secrets are gone). `reasons`: which unextracted entries to collect again; default `fetch_failed`, `blocked`, `incomplete`, `no_template`, `template_failed`, `stopped`.",
+      "properties": {
+        "profile": {
+          "allOf": [
+            {
+              "$ref": "connection_profile.schema.json"
+            },
+            {
+              "required": [
+                "webhook"
+              ],
+              "properties": {
+                "webhook": {
+                  "type": "object"
+                }
+              }
+            }
+          ]
+        },
+        "platform": {
+          "$ref": "#/$defs/platform_context"
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/unextracted_reason"
+          }
+        }
+      }
+    },
+    "list_completeness": {
+      "type": "object",
+      "required": [
+        "target_pages_found",
+        "pages_collected",
+        "records",
+        "not_collected",
+        "not_collected_by_reason"
+      ],
+      "additionalProperties": false,
+      "description": "Added 2026-11-14. The run's completeness numbers without the sentence (README 4.9): found, collected, records, missed in total and by reason; `progress` (\"M of N\") only while the run is not finished.",
+      "properties": {
+        "target_pages_found": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pages_collected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_collected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_collected_by_reason": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "progress": {
+          "type": "object",
+          "required": [
+            "collected",
+            "expected",
+            "estimate",
+            "text"
+          ],
+          "properties": {
+            "collected": {
+              "type": "integer"
+            },
+            "expected": {
+              "type": "integer"
+            },
+            "estimate": {
+              "type": "boolean"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

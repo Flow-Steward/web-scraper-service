@@ -1,0 +1,107 @@
+{
+  "site": "lumen-shop.example",
+  "requested_count": 3,
+  "samples": [],
+  "warnings": [
+    {
+      "field": "urls[0]",
+      "code": "invalid_value",
+      "message": "https://www.lumen-shop.example/produkt/pendelleuchte-aurora-60: protection: challenge"
+    },
+    {
+      "field": "urls[0]",
+      "code": "protection_not_passed",
+      "message": "www.lumen-shop.example shows a Cloudflare interstitial challenge that was not passed (waited 15 s, clicked the checkbox once, no solver requested); proxy tier 1. No further pages of this host were fetched (2 pages skipped)."
+    }
+  ],
+  "stopped": {
+    "reason": "protection_not_passed",
+    "host": "www.lumen-shop.example",
+    "url": "https://www.lumen-shop.example/produkt/pendelleuchte-aurora-60",
+    "skipped_urls": 2
+  },
+  "protection_trace": [
+    {
+      "url": "https://www.lumen-shop.example/produkt/pendelleuchte-aurora-60",
+      "at": "2026-11-13T11:40:12Z",
+      "browser": "camoufox",
+      "proxy_tier": 1,
+      "exit_ip": "185.12.34.56",
+      "challenge": "interstitial",
+      "http_status": 403,
+      "steps": [
+        {
+          "step": "wait",
+          "outcome": "timed_out",
+          "seconds": 15.0
+        },
+        {
+          "step": "click",
+          "outcome": "still_challenged",
+          "frame_found_via": "frames",
+          "x": 523,
+          "y": 291,
+          "frame_box": {
+            "x": 495,
+            "y": 259,
+            "width": 300,
+            "height": 65
+          },
+          "seconds": 15.5
+        },
+        {
+          "step": "solver",
+          "outcome": "skipped",
+          "reason": "not_requested"
+        }
+      ],
+      "passed_at_step": null,
+      "cookies": [
+        "cf_chl_rc_ni",
+        "cf_clearance"
+      ],
+      "final_title": "Just a moment...",
+      "environment": {
+        "exit": {
+          "ip": "185.12.34.56",
+          "timezone": "Europe/Berlin",
+          "locale": "de-DE",
+          "latitude": 52.52,
+          "longitude": 13.405,
+          "country": "DE",
+          "source": "echo+geoip"
+        },
+        "browser_view": {
+          "timezone": "Europe/Berlin",
+          "language": "de-DE",
+          "languages": [
+            "de-DE",
+            "de"
+          ],
+          "platform": "Win32",
+          "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0",
+          "screen": [
+            1920,
+            1080
+          ],
+          "window": [
+            1280,
+            720
+          ],
+          "viewport": [
+            1280,
+            632
+          ],
+          "hardware_concurrency": 8,
+          "webgl_vendor": "Google Inc. (NVIDIA)",
+          "webgl_renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar"
+        },
+        "preset_id": "fp_3f9a1c27d0b84e65",
+        "browser_os": "windows",
+        "canvas_noise": "auto",
+        "canvas_readback": "noise",
+        "webgl_readback": "noise"
+      }
+    }
+  ]
+}

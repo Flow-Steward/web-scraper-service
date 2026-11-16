@@ -1,0 +1,192 @@
+# Push a tag vX.Y.Z whose version equals SERVICE_VERSION in app/settings.py, that has
+# release notes in release-notes/vX.Y.Z.md and whose docker-compose.yml builds that tag:
+#   git tag -a v0.2.1 -m "web-scraper-service 0.2.1" && git push origin v0.2.1
+#
+# 1. resolve  checks the tag, the version, the notes file and docker-compose.yml
+# 2. tests    the whole suite (the CI workflow)
+# 3. native   builds the runtime image on a native runner per architecture (linux/amd64 on
+#             ubuntu-24.04, linux/arm64 on ubuntu-24.04-arm), checks its labels and starts it
+#             once (GET /health: version, build, both browsers); this proves the image builds
+#             from the tag on both architectures
+# 4. release  creates the GitHub Release from the notes file with docker-compose.yml and
+#             env.example (a copy of .env.example) attached
+#
+# No image is published: users build it from the tag with docker-compose.yml.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.repository == 'Flow-Steward/web-scraper-service'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      revision: ${{ steps.identity.outputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag, the service version and the release notes agree
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::tag ${tag} is not vX.Y.Z"; exit 1
+          fi
+          version="${tag#v}"
+          service="$(sed -n 's/^SERVICE_VERSION = "\(.*\)"$/\1/p' app/settings.py)"
+          if [ "$service" != "$version" ]; then
+            echo "::error::tag ${tag} does not match SERVICE_VERSION ${service:-<none>} in app/settings.py"; exit 1
+          fi
+          notes="release-notes/${tag}.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::${notes} is missing or empty"; exit 1
+          fi
+          compose="docker-compose.yml"
+          grep -qF "web-scraper-service.git#${tag}\"" "$compose" \
+            || { echo "::error::${compose} does not build the tag ${tag}"; exit 1; }
+          grep -qF "image: web-scraper-service:${version}" "$compose" \
+            || { echo "::error::${compose} does not name the image web-scraper-service:${version}"; exit 1; }
+          grep -qF "WSS_VERSION: \"${version}\"" "$compose" \
+            || { echo "::error::${compose} does not pass WSS_VERSION ${version}"; exit 1; }
+          test -s .env.example || { echo "::error::.env.example is missing or empty"; exit 1; }
+          revision="$(git rev-parse HEAD)"
+          {
+            echo "version=${version}"
+            echo "revision=${revision}"
+          } >> "$GITHUB_OUTPUT"
+
+  tests:
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+
+  native:
+    needs: [resolve, tests]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      ARCH: ${{ matrix.architecture }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      REVISION: ${{ needs.resolve.outputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver: docker-container
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo jq
+          df -h /
+      - name: Build the runtime image (native linux/${{ matrix.architecture }})
+        shell: bash
+        env:
+          # authenticates the Camoufox release lookup (the build secret github_token)
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$([ "$ARCH" = amd64 ] && echo x86_64 || echo aarch64)"
+          mkdir -p "$RUNNER_TEMP/image"
+          docker buildx build --platform "linux/${ARCH}" --target runtime \
+            --build-arg "WSS_VERSION=${VERSION}" --build-arg "WSS_REVISION=${REVISION}" \
+            --provenance=false --sbom=false \
+            --secret id=github_token,env=GITHUB_TOKEN \
+            --output "type=oci,dest=${RUNNER_TEMP}/image/web-scraper-service-${VERSION}-linux-${ARCH}.tar,name=web-scraper-service:release" \
+            .
+          # the builder's cache is not needed any more; the archive is the image to check
+          docker buildx prune --all --force
+          df -h /
+      - name: The archive holds one linux/${{ matrix.architecture }} image with the release labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/image/web-scraper-service-${VERSION}-linux-${ARCH}.tar"
+          test "$(tar -xOf "$archive" index.json | jq '.manifests | length')" = 1
+          config="$(skopeo inspect --config "oci-archive:${archive}")"
+          jq -e --arg arch "$ARCH" '.os == "linux" and .architecture == $arch' <<<"$config" >/dev/null
+          jq -e --arg v "$VERSION" --arg r "$REVISION" '.config.Labels as $l
+            | $l["org.opencontainers.image.version"] == $v
+            and $l["org.opencontainers.image.revision"] == $r
+            and $l["org.opencontainers.image.source"] == "https://github.com/Flow-Steward/web-scraper-service"
+            and $l["org.opencontainers.image.licenses"] == "Apache-2.0"' <<<"$config" >/dev/null
+          jq -e --arg r "$REVISION" 'any(.config.Env[]; . == "WSS_BUILD=" + $r)' <<<"$config" >/dev/null
+      - name: The image starts and reports both browsers
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/image/web-scraper-service-${VERSION}-linux-${ARCH}.tar"
+          # docker load reads the docker-archive format; skopeo converts the OCI archive to it
+          skopeo copy "oci-archive:${archive}" "docker-archive:${RUNNER_TEMP}/smoke.tar:web-scraper-service:release-smoke"
+          docker load -i "${RUNNER_TEMP}/smoke.tar"
+          rm -f "${RUNNER_TEMP}/smoke.tar"
+          token="$(openssl rand -hex 24)"
+          docker run -d --name wss-release-smoke --shm-size 1g -e "WSS_API_TOKEN=${token}" \
+            -p 127.0.0.1:18080:8080 web-scraper-service:release-smoke
+          health=""
+          for _ in $(seq 1 60); do
+            if health="$(curl -fsS -H "Authorization: Bearer ${token}" http://127.0.0.1:18080/health)"; then break; fi
+            sleep 2
+          done
+          if [ -z "$health" ]; then docker logs wss-release-smoke; exit 1; fi
+          jq '{status, service, engine, browsers}' <<<"$health"
+          jq -e --arg v "$VERSION" --arg r "$REVISION" '.service.version == $v and .service.build == $r
+            and ([.browsers[] | select(.present) | .name] | sort) == ["camoufox", "chromium"]' <<<"$health" >/dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/health)" = 401
+      - name: Remove the smoke container
+        if: always()
+        run: |
+          docker rm -f -v wss-release-smoke || true
+          docker image rm web-scraper-service:release-smoke || true
+
+  release:
+    needs: [resolve, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create the GitHub Release with the Compose files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="${RUNNER_TEMP}/assets"
+          mkdir -p "$assets"
+          cp docker-compose.yml "${assets}/docker-compose.yml"
+          # GitHub renames an asset whose name starts with a dot; publish a plain name
+          cp .env.example "${assets}/env.example"
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+            --title "web-scraper-service ${VERSION}" --notes-file "release-notes/${GITHUB_REF_NAME}.md" \
+            "${assets}/docker-compose.yml" "${assets}/env.example"
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets \
+            --jq '[.assets[].name] | sort' | tee /dev/stderr \
+            | jq -e '. == ["docker-compose.yml", "env.example"]' >/dev/null

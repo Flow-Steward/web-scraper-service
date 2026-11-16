@@ -1,0 +1,230 @@
+{
+  "mapping_request_id": "mrq_01JCXB1G0Z9Y8X7W6V5T4S3R2Q",
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "site": "lumen-shop.example",
+  "reason": "incomplete",
+  "status": "open",
+  "template_id": "spare_part",
+  "suggested_template_id": "spare_part",
+  "created_at": "2026-11-12T09:31:44Z",
+  "expires_at": "2026-11-12T10:31:44Z",
+  "closed_at": null,
+  "previous": {
+    "site": "lumen-shop.example",
+    "template_id": "spare_part",
+    "version": 1,
+    "status": "active",
+    "content_sha256": "2445ead634db464d874446821f32a6e9332b9d721e78d36398beb03fb424bc43",
+    "created_at": "2026-10-30T15:20:10Z",
+    "superseded_at": null,
+    "origin": {
+      "run_id": null,
+      "mapping_request_id": null,
+      "platform_job_id": "job_51aa0c7d2e",
+      "note": "Built by build_mapping before the first crawl"
+    },
+    "mapping": {
+      "schema_version": 1,
+      "template_id": "spare_part",
+      "label": "Spare part sheet",
+      "match": {
+        "url_patterns": [
+          "/ersatzteile/[^/?]+$"
+        ],
+        "selector": "section.part-sheet"
+      },
+      "fields": [
+        {
+          "name": "title",
+          "type": "text",
+          "required": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "section.part-sheet h2",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "trim"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "description",
+          "type": "html",
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "section.part-sheet .details",
+              "extract": "html"
+            }
+          ]
+        },
+        {
+          "name": "price",
+          "type": "price",
+          "required": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "span.part-price",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "price",
+                  "decimal_separator": "comma"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "currency",
+          "type": "currency",
+          "required": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "span.part-price",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "currency",
+                  "default_currency": "EUR"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "part_number",
+          "type": "text",
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "dd.part-no",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "trim"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "image_urls",
+          "type": "image_url",
+          "multiple": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "section.part-sheet img",
+              "extract": "attribute",
+              "attribute": "src",
+              "transforms": [
+                {
+                  "op": "absolute_url"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected_version": 1,
+  "samples": [
+    {
+      "sample_id": "smp_01JCX9Q4K5L6M7N8P9Q0R1S2T3",
+      "url": "https://www.lumen-shop.example/ersatzteile/g9-fassung-keramik",
+      "http_status": 200,
+      "fetched_at": "2026-11-12T08:51:20Z",
+      "expires_at": "2026-11-13T08:51:20Z",
+      "fetch": {
+        "fetch_mode": "browser",
+        "browser": "camoufox",
+        "proxy_tier": 2,
+        "passed_at_step": "next_proxy_tier"
+      },
+      "template_hint": {
+        "matched_template_id": "spare_part",
+        "suggested_template_id": "spare_part",
+        "signature": "51d0a8c3e6f29b47"
+      },
+      "title": "G9-Fassung Keramik | Lumen Ersatzteile",
+      "distilled_html": "<section class=\"part-sheet\"><h2>G9-Fassung Keramik</h2><span class=\"part-price\" data-currency=\"EUR\"><span class=\"amount\">7,50</span> €</span><dl><dt>Teile-Nr.</dt><dd class=\"part-no\">ET-G9-K</dd></dl><div class=\"details\"><p>Ersatzfassung für Fjord und Nimbus.</p></div></section>",
+      "distilled_html_truncated": false,
+      "jsonld": [],
+      "meta": {
+        "og:title": "G9-Fassung Keramik"
+      },
+      "extracted": {
+        "title": "G9-Fassung Keramik",
+        "description": "<p>Ersatzfassung für Fjord und Nimbus.</p>",
+        "price": null,
+        "currency": "EUR",
+        "part_number": "ET-G9-K",
+        "image_urls": []
+      }
+    }
+  ],
+  "failures": {
+    "pages_considered": 30,
+    "pages_failing": 14,
+    "fields": [
+      {
+        "name": "title",
+        "required": true,
+        "fill_rate": 1.0
+      },
+      {
+        "name": "price",
+        "required": true,
+        "fill_rate": 0.533
+      },
+      {
+        "name": "currency",
+        "required": true,
+        "fill_rate": 0.533
+      },
+      {
+        "name": "part_number",
+        "required": false,
+        "fill_rate": 1.0
+      }
+    ],
+    "example_urls": [
+      "https://www.lumen-shop.example/ersatzteile/g9-fassung-keramik",
+      "https://www.lumen-shop.example/ersatzteile/glasschirm-opal-150"
+    ]
+  },
+  "instructions": {
+    "extraction_instructions": "Lamp and spare-part pages: name, full description with the technical data table, price in EUR, article number and all product images.",
+    "fields": [
+      "title",
+      "description",
+      "price",
+      "currency",
+      "part_number",
+      "image_urls"
+    ],
+    "required_fields": [
+      "title",
+      "price",
+      "currency"
+    ],
+    "required_fill_threshold": 0.9,
+    "extraction_mode": "auto",
+    "structured_data_types": [
+      "Product",
+      "Offer",
+      "AggregateOffer"
+    ],
+    "target_page_selector": "[itemtype$='Product'], .part-sheet",
+    "max_refinements": 2
+  },
+  "resolution": null
+}

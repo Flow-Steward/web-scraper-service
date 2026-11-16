@@ -1,0 +1,386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/mapping_test.schema.json",
+  "title": "Mapping test",
+  "description": "`POST /v1/mappings/test`: apply candidate mappings to stored samples. Request `$defs/request`, response `$defs/response`.",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site",
+        "mappings",
+        "sample_ids",
+        "required_fill_threshold"
+      ],
+      "properties": {
+        "site": {
+          "$ref": "run_summary.schema.json#/$defs/site"
+        },
+        "mappings": {
+          "type": "array",
+          "items": {
+            "$ref": "mapping.schema.json"
+          },
+          "minItems": 1,
+          "maxItems": 20
+        },
+        "sample_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "run_summary.schema.json#/$defs/sample_id"
+          },
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true
+        },
+        "required_fill_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "required_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "mapping.schema.json#/$defs/field_name"
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Required in addition to the mapping fields marked `required` (the job's `required_fields`)."
+        },
+        "require_all_samples_matched": {
+          "type": "boolean",
+          "default": true
+        },
+        "extraction_mode": {
+          "$ref": "job_config.schema.json#/$defs/extraction_mode"
+        }
+      }
+    },
+    "field_result": {
+      "type": "object",
+      "required": [
+        "name",
+        "type",
+        "required",
+        "sample_count",
+        "filled_count",
+        "fill_rate",
+        "passed",
+        "example_values",
+        "source_hits",
+        "errors"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "mapping.schema.json#/$defs/field_name"
+        },
+        "type": {
+          "$ref": "mapping.schema.json#/$defs/field_type"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "filled_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fill_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "example_values": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "record.schema.json#/$defs/field_value"
+          }
+        },
+        "source_hits": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "Per source, in mapping order: samples where it supplied the value."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "sample_id",
+              "message"
+            ],
+            "properties": {
+              "sample_id": {
+                "$ref": "run_summary.schema.json#/$defs/sample_id"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "reading_rules": {
+          "type": "array",
+          "maxItems": 10,
+          "description": "Added 2026-11-14. How a `price`/`number` value was read where it was not plain, per sample: `rule` `minor_units_joined` (the price was split into tags, e.g. `24<sup>99</sup>` read as 24.99), `page_language:<lang>`, `og_locale:<locale>`, `currency:<code>` (an ambiguous `1.234`/`1,234` decided by the page's decimal mark) or `default_thousands` (no hint: read as thousands); `text` the text read.",
+          "items": {
+            "type": "object",
+            "required": [
+              "sample_id",
+              "rule",
+              "text"
+            ],
+            "properties": {
+              "sample_id": {
+                "$ref": "run_summary.schema.json#/$defs/sample_id"
+              },
+              "rule": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 200
+              }
+            }
+          }
+        }
+      }
+    },
+    "template_result": {
+      "type": "object",
+      "required": [
+        "template_id",
+        "matched_samples",
+        "passed",
+        "fields"
+      ],
+      "properties": {
+        "template_id": {
+          "$ref": "mapping.schema.json#/$defs/template_id"
+        },
+        "matched_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field_result"
+          }
+        },
+        "empty_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Added 2026-11-13. Fields of this template that no matched sample filled (0 of `matched_samples`); present when the template matched at least one sample. A required one also fails the test; an optional one only gives a `fields_never_filled` warning."
+        },
+        "variant_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Added 2026-11-13: variants over the matched samples."
+        },
+        "samples_with_variants": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "variant_sources_used": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Samples per variant source kind (`none` = no variants)."
+        },
+        "variant_fields": {
+          "type": "array",
+          "description": "Added 2026-11-13: per-variant fill of the variant fields over all variants of the matched samples.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "variant_count",
+              "filled_count",
+              "fill_rate"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "variant_count": {
+                "type": "integer"
+              },
+              "filled_count": {
+                "type": "integer"
+              },
+              "fill_rate": {
+                "type": "number"
+              },
+              "example_values": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "error.schema.json#/$defs/field_error"
+          },
+          "description": "Added 2026-11-14. Present when the template matched at least one sample. Each entry fails the template (`passed: false`) whatever the fill rates: `price_not_extracted` — the mapping has a `price` field, yet no record of a sample whose page shows a price (`price_on_page` `shown` or `range`) got one; `variants_not_used` — matched samples carry variant data (a variant source with two or more variants, see the samples' `variant_sources`) and the mapping declares no `variants`. Since 2026-11-14 also `price_mismatch` — the mapped price differs (more than rounding: 0.011 or 0.1 %) from the price the page states for programs (schema.org `offers.price`/`lowPrice`, `meta product:price:amount`, `[itemprop=price][content]`, `data-price`; a `data-*` value in minor units agrees), and `price_is_old_price` — on a sale page the mapped price is the struck-through old price. The same entries are also in the answer's `warnings[]`; `message` says what to change (README 6.3)."
+        }
+      }
+    },
+    "sample_result": {
+      "type": "object",
+      "required": [
+        "sample_id",
+        "url",
+        "template_id",
+        "data",
+        "missing_required"
+      ],
+      "properties": {
+        "sample_id": {
+          "$ref": "run_summary.schema.json#/$defs/sample_id"
+        },
+        "url": {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        },
+        "template_id": {
+          "anyOf": [
+            {
+              "$ref": "mapping.schema.json#/$defs/template_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "record.schema.json#/$defs/field_value"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "missing_required": {
+          "type": "array",
+          "items": {
+            "$ref": "mapping.schema.json#/$defs/field_name"
+          }
+        },
+        "variants": {
+          "type": "object",
+          "description": "Added 2026-11-13, for a mapping with `variants`: how many variants the source gave on this sample, which source (`null`: none, one record), and up to 20 variant records (`variant`, `data`). Since 2026-11-14 an item also carries the variant record's `price_status` (and `price_max`, `currency_from_default` when they apply).",
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_index": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "price_on_page": {
+          "$ref": "samples.schema.json#/$defs/price_on_page",
+          "description": "Added 2026-11-14: what the stored page shows of its price, whatever the mapping reads."
+        },
+        "price_status": {
+          "$ref": "record.schema.json#/$defs/price_status",
+          "description": "Added 2026-11-14: the page record's `price_status` (record.schema.json), for a template with a `price` field; variant records carry theirs in `variants.items[]`."
+        },
+        "price_max": {
+          "type": "number",
+          "description": "Added 2026-11-14: with `price_status: range`."
+        },
+        "currency_from_default": {
+          "type": "boolean",
+          "const": true,
+          "description": "Added 2026-11-14: as in a record."
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": [
+        "passed",
+        "required_fill_threshold",
+        "templates",
+        "samples",
+        "unmatched_sample_ids"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "required_fill_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "templates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/template_result"
+          }
+        },
+        "samples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sample_result"
+          }
+        },
+        "unmatched_sample_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "run_summary.schema.json#/$defs/sample_id"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "error.schema.json#/$defs/field_error"
+          },
+          "description": "Added 2026-11-13. `fields_never_filled` per template with empty fields, in plain words for the operator; since 2026-11-14 also every `templates[].failures` entry (`price_not_extracted`, `variants_not_used`). Absent in older answers = none."
+        }
+      }
+    }
+  }
+}

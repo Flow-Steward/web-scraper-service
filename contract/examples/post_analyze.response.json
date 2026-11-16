@@ -1,0 +1,136 @@
+{
+  "site": "lumen-shop.example",
+  "site_url": "https://www.lumen-shop.example/",
+  "final_url": "https://www.lumen-shop.example/",
+  "http_status": 200,
+  "robots": {
+    "present": true,
+    "site_url_allowed": true,
+    "crawl_delay_seconds": null,
+    "sitemaps": [
+      "https://www.lumen-shop.example/sitemap_index.xml"
+    ]
+  },
+  "sitemap": {
+    "found": true,
+    "url": "https://www.lumen-shop.example/sitemap_index.xml",
+    "url_count": 1630,
+    "url_count_capped": false,
+    "matching_url_count": 1212,
+    "target_share": 0.64,
+    "latest_lastmod": "2026-09-30T00:00:00Z"
+  },
+  "rendering": {
+    "js_required": false,
+    "http_text_chars": 18342,
+    "browser_text_chars": 18990
+  },
+  "structured_data": {
+    "jsonld_types": [
+      "Organization",
+      "WebSite",
+      "Product",
+      "Offer",
+      "BreadcrumbList"
+    ],
+    "target_types_found": [
+      "Product",
+      "Offer"
+    ]
+  },
+  "protection": {
+    "kind": "challenge",
+    "challenge": "turnstile",
+    "passed_at_step": "click"
+  },
+  "recommended": {
+    "discovery_mode": "sitemap_and_crawl",
+    "fetch_mode": "auto",
+    "browser": "camoufox",
+    "needs_proxy": true,
+    "needs_challenge_handling": false,
+    "reasons": [
+      "sitemap covers 64% of target links (< 80%): add link crawl",
+      "spare-part pages show a Turnstile challenge without a proxy; tier 2 (sticky, DE) passed without a click"
+    ]
+  },
+  "warnings": [],
+  "protection_trace": [
+    {
+      "url": "https://www.lumen-shop.example/",
+      "at": "2026-11-12T09:15:40Z",
+      "browser": "camoufox",
+      "proxy_tier": 1,
+      "exit_ip": "185.12.34.56",
+      "challenge": "interstitial",
+      "http_status": 403,
+      "steps": [
+        {
+          "step": "wait",
+          "outcome": "timed_out",
+          "seconds": 15.0
+        },
+        {
+          "step": "click",
+          "outcome": "passed",
+          "frame_found_via": "frames",
+          "x": 523,
+          "y": 291,
+          "frame_box": {
+            "x": 495,
+            "y": 259,
+            "width": 300,
+            "height": 65
+          },
+          "seconds": 4.2
+        }
+      ],
+      "passed_at_step": "click",
+      "cookies": [
+        "cf_clearance"
+      ],
+      "final_title": "Lumen Shop – Leuchten",
+      "environment": {
+        "exit": {
+          "ip": "185.12.34.56",
+          "timezone": "Europe/Berlin",
+          "locale": "de-DE",
+          "latitude": 52.52,
+          "longitude": 13.405,
+          "country": "DE",
+          "source": "echo+geoip"
+        },
+        "browser_view": {
+          "timezone": "Europe/Berlin",
+          "language": "de-DE",
+          "languages": [
+            "de-DE",
+            "de"
+          ],
+          "platform": "Win32",
+          "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0",
+          "screen": [
+            1920,
+            1080
+          ],
+          "window": [
+            1280,
+            720
+          ],
+          "viewport": [
+            1280,
+            632
+          ],
+          "hardware_concurrency": 8,
+          "webgl_vendor": "Google Inc. (NVIDIA)",
+          "webgl_renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar"
+        },
+        "preset_id": "fp_3f9a1c27d0b84e65",
+        "browser_os": "windows",
+        "canvas_noise": "auto",
+        "canvas_readback": "noise",
+        "webgl_readback": "noise"
+      }
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "site": "lumen-shop.example",
+  "requested_count": 5,
+  "samples": [
+    {
+      "sample_id": "smp_01JCX9Q1A2B3C4D5E6F7G8H9J0",
+      "url": "https://www.lumen-shop.example/produkt/pendelleuchte-aurora-60",
+      "http_status": 200,
+      "fetched_at": "2026-11-12T08:51:20Z",
+      "expires_at": "2026-11-13T08:51:20Z",
+      "fetch": {
+        "fetch_mode": "http",
+        "browser": null,
+        "proxy_tier": 1,
+        "passed_at_step": null
+      },
+      "template_hint": {
+        "matched_template_id": "product",
+        "suggested_template_id": "product",
+        "signature": "9f2c4e1a7b3d5f60"
+      },
+      "title": "Pendelleuchte Aurora 60 | Lumen",
+      "distilled_html": "<div class=\"product-detail\"><h1 class=\"product-title\">Pendelleuchte Aurora 60</h1><span class=\"sku\">Art.-Nr. AUR-60-OP</span><span class=\"price-current\">389,00 €</span><div class=\"product-description\"><p>Mundgeblasener Opalglasschirm, Ø 60 cm.</p><table><tr><th>Fassung</th><td>E27</td></tr></table></div><div class=\"gallery\"><img data-src=\"/media/aurora-60-1.jpg\" alt=\"Aurora 60\"></div></div>",
+      "distilled_html_truncated": false,
+      "jsonld": [
+        {
+          "@context": "https://schema.org",
+          "@type": "Product",
+          "name": "Pendelleuchte Aurora 60",
+          "sku": "AUR-60-OP",
+          "image": [
+            "https://www.lumen-shop.example/media/aurora-60-1.jpg",
+            "https://www.lumen-shop.example/media/aurora-60-2.jpg"
+          ],
+          "offers": {
+            "@type": "Offer",
+            "price": "389.00",
+            "priceCurrency": "EUR",
+            "availability": "https://schema.org/InStock"
+          }
+        }
+      ],
+      "meta": {
+        "og:title": "Pendelleuchte Aurora 60",
+        "product:price:currency": "EUR"
+      },
+      "extracted": {
+        "title": "Pendelleuchte Aurora 60",
+        "description": "<p>Mundgeblasener Opalglasschirm, Ø 60 cm.</p><table><tr><th>Fassung</th><td>E27</td></tr><tr><th>Leistung</th><td>max. 60 W</td></tr></table>",
+        "price": 389.0,
+        "currency": "EUR",
+        "part_number": "AUR-60-OP",
+        "image_urls": [
+          "https://www.lumen-shop.example/media/aurora-60-1.jpg",
+          "https://www.lumen-shop.example/media/aurora-60-2.jpg"
+        ]
+      }
+    },
+    {
+      "sample_id": "smp_01JCX9Q4K5L6M7N8P9Q0R1S2T3",
+      "url": "https://www.lumen-shop.example/ersatzteile/g9-fassung-keramik",
+      "http_status": 200,
+      "fetched_at": "2026-11-12T08:51:20Z",
+      "expires_at": "2026-11-13T08:51:20Z",
+      "fetch": {
+        "fetch_mode": "browser",
+        "browser": "camoufox",
+        "proxy_tier": 2,
+        "passed_at_step": "next_proxy_tier"
+      },
+      "template_hint": {
+        "matched_template_id": "spare_part",
+        "suggested_template_id": "spare_part",
+        "signature": "51d0a8c3e6f29b47"
+      },
+      "title": "G9-Fassung Keramik | Lumen Ersatzteile",
+      "distilled_html": "<section class=\"part-sheet\"><h2>G9-Fassung Keramik</h2><span class=\"part-price\" data-currency=\"EUR\"><span class=\"amount\">7,50</span> €</span><dl><dt>Teile-Nr.</dt><dd class=\"part-no\">ET-G9-K</dd></dl><div class=\"details\"><p>Ersatzfassung für Fjord und Nimbus.</p></div></section>",
+      "distilled_html_truncated": false,
+      "jsonld": [],
+      "meta": {
+        "og:title": "G9-Fassung Keramik"
+      },
+      "extracted": {
+        "title": "G9-Fassung Keramik",
+        "description": "<p>Ersatzfassung für Fjord und Nimbus.</p>",
+        "price": null,
+        "currency": "EUR",
+        "part_number": "ET-G9-K",
+        "image_urls": []
+      }
+    }
+  ],
+  "warnings": [
+    {
+      "field": "sample_count",
+      "code": "invalid_value",
+      "message": "Only 2 target pages matched within the sampling budget of 40 fetched pages"
+    }
+  ]
+}

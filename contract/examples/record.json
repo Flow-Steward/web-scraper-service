@@ -1,0 +1,21 @@
+{
+  "record_id": "rec_13819b01fd3b92df84ab95fcc8715cbf",
+  "source_url": "https://www.lumen-shop.example/produkt/pendelleuchte-aurora-60",
+  "requested_url": "https://www.lumen-shop.example/produkt/pendelleuchte-aurora-60?utm_source=sitemap",
+  "site": "lumen-shop.example",
+  "template_id": "product",
+  "mapping_version": 3,
+  "item_index": 0,
+  "extracted_at": "2026-11-12T09:22:17Z",
+  "data": {
+    "title": "Pendelleuchte Aurora 60",
+    "description": "<p>Mundgeblasener Opalglasschirm, Ø 60 cm.</p><table><tr><th>Fassung</th><td>E27</td></tr><tr><th>Leistung</th><td>max. 60 W</td></tr></table>",
+    "price": 389.0,
+    "currency": "EUR",
+    "part_number": "AUR-60-OP",
+    "image_urls": [
+      "https://www.lumen-shop.example/media/aurora-60-1.jpg",
+      "https://www.lumen-shop.example/media/aurora-60-2.jpg"
+    ]
+  }
+}

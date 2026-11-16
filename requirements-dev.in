@@ -1,0 +1,6 @@
+# Test-only dependencies, on top of requirements.lock (dev image target only).
+#   scripts/lock.sh
+-c requirements.lock
+pytest==9.2.0
+pytest-asyncio==1.5.0
+openapi-spec-validator==0.9.0

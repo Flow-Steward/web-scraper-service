@@ -1,0 +1,650 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/analysis.schema.json",
+  "title": "Site analysis",
+  "description": "Response of `POST /v1/analyze`.",
+  "type": "object",
+  "required": [
+    "site",
+    "site_url",
+    "final_url",
+    "http_status",
+    "robots",
+    "sitemap",
+    "rendering",
+    "structured_data",
+    "protection",
+    "recommended",
+    "warnings"
+  ],
+  "properties": {
+    "site": {
+      "$ref": "run_summary.schema.json#/$defs/site"
+    },
+    "site_url": {
+      "$ref": "job_config.schema.json#/$defs/http_url"
+    },
+    "final_url": {
+      "$ref": "job_config.schema.json#/$defs/http_url"
+    },
+    "http_status": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "robots": {
+      "type": "object",
+      "required": [
+        "present",
+        "site_url_allowed",
+        "crawl_delay_seconds",
+        "sitemaps"
+      ],
+      "properties": {
+        "present": {
+          "type": "boolean"
+        },
+        "site_url_allowed": {
+          "type": "boolean"
+        },
+        "crawl_delay_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sitemaps": {
+          "type": "array",
+          "items": {
+            "$ref": "job_config.schema.json#/$defs/http_url"
+          }
+        }
+      }
+    },
+    "sitemap": {
+      "type": "object",
+      "required": [
+        "found",
+        "url",
+        "url_count",
+        "url_count_capped",
+        "matching_url_count",
+        "target_share"
+      ],
+      "properties": {
+        "found": {
+          "type": "boolean"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/http_url"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "url_count_capped": {
+          "type": "boolean",
+          "description": "true when counting stopped at 100,000 URLs."
+        },
+        "matching_url_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "After `url_include` / `url_exclude`."
+        },
+        "target_share": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Share of target-looking links found on the start page that the sitemap contains."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest_lastmod": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "rendering": {
+      "type": "object",
+      "required": [
+        "js_required",
+        "http_text_chars",
+        "browser_text_chars"
+      ],
+      "properties": {
+        "js_required": {
+          "type": "boolean"
+        },
+        "http_text_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "browser_text_chars": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "structured_data": {
+      "type": "object",
+      "required": [
+        "jsonld_types",
+        "target_types_found"
+      ],
+      "properties": {
+        "jsonld_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "target_types_found": {
+          "type": "array",
+          "items": {
+            "$ref": "job_config.schema.json#/$defs/structured_data_type"
+          }
+        }
+      }
+    },
+    "protection": {
+      "type": "object",
+      "required": [
+        "kind",
+        "challenge",
+        "passed_at_step"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/protection_kind"
+        },
+        "challenge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/challenge_kind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "passed_at_step": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/protection_step"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "recommended": {
+      "type": "object",
+      "required": [
+        "discovery_mode",
+        "fetch_mode",
+        "browser",
+        "needs_proxy",
+        "needs_challenge_handling",
+        "reasons"
+      ],
+      "properties": {
+        "discovery_mode": {
+          "$ref": "job_config.schema.json#/$defs/resolved_discovery_mode"
+        },
+        "fetch_mode": {
+          "$ref": "job_config.schema.json#/$defs/fetch_mode"
+        },
+        "browser": {
+          "$ref": "job_config.schema.json#/$defs/browser_name"
+        },
+        "needs_proxy": {
+          "type": "boolean"
+        },
+        "needs_challenge_handling": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "error.schema.json#/$defs/field_error"
+      }
+    },
+    "protection_trace": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/protection_trace"
+      },
+      "description": "Added 2026-11-13. One entry per URL of this request that met a challenge (the start page, robots.txt, sitemaps)."
+    },
+    "link_rules": {
+      "type": "object",
+      "description": "Added 2026-11-14. The link rules a run of this config applies and their lists (README 4.11).",
+      "required": [
+        "rules"
+      ],
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "on",
+              "description"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "job_config.schema.json#/$defs/link_rule"
+              },
+              "on": {
+                "type": "boolean"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 300
+              }
+            }
+          }
+        },
+        "sensitive_segments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prefix_words": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "action_params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "file_extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schemes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "messenger_social_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "facet_params": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "trap_pattern_budget": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "protection_kind": {
+      "type": "string",
+      "enum": [
+        "none",
+        "challenge",
+        "hard_block",
+        "rate_limited"
+      ]
+    },
+    "challenge_kind": {
+      "type": "string",
+      "enum": [
+        "turnstile",
+        "interstitial",
+        "other_captcha"
+      ]
+    },
+    "analyze_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config",
+        "profile"
+      ],
+      "properties": {
+        "config": {
+          "$ref": "job_config.schema.json"
+        },
+        "profile": {
+          "$ref": "connection_profile.schema.json"
+        }
+      }
+    },
+    "protection_trace_step": {
+      "type": "object",
+      "required": [
+        "step",
+        "outcome"
+      ],
+      "properties": {
+        "step": {
+          "type": "string",
+          "description": "`wait`, `next_proxy_tier`, `click`, `solver` (more may be added)."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "`passed`, `timed_out`, `still_challenged`, `frame_not_found`, `hard_block`, `skipped`, `moved`, `error` (more may be added)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why a step was skipped: `not_requested`, `not_allowed_by_service`, `not_configured`, `limit_reached`, `no_sitekey`."
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "frame_found_via": {
+          "type": "string",
+          "description": "`frames` (the page's frame list), `selector`, `none`."
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "frame_box": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "integer"
+            },
+            "y": {
+              "type": "integer"
+            },
+            "width": {
+              "type": "integer"
+            },
+            "height": {
+              "type": "integer"
+            }
+          }
+        },
+        "to_tier": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "type": "string"
+        }
+      }
+    },
+    "protection_trace": {
+      "type": "object",
+      "description": "Added 2026-11-13. What the protection route did for one URL that met a challenge. Names of cookies only, never values; no HTML.",
+      "required": [
+        "url",
+        "browser",
+        "proxy_tier",
+        "steps",
+        "passed_at_step",
+        "cookies",
+        "final_title"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "proxy_tier": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The tier the page was fetched through; null without a proxy."
+        },
+        "exit_ip": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 45
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The proxy's exit IP when the service already knows it (no extra request is made); usually null."
+        },
+        "challenge": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "http_status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/protection_trace_step"
+          }
+        },
+        "passed_at_step": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/protection_step"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cookies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "final_title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "screenshot_id": {
+          "type": "string",
+          "pattern": "^shot_[A-Za-z0-9]{1,64}$",
+          "description": "With `debug: true`: the page after the last step, `GET /v1/screenshots/{id}` (PNG), kept as long as samples."
+        },
+        "environment": {
+          "type": "object",
+          "description": "Added 2026-11-13. `exit`: the exit IP's place the browser context was given (`ip`, `timezone`, `locale`, `latitude`, `longitude`, `country`, `source`) or null when unknown; `browser_view`: the page's own view (`timezone`, `language`, `languages`, `platform`, `user_agent`, `screen`, `window`, `viewport`, `hardware_concurrency`, `webgl_vendor`, `webgl_renderer`).",
+          "properties": {
+            "exit": {
+              "anyOf": [
+                {
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "browser_view": {
+              "type": "object"
+            },
+            "preset_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^fp_[0-9a-f]{16}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Added 2026-11-13. The browser identity (fingerprint preset: UA/platform, screen, WebGL, cores, fonts) the context had. The service keeps one identity per proxy account+tier and exit IP (without a proxy: per host IP), so every analysis, samples call and job going out through one exit shows the same id; null when the browser kept its own identity."
+            },
+            "browser_os": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "windows",
+                    "macos",
+                    "linux",
+                    "host"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Added 2026-11-13. The `browser_os` the context was launched with (Chromium: the OS its fingerprint claims)."
+            },
+            "canvas_noise": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "off",
+                    "on"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Added 2026-11-13. The `canvas_noise` setting of the Camoufox launch; null for Chromium."
+            },
+            "canvas_readback": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "noise",
+                "unavailable"
+              ],
+              "description": "Added 2026-11-13. A known canvas 2D fill read back on a blank page of the context before navigation: `exact`, `noise` (random data: the canvas is covered) or `unavailable`."
+            },
+            "webgl_readback": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "noise",
+                "unavailable"
+              ],
+              "description": "Added 2026-11-13. The same for a WebGL clear colour read with readPixels."
+            }
+          }
+        },
+        "passed_earlier": {
+          "type": "object",
+          "required": [
+            "url",
+            "step"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "step": {
+              "$ref": "run_summary.schema.json#/$defs/protection_step"
+            }
+          },
+          "description": "Added 2026-11-13. Present when the host had already passed a challenge earlier in the same analysis or samples call (the first URL that passed and the step) and was challenged again: the route ran once more for it."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "dry_run": false,
+  "run_working_files": {"older_than_days": 0},
+  "result_files": {"older_than_days": 3, "include_unfetched": false},
+  "run_records": {"older_than_days": 30, "include_unfetched": false},
+  "samples": {"older_than_hours": 0},
+  "protection_screenshots": {"older_than_hours": 0},
+  "compact_database": true
+}

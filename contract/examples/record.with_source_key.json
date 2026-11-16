@@ -1,0 +1,20 @@
+{
+  "record_id": "rec_30246844f630ff27ce6d51d1e11ab79e",
+  "source_url": "https://www.lumen-shop.example/ersatzteile/glasschirm-opal-150",
+  "source_key": "A-1042",
+  "site": "lumen-shop.example",
+  "template_id": "spare_part",
+  "mapping_version": 2,
+  "item_index": 0,
+  "extracted_at": "2026-11-13T07:05:12Z",
+  "data": {
+    "title": "Glasschirm Opal 150",
+    "description": "<p>Ersatzglas, Ø 150 mm, Gewinde 42 mm.</p>",
+    "price": 24.0,
+    "currency": "EUR",
+    "part_number": "ET-GS-150",
+    "image_urls": [
+      "https://www.lumen-shop.example/media/gs150.jpg"
+    ]
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "config": {
+    "site_url": "https://www.lumen-shop.example/",
+    "extraction_instructions": "Lamp and spare-part pages: name, full description with the technical data table, price in EUR, article number and all product images.",
+    "fields": [
+      "title",
+      "description",
+      "price",
+      "currency",
+      "part_number",
+      "image_urls"
+    ],
+    "required_fields": [
+      "title",
+      "price",
+      "currency"
+    ],
+    "discovery_mode": "auto",
+    "max_records": null,
+    "url_include": [
+      "/(produkt|ersatzteile)/"
+    ],
+    "url_exclude": [
+      "\\?(sort|page)="
+    ],
+    "urls": [],
+    "sitemap_url": null,
+    "target_page_selector": "[itemtype$='Product'], .part-sheet",
+    "max_pages": 5000,
+    "single_page": false,
+    "fetch_mode": "auto",
+    "browser": "camoufox",
+    "use_proxy_tiers": [],
+    "challenge_click": false,
+    "use_solver": false,
+    "max_clicks_per_job": 20,
+    "delay_min_seconds": 1,
+    "delay_max_seconds": 3,
+    "max_concurrency": 4,
+    "max_requests_per_minute": 60,
+    "max_retries": 3,
+    "block_heavy_resources": true,
+    "extraction_mode": "auto",
+    "structured_data_types": [
+      "Product",
+      "Offer",
+      "AggregateOffer"
+    ],
+    "wait_after_load_ms": 0,
+    "wait_for_selector_ms": 10000,
+    "headers": {
+      "Accept-Language": "de-DE,de;q=0.9"
+    },
+    "respect_robots": true,
+    "rebuild_mapping": false,
+    "debug": false,
+    "sample_count": 5,
+    "required_fill_threshold": 0.9,
+    "max_refinements": 2,
+    "max_repairs_per_template": 2,
+    "max_repairs_per_job": 5,
+    "max_duration_minutes": 720,
+    "politeness": "normal",
+    "page_timeout_seconds": 60,
+    "when_site_busy": "skip"
+  },
+  "profile": {
+    "profile_name": "Residential proxy + CapSolver",
+    "proxy_tiers": [
+      {
+        "tier": 1,
+        "provider": "generic",
+        "protocol": "http",
+        "host": "dc-proxy.example.net",
+        "port": 3128,
+        "auth_mode": "ip_allowlist",
+        "country": null,
+        "city": null,
+        "session_mode": "rotating"
+      },
+      {
+        "tier": 2,
+        "provider": "oxylabs",
+        "protocol": "http",
+        "host": "pr.oxylabs.io",
+        "port": 7777,
+        "auth_mode": "user_password",
+        "username": "customer-lumen_scraper",
+        "password": "pX7-example-not-real",
+        "country": "DE",
+        "city": null,
+        "session_mode": "sticky",
+        "sticky_minutes": 30
+      }
+    ],
+    "solver": {
+      "provider": "capsolver",
+      "api_key": "CAP-EXAMPLE-0000000000000000",
+      "endpoint": null,
+      "max_solves_per_job": 25,
+      "challenge_types": [
+        "turnstile"
+      ]
+    },
+    "defaults": {
+      "discovery_mode": "auto",
+      "fetch_mode": "auto",
+      "browser": "camoufox",
+      "max_concurrency": 4,
+      "max_requests_per_minute": 60,
+      "delay_min_seconds": 1,
+      "delay_max_seconds": 3,
+      "max_retries": 3,
+      "block_heavy_resources": true,
+      "sample_count": 5,
+      "required_fill_threshold": 0.9,
+      "max_refinements": 2,
+      "max_repairs_per_template": 2,
+      "max_repairs_per_job": 5,
+      "max_clicks_per_job": 20
+    },
+    "webhook": {
+      "url": "https://flow.example.com/api/webhooks/workflows/wf_scraper_events_lumen/9d2f6c1e",
+      "signing_secret": "fs_whsec_3b1f0e6c9a2d47f8b5c1d0e9"
+    }
+  }
+}

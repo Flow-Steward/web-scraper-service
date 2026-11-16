@@ -1,0 +1,26 @@
+{
+  "record_id": "rec_6f1d0c2b9a8e7d6c5b4a39281706f5e4",
+  "source_url": "https://shop.example/product/bmw-lens-cover-f10-left/",
+  "site": "shop.example",
+  "template_id": "lens_cover",
+  "mapping_version": 2,
+  "item_index": 1,
+  "variant": {
+    "index": 1,
+    "count": 3,
+    "source": "embedded_json",
+    "options": {
+      "Lens cover markings": "EU sticker"
+    },
+    "id": "47834"
+  },
+  "extracted_at": "2026-11-13T12:00:00Z",
+  "data": {
+    "title": "BMW lens cover 5 / M5 F10 F11 LCI, left",
+    "price": 54.0,
+    "currency": "EUR",
+    "sku": "BMW-F10-KP-2009-2017",
+    "markings": "EU sticker",
+    "image_url": "https://shop.example/wp-content/uploads/lens-eu.jpg"
+  }
+}

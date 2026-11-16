@@ -1,0 +1,5 @@
+{
+  "failure_reason": "build_mapping did not pass after 2 refinements: price fill 0.53 < 0.90",
+  "attempts": 3,
+  "platform_job_id": "job_c09e11b6f3"
+}

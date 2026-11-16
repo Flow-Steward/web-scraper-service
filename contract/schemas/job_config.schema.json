@@ -1,0 +1,1910 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/job_config.schema.json",
+  "title": "Job configuration",
+  "description": "The merged configuration of one job: run inputs, then `Site settings`, then the profile's `defaults`, then the defaults of this schema. The root is the merged form (every field present). `$defs/job_settings` is one unmerged layer (every field optional, `null`/\"\"/[]/{} = not set). Requests are validated strictly: unknown fields are refused.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "site_url",
+    "extraction_instructions",
+    "fields",
+    "required_fields",
+    "discovery_mode",
+    "max_records",
+    "url_include",
+    "url_exclude",
+    "urls",
+    "sitemap_url",
+    "target_page_selector",
+    "max_pages",
+    "single_page",
+    "fetch_mode",
+    "browser",
+    "use_proxy_tiers",
+    "challenge_click",
+    "use_solver",
+    "max_clicks_per_job",
+    "delay_min_seconds",
+    "delay_max_seconds",
+    "max_concurrency",
+    "max_requests_per_minute",
+    "max_retries",
+    "block_heavy_resources",
+    "extraction_mode",
+    "structured_data_types",
+    "wait_after_load_ms",
+    "wait_for_selector_ms",
+    "headers",
+    "respect_robots",
+    "rebuild_mapping",
+    "debug",
+    "sample_count",
+    "required_fill_threshold",
+    "max_refinements",
+    "max_repairs_per_template",
+    "max_repairs_per_job",
+    "max_duration_minutes",
+    "politeness",
+    "page_timeout_seconds",
+    "when_site_busy"
+  ],
+  "properties": {
+    "site_url": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/http_url"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Start URL. Required unless `discovery_mode` is `url_list`. Its host must not resolve to a private, loopback or link-local address. Defines the job's `site`.",
+      "default": null
+    },
+    "extraction_instructions": {
+      "type": "string",
+      "maxLength": 8000,
+      "description": "What to extract, in words. Not used by the crawler; stored with the job and passed back in mapping requests for the mapping agent.",
+      "default": ""
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "$ref": "mapping.schema.json#/$defs/field_name"
+      },
+      "minItems": 1,
+      "maxItems": 50,
+      "uniqueItems": true,
+      "description": "Fields the mapping agent is asked to map. A record carries the fields of its template's mapping (`build_mapping` maps every name listed here).",
+      "default": [
+        "title",
+        "description",
+        "price",
+        "currency",
+        "part_number",
+        "condition"
+      ]
+    },
+    "ai_choose_fields": {
+      "type": "boolean",
+      "default": false,
+      "description": "Added 2026-11-14. Let the mapping agent choose the fields the sample pages really carry (beyond `fields`, guided by `fields_hint`); passed to it in mapping requests. `fields` stays the explicit way."
+    },
+    "fields_hint": {
+      "type": "string",
+      "maxLength": 1000,
+      "default": "",
+      "description": "Added 2026-11-14. A hint for `ai_choose_fields`, e.g. \"wine: vintage, type, bottle size, taste\"."
+    },
+    "required_fields": {
+      "type": "array",
+      "items": {
+        "$ref": "mapping.schema.json#/$defs/field_name"
+      },
+      "maxItems": 50,
+      "uniqueItems": true,
+      "description": "Fields a record must have. At run time a page is `incomplete` when a field in `required_fields` or a mapping field with `required: true` is empty (a name missing from the mapping is always empty). Default: `[\"title\"]` when `fields` contains `title`, otherwise the first entry of `fields`.",
+      "default": [
+        "title"
+      ]
+    },
+    "discovery_mode": {
+      "$ref": "#/$defs/discovery_mode",
+      "description": "How URLs are found. See the README for the `auto` rule.",
+      "default": "auto"
+    },
+    "max_records": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Stop fetching as soon as this many distinct records are extracted; pages in progress are finished. `null` = no limit.",
+      "default": null
+    },
+    "url_include": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/regex"
+      },
+      "maxItems": 50,
+      "description": "Regular expressions (Python `re` syntax, searched anywhere in the canonical URL). When non-empty a discovered URL is queued only if one matches.",
+      "default": []
+    },
+    "url_exclude": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/regex"
+      },
+      "maxItems": 50,
+      "description": "Regular expressions; a discovered URL that matches one is never queued. Applied after `url_include`.",
+      "default": []
+    },
+    "crawl_include": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/regex"
+      },
+      "maxItems": 50,
+      "description": "Added 2026-11-14 — where to walk. Regular expressions searched in the canonical URL: a page's links are followed only when the page matches one (the start page always); empty = the whole site. Links leaving the scope are queued only when they look like target pages (`url_include`, a mapping's `url_patterns`, URL shapes of pages already found to be targets) — or every link of a walked page when no target can be told by URL yet. `url_include` stays what to extract, `url_exclude` what never to fetch.",
+      "default": []
+    },
+    "stay_in_section": {
+      "type": "boolean",
+      "description": "Added 2026-11-14. Walk only the start page's section: its URL and everything below its path (the start URL's pagination included); added to `crawl_include`. No effect on a site root.",
+      "default": false
+    },
+    "link_rules_off": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/link_rule"
+      },
+      "default": [],
+      "description": "Added 2026-11-14. Link rules switched off for this run (README 4.11): `scheme`, `messenger_social`, `sensitive_path`, `action_params`, `file_extension`, `nofollow`, `facet_params`, `trap_budget`, `dynamic_params`, `canonical`. Empty = every rule on. Example: `[\"facet_params\"]` follows filter links."
+    },
+    "trap_pattern_budget": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000,
+      "default": 100,
+      "description": "Added 2026-11-14. Trap budget: a URL pattern (first path segment, and query names) whose last N pages reached by links were no target page and led to no new target page stops being followed. 0 = off."
+    },
+    "urls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/url_entry"
+      },
+      "maxItems": 100000,
+      "description": "The pages to scrape in `url_list` mode, with the caller's optional row key. Ignored in other modes (warning `invalid_value`).",
+      "default": []
+    },
+    "sitemap_url": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/http_url"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Explicit sitemap or sitemap index (XML, text, gzip). `null` = from robots.txt, then `/sitemap.xml`.",
+      "default": null
+    },
+    "target_page_selector": {
+      "anyOf": [
+        {
+          "$ref": "mapping.schema.json#/$defs/css_selector"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "CSS selector present only on target pages. Used to recognise target pages that no template matches (`no_template`) and as the default `match.selector` for a new template.",
+      "default": null
+    },
+    "max_pages": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000,
+      "description": "Every fetched page counts, listing pages included. Reaching it stops fetching (`stop_reason: max_pages`).",
+      "default": 10000
+    },
+    "single_page": {
+      "type": "boolean",
+      "description": "Scrape only `site_url`; discovery is skipped.",
+      "default": false
+    },
+    "fetch_mode": {
+      "$ref": "#/$defs/fetch_mode",
+      "description": "`auto` lets the service choose HTTP or browser per page.",
+      "default": "auto"
+    },
+    "browser": {
+      "$ref": "#/$defs/browser",
+      "description": "Browser for browser fetches. `auto` = Camoufox when the image has it, otherwise Chromium. A browser missing from the image is refused (`browser_not_available`).",
+      "default": "camoufox"
+    },
+    "browser_os": {
+      "$ref": "#/$defs/browser_os",
+      "description": "Added 2026-11-13; default `host` since 2026-11-13. Camoufox: the OS of the browser identity — `host` = the machine's own OS (Linux in the image), `windows`, `macos`, `linux`. On a test managed challenge only the host-OS identity passed. Part of the identity key: each value gets its own fingerprint per exit. Chromium always claims the host OS.",
+      "default": "host"
+    },
+    "canvas_noise": {
+      "$ref": "#/$defs/canvas_noise",
+      "description": "Added 2026-11-13. Camoufox only: `auto` = Camoufox's own rule (a `windows`/`macos` identity on the Linux image has its canvas and WebGL readback replaced with random data, as in Tor Browser), `off` = the page reads the host's real pixels, `on` = always random. Part of the identity key. `protection_trace[].environment.canvas_readback` shows the effect. Chromium ignores it.",
+      "default": "auto"
+    },
+    "use_proxy_tiers": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3
+      },
+      "maxItems": 3,
+      "uniqueItems": true,
+      "description": "Which of the profile's proxy tiers this job may use; `[]` = every configured tier. Called `proxy_tiers` in the task document's `Site settings`; renamed so that `proxy_tiers` means only the profile's tier list.",
+      "default": []
+    },
+    "challenge_click": {
+      "type": "boolean",
+      "description": "Request the checkbox click (route step `click`). Ignored with warning `challenge_click_not_allowed` when the service does not allow it.",
+      "default": false
+    },
+    "use_solver": {
+      "type": "boolean",
+      "description": "Request the solver (route step `solver`). Ignored with warning `solver_not_allowed` when the service does not allow solvers; refused with `solver_not_configured` when the profile has no solver.",
+      "default": false
+    },
+    "max_clicks_per_job": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "Checkbox clicks per job.",
+      "default": 20
+    },
+    "delay_min_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 60,
+      "description": "Lower bound of the random delay between two requests to the same host. Since 2026-11-14 the default comes from `politeness` (the value shown is `normal`'s); a value set in a layer wins.",
+      "default": 2
+    },
+    "delay_max_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 60,
+      "description": "Upper bound of that delay. Since 2026-11-14 the default comes from `politeness` (the value shown is `normal`'s); a value set in a layer wins.",
+      "default": 5
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64,
+      "description": "Pages in progress at once. Browser crawls start at 1 and scale up to this. Since 2026-11-14 the default comes from `politeness` (the value shown is `normal`'s); a value set in a layer wins.",
+      "default": 2
+    },
+    "max_requests_per_minute": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 6000,
+      "description": "Requests per minute for the whole job. Since 2026-11-14 the default comes from `politeness` (the value shown is `normal`'s); a value set in a layer wins.",
+      "default": 30
+    },
+    "max_retries": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "description": "Retries of one page after a fetch failure (blocks are handled by the protection route, not by retries).",
+      "default": 3
+    },
+    "block_heavy_resources": {
+      "type": "boolean",
+      "description": "Browser fetches skip images, media and fonts.",
+      "default": true
+    },
+    "extraction_mode": {
+      "$ref": "#/$defs/extraction_mode",
+      "description": "Which mapping sources are used: `structured_data` = only `jsonld` sources, `selectors` = only `css` and `meta`, `auto` = all, in mapping order.",
+      "default": "auto"
+    },
+    "structured_data_types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/structured_data_type"
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "JSON-LD `@type` values considered when recognising target pages and returned in samples.",
+      "default": [
+        "Product",
+        "Offer",
+        "AggregateOffer"
+      ]
+    },
+    "wait_after_load_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 30000,
+      "description": "Extra wait after a browser page has loaded.",
+      "default": 0
+    },
+    "wait_for_selector_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60000,
+      "description": "How long a browser fetch waits for the template's `match.selector` (or `target_page_selector`) before extracting anyway.",
+      "default": 10000
+    },
+    "headers": {
+      "$ref": "#/$defs/headers",
+      "description": "Extra request headers. `Authorization`, `Proxy-Authorization`, `Cookie`, `Host`, `Content-Length` and `Transfer-Encoding` are refused (`header_not_allowed`).",
+      "default": {}
+    },
+    "respect_robots": {
+      "type": "boolean",
+      "description": "Honour robots.txt. `false` is ignored with warning `robots_override_not_allowed` unless the service allows an override.",
+      "default": true
+    },
+    "rebuild_mapping": {
+      "type": "boolean",
+      "description": "Read by the `Scrape a site` workflow only (build a new mapping even when a stored one passes). Stored, never acted on by the service.",
+      "default": false
+    },
+    "debug": {
+      "type": "boolean",
+      "description": "Verbose job log entries in `errors[]` with severity `debug`.",
+      "default": false
+    },
+    "sample_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50,
+      "description": "Target pages fetched by `POST /v1/samples` and attached to a mapping request.",
+      "default": 5
+    },
+    "required_fill_threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Share of pages of one template on which every required field must be filled. Used by `POST /v1/mappings/test` (pass flag) and by the repair trigger.",
+      "default": 0.9
+    },
+    "max_refinements": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "description": "Read by `build_mapping` only (refinements after the first generation). Stored, never acted on by the service.",
+      "default": 2
+    },
+    "max_repairs_per_template": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "description": "Mapping requests per template and job; when spent the template is marked `failed`.",
+      "default": 2
+    },
+    "max_repairs_per_job": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50,
+      "description": "Mapping requests per job, all templates together (new templates included).",
+      "default": 5
+    },
+    "max_duration_minutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10080,
+      "description": "Time in `running` (time in `queued` and `waiting_for_credentials` does not count). Reaching it stops fetching (`stop_reason: max_duration`).",
+      "default": 720
+    },
+    "politeness": {
+      "type": "string",
+      "enum": [
+        "gentle",
+        "normal",
+        "fast"
+      ],
+      "default": "normal",
+      "description": "Added 2026-11-14. A preset for the politeness fields not set in any layer: `gentle` = delay 5–10 s, `max_concurrency` 1, `max_requests_per_minute` 10, `page_timeout_seconds` 120; `normal` = 2–5 s, 2, 30, 60; `fast` = 0.5–1.5 s, 4, 120, 30. A field set explicitly wins; robots.txt `Crawl-delay` is always the floor; the automatic slow-down never goes faster than these values (README 4.15)."
+    },
+    "page_timeout_seconds": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 300,
+      "default": 60,
+      "description": "Added 2026-11-14. How long one page may take: the HTTP request and the browser navigation of a run, and the fetches of `POST /v1/analyze` and `POST /v1/samples`. Default from `politeness` (`normal`: 60)."
+    },
+    "when_site_busy": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "queue"
+      ],
+      "default": "skip",
+      "description": "Added 2026-11-14. `POST /v1/runs` while a run of the same site is queued, running or stopping: `skip` (default) refuses the start with `409 site_busy` and stores nothing; `queue` stores the run and starts it when the other one ends (README 4.13)."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "discovery_mode": {
+            "const": "url_list"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "urls": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "site_url": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "job_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "site_url": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/http_url"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Start URL. Required unless `discovery_mode` is `url_list`. Its host must not resolve to a private, loopback or link-local address. Defines the job's `site`."
+        },
+        "extraction_instructions": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 8000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "What to extract, in words. Not used by the crawler; stored with the job and passed back in mapping requests for the mapping agent."
+        },
+        "fields": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "mapping.schema.json#/$defs/field_name"
+              },
+              "minItems": 1,
+              "maxItems": 50,
+              "uniqueItems": true
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Fields the mapping agent is asked to map. A record carries the fields of its template's mapping (`build_mapping` maps every name listed here)."
+        },
+        "ai_choose_fields": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. Let the mapping agent choose the fields the sample pages really carry (beyond `fields`, guided by `fields_hint`); passed to it in mapping requests. `fields` stays the explicit way."
+        },
+        "fields_hint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. A hint for `ai_choose_fields`, e.g. \"wine: vintage, type, bottle size, taste\"."
+        },
+        "required_fields": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "mapping.schema.json#/$defs/field_name"
+              },
+              "maxItems": 50,
+              "uniqueItems": true
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Fields a record must have. At run time a page is `incomplete` when a field in `required_fields` or a mapping field with `required: true` is empty (a name missing from the mapping is always empty). Default: `[\"title\"]` when `fields` contains `title`, otherwise the first entry of `fields`."
+        },
+        "discovery_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/discovery_mode"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "How URLs are found. See the README for the `auto` rule."
+        },
+        "max_records": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Stop fetching as soon as this many distinct records are extracted; pages in progress are finished. `null` = no limit."
+        },
+        "url_include": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/regex"
+              },
+              "maxItems": 50
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Regular expressions (Python `re` syntax, searched anywhere in the canonical URL). When non-empty a discovered URL is queued only if one matches."
+        },
+        "url_exclude": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/regex"
+              },
+              "maxItems": 50
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Regular expressions; a discovered URL that matches one is never queued. Applied after `url_include`."
+        },
+        "crawl_include": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/regex"
+              },
+              "maxItems": 50
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14 — where to walk. Regular expressions searched in the canonical URL: a page's links are followed only when the page matches one (the start page always); empty = the whole site. Links leaving the scope are queued only when they look like target pages (`url_include`, a mapping's `url_patterns`, URL shapes of pages already found to be targets) — or every link of a walked page when no target can be told by URL yet. `url_include` stays what to extract, `url_exclude` what never to fetch."
+        },
+        "stay_in_section": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. Walk only the start page's section: its URL and everything below its path (the start URL's pagination included); added to `crawl_include`. No effect on a site root."
+        },
+        "link_rules_off": {
+          "anyOf": [
+            {
+              "type": "array",
+              "uniqueItems": true,
+              "maxItems": 10,
+              "items": {
+                "$ref": "#/$defs/link_rule"
+              },
+              "description": "Added 2026-11-14. Link rules switched off for this run (README 4.11): `scheme`, `messenger_social`, `sensitive_path`, `action_params`, `file_extension`, `nofollow`, `facet_params`, `trap_budget`, `dynamic_params`, `canonical`. Empty = every rule on. Example: `[\"facet_params\"]` follows filter links."
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. Link rules switched off for this run (README 4.11): `scheme`, `messenger_social`, `sensitive_path`, `action_params`, `file_extension`, `nofollow`, `facet_params`, `trap_budget`, `dynamic_params`, `canonical`. Empty = every rule on. Example: `[\"facet_params\"]` follows filter links."
+        },
+        "trap_pattern_budget": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "description": "Added 2026-11-14. Trap budget: a URL pattern (first path segment, and query names) whose last N pages reached by links were no target page and led to no new target page stops being followed. 0 = off."
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. Trap budget: a URL pattern (first path segment, and query names) whose last N pages reached by links were no target page and led to no new target page stops being followed. 0 = off."
+        },
+        "urls": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/url_entry"
+              },
+              "maxItems": 100000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "The pages to scrape in `url_list` mode, with the caller's optional row key. Ignored in other modes (warning `invalid_value`)."
+        },
+        "sitemap_url": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/http_url"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Explicit sitemap or sitemap index (XML, text, gzip). `null` = from robots.txt, then `/sitemap.xml`."
+        },
+        "target_page_selector": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "$ref": "mapping.schema.json#/$defs/css_selector"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "CSS selector present only on target pages. Used to recognise target pages that no template matches (`no_template`) and as the default `match.selector` for a new template."
+        },
+        "max_pages": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Every fetched page counts, listing pages included. Reaching it stops fetching (`stop_reason: max_pages`)."
+        },
+        "single_page": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Scrape only `site_url`; discovery is skipped."
+        },
+        "fetch_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/fetch_mode"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "`auto` lets the service choose HTTP or browser per page."
+        },
+        "browser": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/browser"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Browser for browser fetches. `auto` = Camoufox when the image has it, otherwise Chromium. A browser missing from the image is refused (`browser_not_available`)."
+        },
+        "browser_os": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/browser_os"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-13; default `host` since 2026-11-13. Camoufox: the OS of the browser identity — `host` = the machine's own OS (Linux in the image), `windows`, `macos`, `linux`. On a test managed challenge only the host-OS identity passed. Part of the identity key: each value gets its own fingerprint per exit. Chromium always claims the host OS."
+        },
+        "canvas_noise": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/canvas_noise"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-13. Camoufox only: `auto` = Camoufox's own rule (a `windows`/`macos` identity on the Linux image has its canvas and WebGL readback replaced with random data, as in Tor Browser), `off` = the page reads the host's real pixels, `on` = always random. Part of the identity key. `protection_trace[].environment.canvas_readback` shows the effect. Chromium ignores it."
+        },
+        "use_proxy_tiers": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "maxItems": 3,
+              "uniqueItems": true
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Which of the profile's proxy tiers this job may use; `[]` = every configured tier. Called `proxy_tiers` in the task document's `Site settings`; renamed so that `proxy_tiers` means only the profile's tier list."
+        },
+        "challenge_click": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Request the checkbox click (route step `click`). Ignored with warning `challenge_click_not_allowed` when the service does not allow it."
+        },
+        "use_solver": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Request the solver (route step `solver`). Ignored with warning `solver_not_allowed` when the service does not allow solvers; refused with `solver_not_configured` when the profile has no solver."
+        },
+        "max_clicks_per_job": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Checkbox clicks per job."
+        },
+        "delay_min_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 60
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Lower bound of the random delay between two requests to the same host."
+        },
+        "delay_max_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 60
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Upper bound of that delay."
+        },
+        "max_concurrency": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Pages in progress at once. Browser crawls start at 1 and scale up to this."
+        },
+        "max_requests_per_minute": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Requests per minute for the whole job."
+        },
+        "max_retries": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Retries of one page after a fetch failure (blocks are handled by the protection route, not by retries)."
+        },
+        "block_heavy_resources": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Browser fetches skip images, media and fonts."
+        },
+        "extraction_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/extraction_mode"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Which mapping sources are used: `structured_data` = only `jsonld` sources, `selectors` = only `css` and `meta`, `auto` = all, in mapping order."
+        },
+        "structured_data_types": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/structured_data_type"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "JSON-LD `@type` values considered when recognising target pages and returned in samples."
+        },
+        "wait_after_load_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 30000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Extra wait after a browser page has loaded."
+        },
+        "wait_for_selector_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60000
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "How long a browser fetch waits for the template's `match.selector` (or `target_page_selector`) before extracting anyway."
+        },
+        "headers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/headers"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Extra request headers. `Authorization`, `Proxy-Authorization`, `Cookie`, `Host`, `Content-Length` and `Transfer-Encoding` are refused (`header_not_allowed`)."
+        },
+        "respect_robots": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Honour robots.txt. `false` is ignored with warning `robots_override_not_allowed` unless the service allows an override."
+        },
+        "rebuild_mapping": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Read by the `Scrape a site` workflow only (build a new mapping even when a stored one passes). Stored, never acted on by the service."
+        },
+        "debug": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Verbose job log entries in `errors[]` with severity `debug`."
+        },
+        "sample_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Target pages fetched by `POST /v1/samples` and attached to a mapping request."
+        },
+        "required_fill_threshold": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Share of pages of one template on which every required field must be filled. Used by `POST /v1/mappings/test` (pass flag) and by the repair trigger."
+        },
+        "max_refinements": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Read by `build_mapping` only (refinements after the first generation). Stored, never acted on by the service."
+        },
+        "max_repairs_per_template": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Mapping requests per template and job; when spent the template is marked `failed`."
+        },
+        "max_repairs_per_job": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 50
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Mapping requests per job, all templates together (new templates included)."
+        },
+        "max_duration_minutes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10080
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Time in `running` (time in `queued` and `waiting_for_credentials` does not count). Reaching it stops fetching (`stop_reason: max_duration`)."
+        },
+        "politeness": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "gentle",
+                "normal",
+                "fast"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. A preset for the politeness fields not set in any layer: `gentle` = delay 5–10 s, `max_concurrency` 1, `max_requests_per_minute` 10, `page_timeout_seconds` 120; `normal` = 2–5 s, 2, 30, 60; `fast` = 0.5–1.5 s, 4, 120, 30. A field set explicitly wins; robots.txt `Crawl-delay` is always the floor; the automatic slow-down never goes faster than these values (README 4.15)."
+        },
+        "page_timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 300
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. How long one page may take: the HTTP request and the browser navigation of a run, and the fetches of `POST /v1/analyze` and `POST /v1/samples`. Default from `politeness` (`normal`: 60)."
+        },
+        "when_site_busy": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "skip",
+                "queue"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ],
+          "description": "Added 2026-11-14. `POST /v1/runs` while a run of the same site is queued, running or stopping: `skip` (default) refuses the start with `409 site_busy` and stores nothing; `queue` stores the run and starts it when the other one ends (README 4.13)."
+        }
+      },
+      "description": "One unmerged layer: run inputs, `Site settings` or the profile's `defaults`. A missing field, `null`, an empty string, an empty array and an empty object all mean \"not set in this layer\"."
+    },
+    "unset": {
+      "description": "\"Not set in this layer\": null, an empty string, an empty array or an empty object.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 0
+        },
+        {
+          "type": "array",
+          "maxItems": 0
+        },
+        {
+          "type": "object",
+          "maxProperties": 0
+        }
+      ]
+    },
+    "discovery_mode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "sitemap",
+        "crawl",
+        "sitemap_and_crawl",
+        "url_list"
+      ]
+    },
+    "resolved_discovery_mode": {
+      "description": "A discovery mode after `auto` was decided.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/discovery_mode"
+        },
+        {
+          "not": {
+            "const": "auto"
+          }
+        }
+      ]
+    },
+    "fetch_mode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "http",
+        "browser"
+      ]
+    },
+    "browser": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "camoufox",
+        "chromium"
+      ]
+    },
+    "browser_name": {
+      "description": "A concrete browser of the image.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/browser"
+        },
+        {
+          "not": {
+            "const": "auto"
+          }
+        }
+      ]
+    },
+    "extraction_mode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "structured_data",
+        "selectors"
+      ]
+    },
+    "structured_data_type": {
+      "type": "string",
+      "enum": [
+        "Product",
+        "Offer",
+        "AggregateOffer"
+      ]
+    },
+    "http_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://[^\\s]+$",
+      "maxLength": 2048
+    },
+    "regex": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Python `re` syntax; an invalid pattern is refused with `pattern_invalid`."
+    },
+    "url_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/http_url"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The caller's own row id (an article number); copied into the record as `source_key`."
+        }
+      }
+    },
+    "headers": {
+      "type": "object",
+      "maxProperties": 20,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9-]{1,64}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 1024
+      }
+    },
+    "validate_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile"
+      ],
+      "description": "Body of `POST /v1/config/validate`. Layers are merged in this order: `run_inputs`, `site_settings`, `profile.defaults`, schema defaults.",
+      "properties": {
+        "run_inputs": {
+          "$ref": "#/$defs/job_settings"
+        },
+        "site_settings": {
+          "$ref": "#/$defs/job_settings"
+        },
+        "profile": {
+          "$ref": "connection_profile.schema.json"
+        }
+      }
+    },
+    "validate_response": {
+      "type": "object",
+      "required": [
+        "valid",
+        "config",
+        "errors",
+        "warnings"
+      ],
+      "description": "Response of `POST /v1/config/validate` (always 200 for a well-formed request). `config` is the merged configuration, `null` when `valid` is false.",
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "error.schema.json#/$defs/field_error"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "error.schema.json#/$defs/field_error"
+          }
+        },
+        "sources": {
+          "type": "object",
+          "description": "For each field of `config`: which layer supplied the value.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/config_source"
+          }
+        }
+      }
+    },
+    "config_source": {
+      "type": "string",
+      "enum": [
+        "run_inputs",
+        "site_settings",
+        "profile_defaults",
+        "default",
+        "service_limit"
+      ]
+    },
+    "service_limits": {
+      "type": "object",
+      "required": [
+        "max_clicks_per_job",
+        "max_concurrency",
+        "max_concurrent_jobs",
+        "max_duration_minutes",
+        "max_fields_per_template",
+        "max_pages_per_job",
+        "max_queued_jobs",
+        "max_repairs_per_job",
+        "max_repairs_per_template",
+        "max_request_body_bytes",
+        "max_requests_per_minute",
+        "max_result_bytes",
+        "max_sample_count",
+        "max_solves_per_job",
+        "max_sources_per_field",
+        "max_stored_pages_per_job",
+        "max_templates_per_site",
+        "max_transforms_per_source",
+        "max_url_list_entries",
+        "sample_html_max_bytes"
+      ],
+      "additionalProperties": false,
+      "description": "The service's configured hard limits. Each value is at most the contract ceiling given as `maximum`.",
+      "properties": {
+        "max_pages_per_job": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000,
+          "default": 100000,
+          "description": "Upper bound for `max_pages`."
+        },
+        "max_duration_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10080,
+          "default": 1440,
+          "description": "Upper bound for `max_duration_minutes`."
+        },
+        "max_result_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824,
+          "default": 103809024,
+          "description": "A job stops with `stop_reason: max_result_size` before its result file would exceed this (default 99 MiB, just under the platform's 100 MiB artifact upload cap)."
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 16,
+          "description": "Upper bound for `max_concurrency`."
+        },
+        "max_concurrent_jobs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 2,
+          "description": "Jobs in `running` at once; further jobs wait in `queued`."
+        },
+        "max_queued_jobs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 50,
+          "description": "Jobs in `queued`; a start beyond this is refused with `queue_full`."
+        },
+        "max_requests_per_minute": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6000,
+          "default": 600,
+          "description": "Upper bound for `max_requests_per_minute`."
+        },
+        "max_url_list_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 50000,
+          "description": "Upper bound for the length of `urls`."
+        },
+        "max_sample_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 20,
+          "description": "Upper bound for `sample_count` and for `urls` in a samples request."
+        },
+        "max_clicks_per_job": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100,
+          "description": "Upper bound for `max_clicks_per_job`."
+        },
+        "max_solves_per_job": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100,
+          "description": "Upper bound for `solver.max_solves_per_job`."
+        },
+        "max_repairs_per_template": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 5,
+          "description": "Upper bound for `max_repairs_per_template`."
+        },
+        "max_repairs_per_job": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 20,
+          "description": "Upper bound for `max_repairs_per_job`."
+        },
+        "max_stored_pages_per_job": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 2000,
+          "description": "Pages kept as fetched for re-extraction; beyond it only the URL is kept and the page is fetched again after the repair."
+        },
+        "max_request_body_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864,
+          "default": 16777216,
+          "description": "Largest accepted request body; larger bodies get `request_too_large`."
+        },
+        "max_templates_per_site": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20,
+          "description": "Templates with an active mapping per site."
+        },
+        "max_fields_per_template": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 50,
+          "description": "Fields in one template mapping and in `fields`."
+        },
+        "max_sources_per_field": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 5,
+          "description": "Sources per mapping field."
+        },
+        "max_transforms_per_source": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 5,
+          "description": "Transforms per mapping source."
+        },
+        "sample_html_max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144,
+          "default": 65536,
+          "description": "Size of `distilled_html` per sample; longer content is cut and `distilled_html_truncated` is true."
+        }
+      }
+    },
+    "health_status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "degraded"
+      ]
+    },
+    "service_health": {
+      "type": "object",
+      "required": [
+        "status",
+        "time",
+        "service",
+        "engine",
+        "browsers",
+        "limits",
+        "protection",
+        "retention",
+        "timeouts",
+        "repair",
+        "webhook_delivery",
+        "storage",
+        "secrets_key",
+        "jobs",
+        "problems"
+      ],
+      "description": "Response of `GET /health`.",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/health_status"
+        },
+        "time": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "service": {
+          "type": "object",
+          "required": [
+            "name",
+            "version",
+            "api_versions"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "api_versions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^v[0-9]+$"
+              }
+            },
+            "build": {
+              "type": "string"
+            }
+          }
+        },
+        "engine": {
+          "type": "object",
+          "required": [
+            "python",
+            "crawlee",
+            "playwright"
+          ],
+          "properties": {
+            "python": {
+              "type": "string"
+            },
+            "crawlee": {
+              "type": "string"
+            },
+            "playwright": {
+              "type": "string"
+            },
+            "camoufox": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "browsers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "present",
+              "version"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/browser_name"
+              },
+              "present": {
+                "type": "boolean"
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "limits": {
+          "$ref": "#/$defs/service_limits"
+        },
+        "protection": {
+          "type": "object",
+          "required": [
+            "challenge_click_allowed",
+            "solvers_allowed",
+            "robots_override_allowed",
+            "steps_allowed",
+            "solver_providers",
+            "solver_challenge_types"
+          ],
+          "properties": {
+            "challenge_click_allowed": {
+              "type": "boolean",
+              "default": false
+            },
+            "solvers_allowed": {
+              "type": "boolean",
+              "default": false
+            },
+            "robots_override_allowed": {
+              "type": "boolean",
+              "default": false
+            },
+            "steps_allowed": {
+              "type": "array",
+              "items": {
+                "$ref": "run_summary.schema.json#/$defs/protection_step"
+              },
+              "description": "Route steps this service may use: the always-on steps, plus `click` / `solver` when allowed, minus browsers missing from the image."
+            },
+            "solver_providers": {
+              "type": "array",
+              "items": {
+                "$ref": "connection_profile.schema.json#/$defs/solver_provider"
+              },
+              "description": "Providers with an adapter in this build."
+            },
+            "solver_challenge_types": {
+              "type": "array",
+              "items": {
+                "$ref": "connection_profile.schema.json#/$defs/solver_challenge_type"
+              }
+            }
+          }
+        },
+        "retention": {
+          "type": "object",
+          "required": [
+            "result_days",
+            "job_record_days",
+            "stored_pages_days",
+            "samples_hours"
+          ],
+          "properties": {
+            "result_days": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 14
+            },
+            "job_record_days": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 30
+            },
+            "stored_pages_days": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 7
+            },
+            "samples_hours": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 24
+            }
+          }
+        },
+        "timeouts": {
+          "type": "object",
+          "required": [
+            "claim_timeout_seconds",
+            "mapping_request_timeout_seconds"
+          ],
+          "properties": {
+            "claim_timeout_seconds": {
+              "type": "integer",
+              "minimum": 60,
+              "default": 21600
+            },
+            "mapping_request_timeout_seconds": {
+              "type": "integer",
+              "minimum": 60,
+              "default": 3600
+            },
+            "stall_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 86400,
+              "default": 900,
+              "description": "Added 2026-11-14. No progress this long: a `stalled` problem; twice as long: the run stops `stalled`. 0 = off (`WSS_STALL_SECONDS`)."
+            }
+          }
+        },
+        "repair": {
+          "type": "object",
+          "required": [
+            "window_pages",
+            "min_pages",
+            "no_template_pages",
+            "block_window_pages",
+            "block_share"
+          ],
+          "description": "Repair and block-rate triggers (README, \"Repair trigger\").",
+          "properties": {
+            "window_pages": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 50
+            },
+            "min_pages": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 10
+            },
+            "no_template_pages": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5
+            },
+            "block_window_pages": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 50
+            },
+            "block_share": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.8
+            }
+          }
+        },
+        "webhook_delivery": {
+          "type": "object",
+          "required": [
+            "timeout_seconds",
+            "schedule_seconds",
+            "jitter",
+            "signature_header",
+            "timestamp_header"
+          ],
+          "properties": {
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 10
+            },
+            "schedule_seconds": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "jitter": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.5
+            },
+            "signature_header": {
+              "type": "string",
+              "const": "X-Scraper-Signature"
+            },
+            "timestamp_header": {
+              "type": "string",
+              "const": "X-Scraper-Timestamp"
+            }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "required": [
+            "free_bytes",
+            "total_bytes"
+          ],
+          "properties": {
+            "free_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "secrets_key": {
+          "type": "object",
+          "required": [
+            "configured"
+          ],
+          "properties": {
+            "configured": {
+              "type": "boolean"
+            },
+            "undecryptable_jobs": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Jobs whose stored secrets the current key cannot open."
+            }
+          }
+        },
+        "jobs": {
+          "type": "object",
+          "required": [
+            "running",
+            "queued",
+            "waiting_for_credentials"
+          ],
+          "properties": {
+            "running": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "queued": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "waiting_for_credentials": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Why `status` is `degraded`; empty when `ok`."
+        }
+      }
+    },
+    "browser_os": {
+      "type": "string",
+      "enum": [
+        "windows",
+        "macos",
+        "linux",
+        "host"
+      ],
+      "description": "Added 2026-11-13. The OS a Camoufox identity claims; `host` = the machine's own OS (Linux in the image)."
+    },
+    "canvas_noise": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "off",
+        "on"
+      ],
+      "description": "Added 2026-11-13. Camoufox canvas readback: `auto` = Camoufox's own rule (covered with random data when the identity claims another OS or GPU than the host renders with), `off` = never covered, `on` = always covered."
+    },
+    "link_rule": {
+      "type": "string",
+      "enum": [
+        "scheme",
+        "messenger_social",
+        "sensitive_path",
+        "action_params",
+        "file_extension",
+        "nofollow",
+        "facet_params",
+        "trap_budget",
+        "dynamic_params",
+        "canonical"
+      ],
+      "description": "Added 2026-11-14. A link rule (README 4.11)."
+    }
+  }
+}

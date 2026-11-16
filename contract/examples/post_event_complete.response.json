@@ -1,0 +1,43 @@
+{
+  "event_id": "evt_01JCXF5T6V7W8X9Y0Z1A2B3C4D",
+  "event_type": "run_completed",
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "resource_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "state": "handled",
+  "created_at": "2026-11-12T10:31:10Z",
+  "delivery": {
+    "generation": 1,
+    "resend_mode": null,
+    "attempts": 3,
+    "last_attempt_at": "2026-11-12T10:31:51Z",
+    "last_status_code": 202,
+    "last_error": null,
+    "delivered_at": "2026-11-12T10:31:51Z",
+    "next_attempt_at": null
+  },
+  "claim": {
+    "claimant": {
+      "job_id": "job_e2a8d4410b",
+      "workflow_id": "wf_scraper_events_lumen",
+      "step_id": "claim_event"
+    },
+    "claimed_at": "2026-11-12T10:31:55Z",
+    "expires_at": "2026-11-12T16:33:20Z"
+  },
+  "progress": {
+    "stages": [
+      {
+        "stage": "processed",
+        "recorded_at": "2026-11-12T10:33:20Z",
+        "claimant_job_id": "job_e2a8d4410b"
+      },
+      {
+        "stage": "completed",
+        "recorded_at": "2026-11-12T10:33:40Z",
+        "claimant_job_id": "job_e2a8d4410b"
+      }
+    ],
+    "last_stage": "completed"
+  },
+  "handled_at": "2026-11-12T10:33:41Z"
+}

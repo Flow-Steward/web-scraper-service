@@ -1,0 +1,216 @@
+{
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "state": "queued",
+  "outcome": null,
+  "stop_reason": null,
+  "site": "lumen-shop.example",
+  "sites": [
+    "lumen-shop.example"
+  ],
+  "created_at": "2026-11-12T09:13:58Z",
+  "started_at": null,
+  "updated_at": "2026-11-12T09:13:58Z",
+  "finished_at": null,
+  "expires_at": null,
+  "platform": {
+    "job_id": "job_7f3c2a91e4b84d0f9c1a",
+    "step_id": "start_run",
+    "loop_position": null,
+    "workflow_id": "wf_scrape_a_site_lumen",
+    "project_id": "prj_retail_pricing",
+    "account_id": "acc_4471",
+    "connection_id": "conn_scraper_residential"
+  },
+  "idempotency_key": "fs:job_7f3c2a91e4b84d0f9c1a:start_run",
+  "config": {
+    "site_url": "https://www.lumen-shop.example/",
+    "extraction_instructions": "Lamp and spare-part pages: name, full description with the technical data table, price in EUR, article number and all product images.",
+    "fields": [
+      "title",
+      "description",
+      "price",
+      "currency",
+      "part_number",
+      "image_urls"
+    ],
+    "required_fields": [
+      "title",
+      "price",
+      "currency"
+    ],
+    "discovery_mode": "auto",
+    "max_records": null,
+    "url_include": [
+      "/(produkt|ersatzteile)/"
+    ],
+    "url_exclude": [
+      "\\?(sort|page)="
+    ],
+    "urls": [],
+    "sitemap_url": null,
+    "target_page_selector": "[itemtype$='Product'], .part-sheet",
+    "max_pages": 5000,
+    "single_page": false,
+    "fetch_mode": "auto",
+    "browser": "camoufox",
+    "use_proxy_tiers": [],
+    "challenge_click": false,
+    "use_solver": false,
+    "max_clicks_per_job": 20,
+    "delay_min_seconds": 1,
+    "delay_max_seconds": 3,
+    "max_concurrency": 4,
+    "max_requests_per_minute": 60,
+    "max_retries": 3,
+    "block_heavy_resources": true,
+    "extraction_mode": "auto",
+    "structured_data_types": [
+      "Product",
+      "Offer",
+      "AggregateOffer"
+    ],
+    "wait_after_load_ms": 0,
+    "wait_for_selector_ms": 10000,
+    "headers": {
+      "Accept-Language": "de-DE,de;q=0.9"
+    },
+    "respect_robots": true,
+    "rebuild_mapping": false,
+    "debug": false,
+    "sample_count": 5,
+    "required_fill_threshold": 0.9,
+    "max_refinements": 2,
+    "max_repairs_per_template": 2,
+    "max_repairs_per_job": 5,
+    "max_duration_minutes": 720,
+    "politeness": "normal",
+    "page_timeout_seconds": 60,
+    "when_site_busy": "skip"
+  },
+  "resolved": {
+    "discovery_mode": null,
+    "browser": null,
+    "reasons": []
+  },
+  "profile": {
+    "profile_name": "Residential proxy + CapSolver",
+    "proxy_tiers": [
+      {
+        "tier": 1,
+        "provider": "generic",
+        "protocol": "http",
+        "host": "dc-proxy.example.net",
+        "port": 3128,
+        "auth_mode": "ip_allowlist",
+        "country": null,
+        "city": null,
+        "session_mode": "rotating",
+        "proxy_url_count": 0
+      },
+      {
+        "tier": 2,
+        "provider": "oxylabs",
+        "protocol": "http",
+        "host": "pr.oxylabs.io",
+        "port": 7777,
+        "auth_mode": "user_password",
+        "country": "DE",
+        "city": null,
+        "session_mode": "sticky",
+        "sticky_minutes": 30,
+        "proxy_url_count": 0
+      }
+    ],
+    "solver": {
+      "provider": "capsolver",
+      "max_solves_per_job": 25,
+      "challenge_types": [
+        "turnstile"
+      ]
+    },
+    "webhook_url": "https://flow.example.com/api/webhooks/workflows/wf_scraper_events_lumen/9d2f6c1e"
+  },
+  "secrets": {
+    "proxy_and_solver": "kept",
+    "signing_secret": "kept"
+  },
+  "progress": {
+    "discovery": "pending",
+    "queue_pending": 0,
+    "in_progress": 0,
+    "open_mapping_requests": 0,
+    "pending_reextraction": 0,
+    "result_status": "not_started"
+  },
+  "counters": {
+    "urls_discovered": 0,
+    "urls_skipped": {
+      "filtered": 0,
+      "robots": 0,
+      "private_address": 0,
+      "duplicate": 0
+    },
+    "pages_fetched": 0,
+    "pages_by_class": {},
+    "http_fetches": 0,
+    "browser_fetches": 0,
+    "retries": 0,
+    "records_extracted": 0,
+    "unextracted": 0,
+    "stored_pages": 0,
+    "refetch_after_repair": 0,
+    "repairs_started": 0,
+    "repairs_succeeded": 0,
+    "proxy_requests_by_tier": {},
+    "current_proxy_tier": null,
+    "result_bytes": 0,
+    "required_fill_rate": null
+  },
+  "protection": {
+    "challenges_met": 0,
+    "passed_by_step": {},
+    "frame_not_found": 0,
+    "failed": 0,
+    "hard_blocks": 0,
+    "clicks_used": 0,
+    "clicks_limit": 20,
+    "solves_used": 0,
+    "solves_limit": 25,
+    "sessions_retired": 0
+  },
+  "templates": [
+    {
+      "template_id": "product",
+      "status": "ok",
+      "mapping_version": 3,
+      "mapping_versions_used": [
+        3
+      ],
+      "record_count": 0,
+      "unextracted_count": 0,
+      "stored_pages_pending": 0,
+      "repairs_used": 0,
+      "open_mapping_request_id": null,
+      "required_fill_rate": null
+    },
+    {
+      "template_id": "spare_part",
+      "status": "ok",
+      "mapping_version": 1,
+      "mapping_versions_used": [
+        1
+      ],
+      "record_count": 0,
+      "unextracted_count": 0,
+      "stored_pages_pending": 0,
+      "repairs_used": 0,
+      "open_mapping_request_id": null,
+      "required_fill_rate": null
+    }
+  ],
+  "mapping_requests": [],
+  "events": [],
+  "errors": [],
+  "error": null,
+  "result": null
+}

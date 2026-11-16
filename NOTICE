@@ -1,0 +1,42 @@
+web-scraper-service
+Copyright 2026 the Flow Steward authors. Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product contains or uses, unmodified, the following third-party software.
+Licences as read from the upstream LICENSE files on 2026-11-12 or from the installed package metadata.
+
+Crawling engine and its parts
+- Crawlee for Python (crawlee 1.11.2) — Apache License 2.0 — https://github.com/apify/crawlee-python
+- browserforge — Apache License 2.0 — https://github.com/daijro/browserforge
+- impit — Apache License 2.0 — https://github.com/apify/impit
+- apify-actor-docker base images (server image only) — Apache License 2.0 — https://github.com/apify/apify-actor-docker
+- apify_fingerprint_datapoints (pulled in by Crawlee's playwright extra) — licence not verified
+
+Browsers
+- Playwright for Python 1.62.0 — Apache License 2.0 — https://github.com/microsoft/playwright-python
+- Chromium (downloaded by Playwright) — BSD-3-Clause and the licences of its components — https://www.chromium.org/
+- Camoufox Python package (camoufox 0.5.9) — MIT License — https://github.com/daijro/camoufox (python/LICENSE)
+- Camoufox browser (Firefox-based binary, fetched at image build) — Mozilla Public License 2.0, used unmodified
+  as a separate program; contains the cursor-humanisation component "cursory" under the
+  GNU Lesser General Public License v3.0 (browser/additions/juggler/input/cursory/LICENSE), used unmodified.
+  Source: https://github.com/daijro/camoufox
+- fpgen (fingerprint model used by Camoufox) — licence not verified
+
+Extraction
+- extruct — BSD-3-Clause — https://github.com/scrapinghub/extruct
+- parsel, w3lib — BSD-3-Clause — https://github.com/scrapy/parsel
+- lxml, lxml_html_clean — BSD-3-Clause
+- cssselect — BSD-3-Clause
+
+Service
+- FastAPI — MIT; Starlette — BSD-3-Clause; Uvicorn — BSD-3-Clause
+- httpx, httpcore — BSD-3-Clause
+- jsonschema, referencing — MIT
+- cryptography — Apache License 2.0 or BSD-3-Clause
+- python-ulid — MIT; idna — BSD-3-Clause; PyYAML — MIT
+- scikit-learn (required by Crawlee's adaptive crawler) — BSD-3-Clause
+
+System
+- Debian packages of the python:3.13-slim-trixie base (Xvfb, fonts, browser libraries) — their respective licences
+- tini — MIT
+
+Not used: Crawl4AI, Redis, Firecrawl, PydanticAiCrawler, SqlStorageClient, RedisStorageClient.

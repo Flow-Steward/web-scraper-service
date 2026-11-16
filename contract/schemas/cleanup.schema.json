@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/cleanup.schema.json",
+  "title": "Clean-up answer",
+  "description": "Response of `POST /v1/admin/cleanup` (README 16). Added 2026-11-14.",
+  "type": "object",
+  "required": [
+    "dry_run",
+    "time",
+    "removed",
+    "kept",
+    "compaction",
+    "bytes_freed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "dry_run": {
+      "type": "boolean"
+    },
+    "time": {
+      "$ref": "run_summary.schema.json#/$defs/timestamp"
+    },
+    "removed": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One entry per part the request named. In a dry run: what would be removed.",
+      "properties": {
+        "run_working_files": {
+          "$ref": "#/$defs/removed_entry"
+        },
+        "result_files": {
+          "$ref": "#/$defs/removed_entry"
+        },
+        "run_records": {
+          "$ref": "#/$defs/removed_entry"
+        },
+        "samples": {
+          "$ref": "#/$defs/removed_entry"
+        },
+        "protection_screenshots": {
+          "$ref": "#/$defs/removed_entry"
+        }
+      }
+    },
+    "kept": {
+      "type": "object",
+      "required": [
+        "active_runs",
+        "unfetched_results"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "active_runs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Runs not finished (queued, running, waiting_for_credentials, stopping); nothing of theirs is touched."
+        },
+        "unfetched_results": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Finished runs kept (result file or whole record) because the platform has not fetched the result yet."
+        }
+      }
+    },
+    "compaction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/compaction"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`null` unless `compact_database` was true."
+    },
+    "bytes_freed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Sum of `removed.*.bytes`, plus `compaction.bytes_freed` when applied. In a dry run: what removal would free (compaction not included)."
+    }
+  },
+  "$defs": {
+    "cleanup_request": {
+      "type": "object",
+      "description": "Body of `POST /v1/admin/cleanup`. A part left out is not touched. An empty body is a dry run that removes nothing.",
+      "required": [],
+      "additionalProperties": false,
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "default": true,
+          "description": "True (default): nothing is removed; the answer says what would be removed. False: remove."
+        },
+        "run_working_files": {
+          "type": "object",
+          "required": [
+            "older_than_days"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "older_than_days": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3650,
+              "description": "Only runs that finished at least this many days ago (0 = every finished run)."
+            }
+          },
+          "description": "Finished runs' working files (`jobs/<run_id>`: Crawlee storage, stored pages) and their working rows (stored pages, URL list). Directories without a run record go too (by modification time)."
+        },
+        "result_files": {
+          "type": "object",
+          "required": [
+            "older_than_days"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "older_than_days": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3650,
+              "description": "Only runs that finished at least this many days ago (0 = every finished run)."
+            },
+            "include_unfetched": {
+              "type": "boolean",
+              "default": false,
+              "description": "Also remove result files the platform has not fetched yet (README 16.3). Default false: such runs are kept and counted in `kept.unfetched_results`."
+            }
+          },
+          "description": "Finished runs' result files. The run stays; `GET …/result` then answers `410 result_expired`. Files without a run record go too (by modification time)."
+        },
+        "run_records": {
+          "type": "object",
+          "required": [
+            "older_than_days"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "older_than_days": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3650,
+              "description": "Only runs that finished at least this many days ago (0 = every finished run)."
+            },
+            "include_unfetched": {
+              "type": "boolean",
+              "default": false,
+              "description": "Also remove result files the platform has not fetched yet (README 16.3). Default false: such runs are kept and counted in `kept.unfetched_results`."
+            }
+          },
+          "description": "Whole finished runs: every row of the run, its working files and its result file. The run is gone from `GET /v1/runs`."
+        },
+        "samples": {
+          "type": "object",
+          "required": [
+            "older_than_hours"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "older_than_hours": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 87600,
+              "description": "Only items last written at least this many hours ago (0 = all)."
+            }
+          },
+          "description": "Stored samples (`samples/*.html`, `*.extra.json` and their rows)."
+        },
+        "protection_screenshots": {
+          "type": "object",
+          "required": [
+            "older_than_hours"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "older_than_hours": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 87600,
+              "description": "Only items last written at least this many hours ago (0 = all)."
+            }
+          },
+          "description": "Protection screenshots (`samples/shots/*.png`)."
+        },
+        "compact_database": {
+          "type": "boolean",
+          "default": false,
+          "description": "WAL checkpoint (TRUNCATE) always; VACUUM only when no run is active and the volume has room for a copy, else `compaction.vacuum` = `skipped` with the reason."
+        }
+      }
+    },
+    "removed_entry": {
+      "type": "object",
+      "required": [
+        "items",
+        "bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Runs (run_records), samples or files."
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Apparent size of the files."
+        }
+      }
+    },
+    "compaction": {
+      "type": "object",
+      "required": [
+        "checkpoint",
+        "vacuum",
+        "vacuum_skipped_reason",
+        "database_bytes_before",
+        "wal_bytes_before",
+        "reclaimable_bytes",
+        "database_bytes_after",
+        "bytes_freed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint": {
+          "type": "string",
+          "enum": [
+            "done",
+            "busy",
+            "would_run"
+          ],
+          "description": "`busy`: the checkpoint could not finish (a reader held the WAL); nothing is lost."
+        },
+        "vacuum": {
+          "type": "string",
+          "enum": [
+            "done",
+            "would_run",
+            "skipped"
+          ]
+        },
+        "vacuum_skipped_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 500
+        },
+        "database_bytes_before": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Database file + WAL + SHM."
+        },
+        "wal_bytes_before": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The part a checkpoint gives back."
+        },
+        "reclaimable_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Free pages inside the database file (what VACUUM gives back)."
+        },
+        "database_bytes_after": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "`null` in a dry run."
+        },
+        "bytes_freed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "`null` in a dry run."
+        }
+      }
+    },
+    "cleanup_summary": {
+      "type": "object",
+      "description": "What one clean-up pass removed. `automatic` = the retention sweeper; `manual` = an applied `POST /v1/admin/cleanup` (its `bytes_freed` includes what compaction freed).",
+      "required": [
+        "at",
+        "trigger",
+        "removed",
+        "bytes_freed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "trigger": {
+          "type": "string",
+          "enum": [
+            "automatic",
+            "manual"
+          ]
+        },
+        "removed": {
+          "type": "object",
+          "required": [
+            "run_working_files",
+            "result_files",
+            "run_records",
+            "samples",
+            "protection_screenshots"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "run_working_files": {
+              "$ref": "#/$defs/removed_entry"
+            },
+            "result_files": {
+              "$ref": "#/$defs/removed_entry"
+            },
+            "run_records": {
+              "$ref": "#/$defs/removed_entry"
+            },
+            "samples": {
+              "$ref": "#/$defs/removed_entry"
+            },
+            "protection_screenshots": {
+              "$ref": "#/$defs/removed_entry"
+            }
+          }
+        },
+        "bytes_freed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "mode": "resume",
+  "webhook": {
+    "url": "https://flow.example.com/api/webhooks/workflows/wf_scraper_events_lumen/9d2f6c1e",
+    "signing_secret": "fs_whsec_rotated_7c1d29e4b0a8f356"
+  },
+  "revoke_live_claim": true,
+  "expected_generation": 1
+}

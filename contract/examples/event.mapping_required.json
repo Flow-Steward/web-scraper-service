@@ -1,0 +1,10 @@
+{
+  "event_id": "evt_01JCXB1G2H3J4K5M6N7P8Q9R0S",
+  "event_type": "mapping_required",
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "resource_id": "mrq_01JCXB1G0Z9Y8X7W6V5T4S3R2Q",
+  "occurred_at": "2026-11-12T09:31:44Z",
+  "delivery_generation": 1,
+  "template_id": "spare_part",
+  "message": "spare_part: 14 of 30 recent pages miss price, currency"
+}

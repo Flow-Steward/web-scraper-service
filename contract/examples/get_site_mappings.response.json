@@ -1,0 +1,346 @@
+{
+  "site": "lumen-shop.example",
+  "templates": [
+    {
+      "template_id": "product",
+      "active_version": 3,
+      "versions_total": 3,
+      "versions": [
+        {
+          "site": "lumen-shop.example",
+          "template_id": "product",
+          "version": 3,
+          "status": "active",
+          "content_sha256": "497939e1751a90e8cad5af6be1aba549fa9f575fcb1d583895e4a9ed989df508",
+          "created_at": "2026-11-12T08:57:41Z",
+          "superseded_at": null,
+          "origin": {
+            "run_id": null,
+            "mapping_request_id": null,
+            "platform_job_id": "job_7f3c2a91e4b84d0f9c1a",
+            "note": "Reviewed in Scrape a site"
+          },
+          "mapping": {
+            "schema_version": 1,
+            "template_id": "product",
+            "label": "Lamp product page",
+            "match": {
+              "url_patterns": [
+                "/produkt/[^/?]+$"
+              ],
+              "selector": "div.product-detail"
+            },
+            "fields": [
+              {
+                "name": "title",
+                "type": "text",
+                "required": true,
+                "multiple": false,
+                "sources": [
+                  {
+                    "kind": "jsonld",
+                    "schema_type": "Product",
+                    "path": "name",
+                    "transforms": [
+                      {
+                        "op": "trim"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "css",
+                    "selector": "h1.product-title",
+                    "extract": "text",
+                    "transforms": [
+                      {
+                        "op": "trim"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "description",
+                "type": "html",
+                "required": false,
+                "multiple": false,
+                "sources": [
+                  {
+                    "kind": "css",
+                    "selector": "div.product-description",
+                    "extract": "html",
+                    "transforms": [
+                      {
+                        "op": "html_clean"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "price",
+                "type": "price",
+                "required": true,
+                "multiple": false,
+                "sources": [
+                  {
+                    "kind": "jsonld",
+                    "schema_type": "Product",
+                    "path": "offers.price",
+                    "transforms": [
+                      {
+                        "op": "price",
+                        "decimal_separator": "dot"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "css",
+                    "selector": "span.price-current",
+                    "extract": "text",
+                    "transforms": [
+                      {
+                        "op": "price",
+                        "decimal_separator": "comma"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "currency",
+                "type": "currency",
+                "required": true,
+                "multiple": false,
+                "sources": [
+                  {
+                    "kind": "jsonld",
+                    "schema_type": "Product",
+                    "path": "offers.priceCurrency",
+                    "transforms": [
+                      {
+                        "op": "currency"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "meta",
+                    "name": "product:price:currency",
+                    "transforms": [
+                      {
+                        "op": "currency"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "part_number",
+                "type": "text",
+                "required": false,
+                "multiple": false,
+                "sources": [
+                  {
+                    "kind": "jsonld",
+                    "schema_type": "Product",
+                    "path": "sku",
+                    "transforms": [
+                      {
+                        "op": "trim"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "css",
+                    "selector": "span.sku",
+                    "extract": "text",
+                    "transforms": [
+                      {
+                        "op": "regex_extract",
+                        "pattern": "Art\\.-Nr\\.\\s*([A-Z0-9-]+)",
+                        "group": 1
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "image_urls",
+                "type": "image_url",
+                "required": false,
+                "multiple": true,
+                "sources": [
+                  {
+                    "kind": "jsonld",
+                    "schema_type": "Product",
+                    "path": "image.*",
+                    "transforms": [
+                      {
+                        "op": "absolute_url"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "css",
+                    "selector": "div.gallery img",
+                    "extract": "attribute",
+                    "attribute": "data-src",
+                    "transforms": [
+                      {
+                        "op": "absolute_url"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "template_id": "spare_part",
+      "active_version": 2,
+      "versions_total": 2,
+      "versions": [
+        {
+          "site": "lumen-shop.example",
+          "template_id": "spare_part",
+          "version": 2,
+          "status": "active",
+          "content_sha256": "140f6fcc7c1f15ca4ed76b397903db31537a9075036d6bba0fe0315a5c33a58b",
+          "created_at": "2026-11-12T09:41:52Z",
+          "superseded_at": null,
+          "origin": {
+            "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+            "mapping_request_id": "mrq_01JCXB1G0Z9Y8X7W6V5T4S3R2Q",
+            "platform_job_id": "job_c09e11b6f3",
+            "note": "Repair after price markup change"
+          },
+          "mapping": {
+            "schema_version": 1,
+            "template_id": "spare_part",
+            "label": "Spare part sheet",
+            "match": {
+              "url_patterns": [
+                "/ersatzteile/[^/?]+$"
+              ],
+              "selector": "section.part-sheet"
+            },
+            "fields": [
+              {
+                "name": "title",
+                "type": "text",
+                "required": true,
+                "sources": [
+                  {
+                    "kind": "css",
+                    "selector": "section.part-sheet h2",
+                    "extract": "text",
+                    "transforms": [
+                      {
+                        "op": "trim"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "description",
+                "type": "html",
+                "sources": [
+                  {
+                    "kind": "css",
+                    "selector": "section.part-sheet .details",
+                    "extract": "html"
+                  }
+                ]
+              },
+              {
+                "name": "price",
+                "type": "price",
+                "required": true,
+                "sources": [
+                  {
+                    "kind": "css",
+                    "selector": ".part-price .amount",
+                    "extract": "text",
+                    "transforms": [
+                      {
+                        "op": "price",
+                        "decimal_separator": "comma"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "currency",
+                "type": "currency",
+                "required": true,
+                "sources": [
+                  {
+                    "kind": "css",
+                    "selector": ".part-price",
+                    "extract": "attribute",
+                    "attribute": "data-currency",
+                    "transforms": [
+                      {
+                        "op": "currency"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "css",
+                    "selector": ".part-price .amount",
+                    "extract": "text",
+                    "transforms": [
+                      {
+                        "op": "currency",
+                        "default_currency": "EUR"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "part_number",
+                "type": "text",
+                "sources": [
+                  {
+                    "kind": "css",
+                    "selector": "dd.part-no",
+                    "extract": "text",
+                    "transforms": [
+                      {
+                        "op": "trim"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "image_urls",
+                "type": "image_url",
+                "multiple": true,
+                "sources": [
+                  {
+                    "kind": "css",
+                    "selector": "section.part-sheet img",
+                    "extract": "attribute",
+                    "attribute": "src",
+                    "transforms": [
+                      {
+                        "op": "absolute_url"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

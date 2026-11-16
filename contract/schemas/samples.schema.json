@@ -1,0 +1,565 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/samples.schema.json",
+  "title": "Samples",
+  "description": "Response of `POST /v1/samples`. The raw pages stay on the service for `retention.samples_hours` and are addressed by `sample_id` in `POST /v1/mappings/test`.",
+  "type": "object",
+  "required": [
+    "site",
+    "requested_count",
+    "samples",
+    "warnings"
+  ],
+  "properties": {
+    "site": {
+      "$ref": "run_summary.schema.json#/$defs/site"
+    },
+    "requested_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "samples": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sample"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "error.schema.json#/$defs/field_error"
+      }
+    },
+    "stopped": {
+      "type": "object",
+      "description": "Added 2026-11-13. Present when a URL of a host failed the protection route in this call (a challenge met and not passed after every allowed step): the service then fetched nothing more of that host and answered at once; `warnings[]` carries `protection_not_passed` with the reason in plain words. Absent when no host failed.",
+      "required": [
+        "reason",
+        "host",
+        "url",
+        "skipped_urls"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "protection_not_passed"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "maxLength": 260,
+          "description": "host[:port] as in the URL"
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "The URL whose protection route failed (a sample candidate, robots.txt, a sitemap or the start page)."
+        },
+        "skipped_urls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Candidate pages of that host left unfetched because of the stop (for discovered candidates: those left in the candidate list)."
+        }
+      }
+    },
+    "protection_trace": {
+      "type": "array",
+      "items": {
+        "$ref": "analysis.schema.json#/$defs/protection_trace"
+      },
+      "description": "Added 2026-11-13. One entry per URL of this request that met a challenge."
+    },
+    "explanation": {
+      "type": "object",
+      "required": [
+        "summary",
+        "counts"
+      ],
+      "description": "Added 2026-11-13. What the call tried, for the operator: `summary` in plain words with the next hint; `discovery` (`start_page`: `hrefs`, `in_site`, `other_hosts`, `variants_skipped`, `shapes` [{`shape`, `links`, `in_menus`}]; source `urls` | `url_list` | `sitemap` | `crawl` | `start_page` | `start_page+sitemap`, `sitemap_urls`, `sitemap_capped`, `sitemap_matching`, `links`, `candidates`, `start_is_deep`); `counts`; URL-shape `groups`; up to 60 `pages` with how each was loaded and what came of it; `seconds`; `hints`; `guess` when the URL-shape guess ran. The service also logs one INFO line per call with the same counts.",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "discovery": {
+          "type": "object"
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "shape",
+              "tried"
+            ],
+            "properties": {
+              "shape": {
+                "type": "string"
+              },
+              "tried": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "samples": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "with_product_signals": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "signals": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "selector_found": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "pages": {
+          "type": "array",
+          "maxItems": 60,
+          "items": {
+            "type": "object",
+            "required": [
+              "url",
+              "loaded",
+              "outcome"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "maxLength": 2048
+              },
+              "loaded": {
+                "type": "string",
+                "enum": [
+                  "http",
+                  "browser",
+                  "reused",
+                  "none"
+                ],
+                "description": "`reused` = already loaded in this call (e.g. the start page); `none` = not loaded."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "start",
+                  "sample",
+                  "not_target",
+                  "challenged",
+                  "failed",
+                  "skipped",
+                  "probed"
+                ],
+                "description": "`start` = the start page loaded for its links (not a candidate)."
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "product_signals": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "price",
+                    "cart",
+                    "markup",
+                    "gallery"
+                  ]
+                }
+              },
+              "shape": {
+                "type": "string",
+                "description": "The URL's shape (`/*-p<n>`, `/lt/*-c<n>`)."
+              },
+              "status": {
+                "type": "integer"
+              },
+              "selector_found": {
+                "type": "boolean",
+                "description": "Whether `target_page_selector` was on the page (absent without a selector)."
+              },
+              "links": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "In-site links on the page."
+              }
+            }
+          }
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "hints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "message"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "target_page_selector",
+                  "url_include",
+                  "discovery_mode",
+                  "fetch_mode",
+                  "protection"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "guess": {
+          "type": "object"
+        },
+        "variant_sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "samples"
+            ],
+            "properties": {
+              "source": {
+                "$ref": "mapping.schema.json#/$defs/variant_source"
+              },
+              "samples": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "variants_min": {
+                "type": "integer"
+              },
+              "variants_max": {
+                "type": "integer"
+              }
+            }
+          },
+          "description": "Added 2026-11-13. Variant sources over the samples (the summary names them)."
+        },
+        "samples_with_variant_sources": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "fetch_info": {
+      "type": "object",
+      "required": [
+        "fetch_mode",
+        "browser",
+        "proxy_tier",
+        "passed_at_step"
+      ],
+      "properties": {
+        "fetch_mode": {
+          "allOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/fetch_mode"
+            },
+            {
+              "not": {
+                "const": "auto"
+              }
+            }
+          ]
+        },
+        "browser": {
+          "anyOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/browser_name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proxy_tier": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "passed_at_step": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/protection_step"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "sample": {
+      "type": "object",
+      "required": [
+        "sample_id",
+        "url",
+        "http_status",
+        "fetched_at",
+        "expires_at",
+        "fetch",
+        "template_hint",
+        "title",
+        "distilled_html",
+        "distilled_html_truncated",
+        "jsonld",
+        "meta"
+      ],
+      "properties": {
+        "sample_id": {
+          "$ref": "run_summary.schema.json#/$defs/sample_id"
+        },
+        "url": {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        },
+        "requested_url": {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        },
+        "source_key": {
+          "type": "string"
+        },
+        "http_status": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "fetched_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "fetch": {
+          "$ref": "#/$defs/fetch_info"
+        },
+        "template_hint": {
+          "$ref": "#/$defs/template_hint"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "distilled_html": {
+          "type": "string",
+          "description": "Scripts, styles, SVG, comments and hidden inputs removed; attributes reduced to id, class, itemprop, itemtype, href, src, alt, content, name, property, value, for (the last two since 2026-11-14) and data-*; whitespace collapsed. Since 2026-11-14 the page's own content comes first, each part after a comment `<!-- wss:section <name> at <path> -->`: `product-summary` (the product's summary block: title, price, variant form), `main-content` (the main region, the summary replaced by `<!-- wss: product summary, given above -->`), `rest-of-page` (header, menus, footer; the parts given above replaced by a comment). `<path>` is the element's place in the page (`div#content.site-content > div.summary.entry-summary`, the last six levels): write selectors against the page, not against the order of the sample. A page without a recognisable summary or main region is given in page order, as before. A `data-*` value longer than 400 characters keeps its first 160 and ends `… [N characters cut]`, or `… [N characters cut; parsed in variant_sources[i]]` when that attribute is a variant source of the sample."
+        },
+        "distilled_html_truncated": {
+          "type": "boolean"
+        },
+        "jsonld": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Every JSON-LD node of the page, `@graph` flattened."
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "`<meta>` name/property → content."
+        },
+        "extracted": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "record.schema.json#/$defs/field_value"
+              },
+              "description": "Values the template's active mapping extracts from this page; `null` without one."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "variant_sources": {
+          "type": "array",
+          "description": "Added 2026-11-13. Variant sources found on this page, for the mapping agent to choose from: each `source` (a `variant_source` ready to use), the `count` of variants, `option_names`, an `example` (normalised: options, price, currency, sku, availability, weight, image) and the source's own `raw_keys`. A `shop_json` source was fetched once with the sample and is kept for the mapping test.",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "count"
+            ],
+            "properties": {
+              "source": {
+                "$ref": "mapping.schema.json#/$defs/variant_source"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "option_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "example": {
+                "type": "object"
+              },
+              "raw_keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "microdata": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Added 2026-11-13. The page's schema.org microdata as JSON-LD-like nodes (`@type`, properties), at most 20; source kind `microdata` reads them."
+        },
+        "price_on_page": {
+          "$ref": "#/$defs/price_on_page",
+          "description": "Added 2026-11-14. What the page itself shows of its price, read from the product's own content (the summary block, else the main region — a header's mini cart does not count): `shown` (a schema.org offer price or a price element with an amount), `range` (a schema.org `lowPrice`/`highPrice` pair or a price element with two amounts joined by a range mark: `–`, ` - `, `through`, `to`, `bis` …), `on_request` (no amount, and an empty price element or a schema.org offer without a price together with request wording such as \"price on request\", \"contact us for a price\", \"to find out the price\", \"Preis auf Anfrage\", \"cena pēc pieprasījuma\"), `missing` (none of these). The mapping test fails with `price_not_extracted` when a sample's page shows a price the mapping did not read."
+        },
+        "price_details": {
+          "type": "object",
+          "description": "Added 2026-11-14. Present when the page states a machine-readable price or shows a sale: `machine_price` and `machine_source` (schema.org offers.price/lowPrice, meta product:price:amount, itemprop=price content, data-price), and for a sale `current`, `regular_price`, `on_sale: true`, `sale_source` (`schema.org priceSpecification` or `struck-through price`).",
+          "properties": {
+            "machine_price": {
+              "type": "number"
+            },
+            "machine_source": {
+              "type": "string"
+            },
+            "current": {
+              "type": "number"
+            },
+            "regular_price": {
+              "type": "number"
+            },
+            "on_sale": {
+              "type": "boolean"
+            },
+            "sale_source": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "template_hint": {
+      "type": "object",
+      "required": [
+        "matched_template_id",
+        "suggested_template_id",
+        "signature"
+      ],
+      "properties": {
+        "matched_template_id": {
+          "anyOf": [
+            {
+              "$ref": "mapping.schema.json#/$defs/template_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suggested_template_id": {
+          "$ref": "mapping.schema.json#/$defs/template_id"
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "Hash of the page's DOM skeleton; equal signatures suggest one template."
+        }
+      }
+    },
+    "samples_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config",
+        "profile"
+      ],
+      "properties": {
+        "config": {
+          "$ref": "job_config.schema.json"
+        },
+        "profile": {
+          "$ref": "connection_profile.schema.json"
+        },
+        "urls": {
+          "type": "array",
+          "items": {
+            "$ref": "job_config.schema.json#/$defs/http_url"
+          },
+          "minItems": 1,
+          "maxItems": 50,
+          "description": "Fetch exactly these pages instead of discovering targets."
+        },
+        "template_id": {
+          "allOf": [
+            {
+              "$ref": "mapping.schema.json#/$defs/template_id"
+            }
+          ],
+          "description": "Only pages that the active mapping of this template matches."
+        }
+      }
+    },
+    "price_on_page": {
+      "type": "string",
+      "enum": [
+        "shown",
+        "range",
+        "on_request",
+        "missing"
+      ]
+    }
+  }
+}

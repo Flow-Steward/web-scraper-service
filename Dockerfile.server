@@ -1,0 +1,47 @@
+# Server image (linux/amd64 only): Apify's Python + Playwright + Camoufox image, plus Chromium.
+# NOT built on the developer's Mac (arm64-only rule); build it on the Linux server:
+#   docker build --platform linux/amd64 -f Dockerfile.server -t web-scraper-service:server .
+#
+# Base: apify/actor-python-playwright-camoufox:3.13-1.62.0 (Python 3.13, Playwright 1.62.0, Camoufox fetched,
+# Xvfb + xvfb-run entrypoint), pinned to the linux/amd64 manifest of that tag as published 2026-11-09
+# (index digest sha256:f4738235202351ea2a2acd2b0d703aec01354073f15dd1e0337957073dac41a3).
+# The base's own user is "myuser" (Apify images); the service runs as that user, never as root.
+FROM --platform=linux/amd64 apify/actor-python-playwright-camoufox@sha256:a6449b9f6bb40229b4350b76c51bc16dabd35d016d64c5aed930b45106dd736b
+
+# The base points every Playwright browser at the Camoufox binary; Chromium must not inherit it.
+ENV APIFY_DEFAULT_BROWSER_PATH= \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    WSS_DATA_DIR=/data
+
+ARG APP_USER=myuser
+USER root
+WORKDIR /srv
+COPY requirements.lock /tmp/requirements.lock
+# Same pins as the local image (requirements.lock, hashes required). The base's Playwright must
+# be the locked 1.62.0. No headless shell (the service runs headed on Xvfb).
+RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.lock \
+ && python -c "import importlib.metadata as m; assert m.version('playwright') == '1.62.0', m.version('playwright')" \
+ && python -m playwright install --with-deps --no-shell chromium \
+ && python -c "from camoufox.fpgen_model import ensure_fpgen_model; ensure_fpgen_model()" \
+ && python -c "from browserforge.fingerprints import FingerprintGenerator; FingerprintGenerator().generate()" \
+ && mkdir -p /data && chown -R "${APP_USER}" /data /srv \
+ && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
+
+USER ${APP_USER}
+# Camoufox for this user (the release camoufox==0.5.9 pins, checked against its published digest)
+RUN python -m camoufox fetch
+
+COPY --chown=${APP_USER} contract /srv/contract
+COPY --chown=${APP_USER} app /srv/app
+COPY --chown=${APP_USER} scripts/entrypoint.sh /srv/scripts/entrypoint.sh
+COPY --chown=${APP_USER} scripts/protection_report.py /srv/scripts/protection_report.py
+COPY --chown=${APP_USER} NOTICE LICENSE /srv/
+
+EXPOSE 8080
+VOLUME ["/data"]
+# tini is PID 1 (signals, zombie browsers); our entrypoint starts Xvfb when no display is set
+ENTRYPOINT ["/usr/bin/tini", "--", "/srv/scripts/entrypoint.sh"]
+CMD ["python", "-m", "app"]

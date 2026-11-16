@@ -1,0 +1,10 @@
+{
+  "event_id": "evt_01JCXF5T6V7W8X9Y0Z1A2B3C4D",
+  "event_type": "run_completed",
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "resource_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "occurred_at": "2026-11-12T10:31:10Z",
+  "delivery_generation": 1,
+  "outcome": "complete",
+  "stop_reason": "finished"
+}

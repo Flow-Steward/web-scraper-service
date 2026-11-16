@@ -1,0 +1,145 @@
+{
+  "site": "lumen-shop.example",
+  "template_id": "spare_part",
+  "changed": true,
+  "active": {
+    "site": "lumen-shop.example",
+    "template_id": "spare_part",
+    "version": 2,
+    "status": "active",
+    "content_sha256": "140f6fcc7c1f15ca4ed76b397903db31537a9075036d6bba0fe0315a5c33a58b",
+    "created_at": "2026-11-12T09:41:52Z",
+    "superseded_at": null,
+    "origin": {
+      "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+      "mapping_request_id": "mrq_01JCXB1G0Z9Y8X7W6V5T4S3R2Q",
+      "platform_job_id": "job_c09e11b6f3",
+      "note": "Repair after price markup change"
+    },
+    "mapping": {
+      "schema_version": 1,
+      "template_id": "spare_part",
+      "label": "Spare part sheet",
+      "match": {
+        "url_patterns": [
+          "/ersatzteile/[^/?]+$"
+        ],
+        "selector": "section.part-sheet"
+      },
+      "fields": [
+        {
+          "name": "title",
+          "type": "text",
+          "required": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "section.part-sheet h2",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "trim"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "description",
+          "type": "html",
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "section.part-sheet .details",
+              "extract": "html"
+            }
+          ]
+        },
+        {
+          "name": "price",
+          "type": "price",
+          "required": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": ".part-price .amount",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "price",
+                  "decimal_separator": "comma"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "currency",
+          "type": "currency",
+          "required": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": ".part-price",
+              "extract": "attribute",
+              "attribute": "data-currency",
+              "transforms": [
+                {
+                  "op": "currency"
+                }
+              ]
+            },
+            {
+              "kind": "css",
+              "selector": ".part-price .amount",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "currency",
+                  "default_currency": "EUR"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "part_number",
+          "type": "text",
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "dd.part-no",
+              "extract": "text",
+              "transforms": [
+                {
+                  "op": "trim"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "image_urls",
+          "type": "image_url",
+          "multiple": true,
+          "sources": [
+            {
+              "kind": "css",
+              "selector": "section.part-sheet img",
+              "extract": "attribute",
+              "attribute": "src",
+              "transforms": [
+                {
+                  "op": "absolute_url"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resolved_mapping_request_ids": [
+    "mrq_01JCXB1G0Z9Y8X7W6V5T4S3R2Q"
+  ]
+}

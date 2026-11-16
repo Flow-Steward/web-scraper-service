@@ -1,0 +1,51 @@
+{
+  "items": [
+    {
+      "run_id": "run_01JCZB2D9F4GH6JK8LM0NP2QR4",
+      "state": "running",
+      "outcome": null,
+      "stop_reason": null,
+      "site": "lumen-shop.example",
+      "profile_name": "Residential proxy + CapSolver",
+      "created_at": "2026-11-13T07:01:12Z",
+      "finished_at": null,
+      "platform": {
+        "job_id": "job_0aa71e5c33",
+        "step_id": "start_run",
+        "loop_position": null,
+        "workflow_id": "wf_scrape_a_site_supplier",
+        "project_id": "prj_retail_pricing",
+        "account_id": "acc_4471",
+        "connection_id": "conn_scraper_residential"
+      },
+      "pages_fetched": 37,
+      "records_extracted": 35,
+      "required_fill_rate": 0.971,
+      "events_pending": 0
+    },
+    {
+      "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+      "state": "completed",
+      "outcome": "complete",
+      "stop_reason": "finished",
+      "site": "lumen-shop.example",
+      "profile_name": "Residential proxy + CapSolver",
+      "created_at": "2026-11-12T09:13:58Z",
+      "finished_at": "2026-11-12T10:31:09Z",
+      "platform": {
+        "job_id": "job_7f3c2a91e4b84d0f9c1a",
+        "step_id": "start_run",
+        "loop_position": null,
+        "workflow_id": "wf_scrape_a_site_lumen",
+        "project_id": "prj_retail_pricing",
+        "account_id": "acc_4471",
+        "connection_id": "conn_scraper_residential"
+      },
+      "pages_fetched": 1463,
+      "records_extracted": 1318,
+      "required_fill_rate": 0.996,
+      "events_pending": 0
+    }
+  ],
+  "next_cursor": "eyJjIjoiMjAyNi0xMS0xMlQwOToxMzo1OFoiLCJpIjoicnVuXzAxSkNYQTdRM001VlpbIn0"
+}

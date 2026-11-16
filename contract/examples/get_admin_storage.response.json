@@ -1,0 +1,102 @@
+{
+  "time": "2026-11-14T10:00:00Z",
+  "data_dir": "/data",
+  "volume": {
+    "total_bytes": 62671097856,
+    "free_bytes": 41237553152,
+    "used_bytes": 21433544704
+  },
+  "total_bytes": 21178122,
+  "kinds": {
+    "run_working_files": {
+      "bytes": 1048576,
+      "items": 4,
+      "oldest_at": "2026-11-12T08:31:02Z",
+      "active_items": 1,
+      "orphan_items": 0
+    },
+    "result_files": {
+      "bytes": 209715,
+      "items": 6,
+      "oldest_at": "2026-11-12T09:02:44Z",
+      "unfetched_items": 1,
+      "unfetched_bytes": 40960,
+      "active_items": 0,
+      "orphan_items": 0
+    },
+    "samples": {
+      "bytes": 11534336,
+      "items": 38,
+      "oldest_at": "2026-11-13T11:15:20Z",
+      "orphan_items": 0
+    },
+    "protection_screenshots": {
+      "bytes": 419430,
+      "items": 3,
+      "oldest_at": "2026-11-13T17:40:09Z"
+    },
+    "database": {
+      "bytes": 7966720,
+      "main_bytes": 3792896,
+      "wal_bytes": 4141192,
+      "shm_bytes": 32632,
+      "reclaimable_bytes": 1114112
+    },
+    "identities": {
+      "bytes": 2048,
+      "items": 1
+    },
+    "other": {
+      "bytes": 0,
+      "items": 0,
+      "oldest_at": null
+    }
+  },
+  "runs": {
+    "by_state": {
+      "queued": 0,
+      "running": 1,
+      "waiting_for_credentials": 0,
+      "stopping": 0,
+      "completed": 9,
+      "failed": 2
+    },
+    "total": 12,
+    "active": 1,
+    "oldest_finished_at": "2026-11-12T09:02:44Z"
+  },
+  "retention": {
+    "result_days": 14,
+    "job_record_days": 30,
+    "stored_pages_days": 7,
+    "samples_hours": 24,
+    "interval_seconds": 60.0
+  },
+  "last_cleanup": {
+    "automatic": {
+      "at": "2026-11-14T09:59:31Z",
+      "trigger": "automatic",
+      "removed": {
+        "run_working_files": {"items": 0, "bytes": 0},
+        "result_files": {"items": 0, "bytes": 0},
+        "run_records": {"items": 0, "bytes": 0},
+        "samples": {"items": 0, "bytes": 0},
+        "protection_screenshots": {"items": 0, "bytes": 0}
+      },
+      "bytes_freed": 0
+    },
+    "automatic_with_removals": {
+      "at": "2026-11-14T08:12:31Z",
+      "trigger": "automatic",
+      "removed": {
+        "run_working_files": {"items": 0, "bytes": 0},
+        "result_files": {"items": 0, "bytes": 0},
+        "run_records": {"items": 0, "bytes": 0},
+        "samples": {"items": 4, "bytes": 1210112},
+        "protection_screenshots": {"items": 1, "bytes": 139810}
+      },
+      "bytes_freed": 1349922
+    },
+    "manual": null
+  }
+}

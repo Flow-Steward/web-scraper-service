@@ -1,0 +1,59 @@
+# Flow Steward Web Scraper service, built on this machine from the public source.
+#
+#   1. Put this file and .env (from env.example / .env.example) in one folder.
+#   2. Fill .env: WSS_API_TOKEN and WSS_SECRETS_KEY (openssl rand -hex 32 for each).
+#   3. docker compose up -d
+#
+# The first `up` builds the image from the release tag below: about 10-15 minutes and about
+# 6 GB of disk. Nothing is pulled from a registry except the public base images the
+# Dockerfile names; the Camoufox browser is downloaded from the Camoufox project's official
+# release during the build.
+#
+# By default the service joins the Docker network of a Flow Steward Compact installation
+# (FS_DOCKER_NETWORK, default flow-steward_default), and Flow Steward reaches it at
+# http://web-scraper:8080. See the README for the host-port alternative.
+name: web-scraper
+
+services:
+  web-scraper:
+    build:
+      context: "https://github.com/Flow-Steward/web-scraper-service.git#v0.2.1"
+      target: runtime
+      args:
+        WSS_VERSION: "0.2.1"
+    # a local image name only: built here when missing, never pulled
+    image: web-scraper-service:0.2.1
+    pull_policy: never
+    env_file: .env
+    environment:
+      WSS_API_TOKEN: ${WSS_API_TOKEN:?set WSS_API_TOKEN in .env}
+      WSS_SECRETS_KEY: ${WSS_SECRETS_KEY:?set WSS_SECRETS_KEY in .env}
+    volumes:
+      - web-scraper-data:/data
+    networks:
+      - flow-steward
+    shm_size: "1gb"
+    mem_limit: 3g
+    restart: unless-stopped
+    stop_grace_period: 90s
+    # the container log is rotated: at most 5 files of 20 MB (a Linux server's default
+    # json-file driver never rotates by itself)
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request;r=urllib.request.Request('http://127.0.0.1:8080/health',headers={'Authorization':'Bearer '+os.environ['WSS_API_TOKEN']});urllib.request.urlopen(r,timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+networks:
+  flow-steward:
+    external: true
+    name: ${FS_DOCKER_NETWORK:-flow-steward_default}
+
+volumes:
+  web-scraper-data:

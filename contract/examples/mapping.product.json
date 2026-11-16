@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "template_id": "product",
+  "label": "Lamp product page",
+  "match": {
+    "url_patterns": [
+      "/produkt/[^/?]+$"
+    ],
+    "selector": "div.product-detail"
+  },
+  "fields": [
+    {
+      "name": "title",
+      "type": "text",
+      "required": true,
+      "multiple": false,
+      "sources": [
+        {
+          "kind": "jsonld",
+          "schema_type": "Product",
+          "path": "name",
+          "transforms": [
+            {
+              "op": "trim"
+            }
+          ]
+        },
+        {
+          "kind": "css",
+          "selector": "h1.product-title",
+          "extract": "text",
+          "transforms": [
+            {
+              "op": "trim"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "description",
+      "type": "html",
+      "required": false,
+      "multiple": false,
+      "sources": [
+        {
+          "kind": "css",
+          "selector": "div.product-description",
+          "extract": "html",
+          "transforms": [
+            {
+              "op": "html_clean"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "price",
+      "type": "price",
+      "required": true,
+      "multiple": false,
+      "sources": [
+        {
+          "kind": "jsonld",
+          "schema_type": "Product",
+          "path": "offers.price",
+          "transforms": [
+            {
+              "op": "price",
+              "decimal_separator": "dot"
+            }
+          ]
+        },
+        {
+          "kind": "css",
+          "selector": "span.price-current",
+          "extract": "text",
+          "transforms": [
+            {
+              "op": "price",
+              "decimal_separator": "comma"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "currency",
+      "type": "currency",
+      "required": true,
+      "multiple": false,
+      "sources": [
+        {
+          "kind": "jsonld",
+          "schema_type": "Product",
+          "path": "offers.priceCurrency",
+          "transforms": [
+            {
+              "op": "currency"
+            }
+          ]
+        },
+        {
+          "kind": "meta",
+          "name": "product:price:currency",
+          "transforms": [
+            {
+              "op": "currency"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "part_number",
+      "type": "text",
+      "required": false,
+      "multiple": false,
+      "sources": [
+        {
+          "kind": "jsonld",
+          "schema_type": "Product",
+          "path": "sku",
+          "transforms": [
+            {
+              "op": "trim"
+            }
+          ]
+        },
+        {
+          "kind": "css",
+          "selector": "span.sku",
+          "extract": "text",
+          "transforms": [
+            {
+              "op": "regex_extract",
+              "pattern": "Art\\.-Nr\\.\\s*([A-Z0-9-]+)",
+              "group": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "image_urls",
+      "type": "image_url",
+      "required": false,
+      "multiple": true,
+      "sources": [
+        {
+          "kind": "jsonld",
+          "schema_type": "Product",
+          "path": "image.*",
+          "transforms": [
+            {
+              "op": "absolute_url"
+            }
+          ]
+        },
+        {
+          "kind": "css",
+          "selector": "div.gallery img",
+          "extract": "attribute",
+          "attribute": "data-src",
+          "transforms": [
+            {
+              "op": "absolute_url"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

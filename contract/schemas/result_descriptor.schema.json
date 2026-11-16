@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/result_descriptor.schema.json",
+  "title": "Result descriptor",
+  "description": "What the workflow carries after `get_result`: the platform artifact handle plus the file's facts. The service's `GET /v1/runs/{id}/result` returns `$defs/service_result` (no artifact handle).",
+  "type": "object",
+  "required": [
+    "artifact_handle",
+    "run_id",
+    "format",
+    "file_name",
+    "size_bytes",
+    "record_count",
+    "sha256",
+    "templates",
+    "outcome",
+    "stop_reason",
+    "created_at"
+  ],
+  "properties": {
+    "artifact_handle": {
+      "type": "string",
+      "pattern": "^artifact:.+$",
+      "description": "Platform artifact handle written by `get_result`."
+    },
+    "run_id": {
+      "$ref": "run_summary.schema.json#/$defs/run_id"
+    },
+    "format": {
+      "$ref": "#/$defs/result_format"
+    },
+    "file_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9.-]+_run_[A-Za-z0-9]{1,64}\\.jsonl$"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "record_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sha256": {
+      "$ref": "run_summary.schema.json#/$defs/sha256_hex"
+    },
+    "templates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "template_id",
+          "record_count"
+        ],
+        "properties": {
+          "template_id": {
+            "$ref": "mapping.schema.json#/$defs/template_id"
+          },
+          "record_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "outcome": {
+      "$ref": "run_summary.schema.json#/$defs/outcome"
+    },
+    "stop_reason": {
+      "$ref": "run_summary.schema.json#/$defs/stop_reason"
+    },
+    "created_at": {
+      "$ref": "run_summary.schema.json#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "result_format": {
+      "type": "string",
+      "enum": [
+        "jsonl"
+      ]
+    },
+    "service_result": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "format",
+        "file_name",
+        "size_bytes",
+        "record_count",
+        "sha256",
+        "templates",
+        "outcome",
+        "stop_reason",
+        "created_at",
+        "expires_at",
+        "download_path"
+      ],
+      "properties": {
+        "run_id": {
+          "$ref": "run_summary.schema.json#/$defs/run_id"
+        },
+        "format": {
+          "$ref": "#/$defs/result_format"
+        },
+        "file_name": {
+          "type": "string",
+          "pattern": "^[a-z0-9.-]+_run_[A-Za-z0-9]{1,64}\\.jsonl$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "run_summary.schema.json#/$defs/sha256_hex"
+        },
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "template_id",
+              "record_count"
+            ],
+            "properties": {
+              "template_id": {
+                "$ref": "mapping.schema.json#/$defs/template_id"
+              },
+              "record_count": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "outcome": {
+          "$ref": "run_summary.schema.json#/$defs/outcome"
+        },
+        "stop_reason": {
+          "$ref": "run_summary.schema.json#/$defs/stop_reason"
+        },
+        "created_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "download_path": {
+          "type": "string",
+          "pattern": "^/v1/runs/run_[A-Za-z0-9]{1,64}/result/download$"
+        },
+        "csv": {
+          "$ref": "#/$defs/csv_file"
+        },
+        "fetched_at": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Added 2026-11-14. When the file's last byte first went out in a download answer (JSON Lines or CSV); `null` before. Only in `GET /v1/runs/{id}/result`."
+        }
+      }
+    },
+    "csv_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file_name",
+        "size_bytes",
+        "sha256",
+        "download_path"
+      ],
+      "description": "Added 2026-11-14. The same records as CSV (README 7.5): UTF-8 with BOM, `;`, CRLF.",
+      "properties": {
+        "file_name": {
+          "type": "string",
+          "pattern": "^[a-z0-9.-]+_run_[A-Za-z0-9]{1,64}\\.csv$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "run_summary.schema.json#/$defs/sha256_hex"
+        },
+        "download_path": {
+          "type": "string",
+          "pattern": "^/v1/runs/run_[A-Za-z0-9]{1,64}/result/download\\?format=csv$"
+        }
+      }
+    }
+  }
+}

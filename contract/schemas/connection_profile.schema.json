@@ -1,0 +1,589 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/connection_profile.schema.json",
+  "title": "Connection profile",
+  "description": "What the extension sends from the `scraper_profile` connection with a request: proxy tiers, the solver, the defaults and the webhook. The service URL and the service token are not part of it (they address the request). Fields marked `writeOnly` are secrets: used for the request, stored encrypted only by a job start or a resume, never returned, never logged.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "profile_name": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Display name of the connection; shown on the run page."
+    },
+    "proxy_tiers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/proxy_tier"
+      },
+      "maxItems": 3,
+      "default": [],
+      "description": "Up to three tiers, each `tier` value at most once; lower tiers are cheaper and tried first."
+    },
+    "solver": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/solver"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "defaults": {
+      "$ref": "job_config.schema.json#/$defs/job_settings"
+    },
+    "webhook": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/webhook"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "proxy_provider": {
+      "type": "string",
+      "enum": [
+        "generic",
+        "oxylabs",
+        "bright_data",
+        "decodo",
+        "custom_list"
+      ]
+    },
+    "proxy_protocol": {
+      "type": "string",
+      "enum": [
+        "http",
+        "https",
+        "socks5"
+      ]
+    },
+    "proxy_auth_mode": {
+      "type": "string",
+      "enum": [
+        "user_password",
+        "ip_allowlist"
+      ]
+    },
+    "proxy_session_mode": {
+      "type": "string",
+      "enum": [
+        "rotating",
+        "sticky"
+      ]
+    },
+    "solver_provider": {
+      "type": "string",
+      "enum": [
+        "capsolver",
+        "two_captcha",
+        "anti_captcha",
+        "capmonster_cloud"
+      ]
+    },
+    "solver_challenge_type": {
+      "type": "string",
+      "enum": [
+        "turnstile"
+      ],
+      "description": "Challenge types a solver handles. Version 1: `turnstile` only; later values are additive."
+    },
+    "country_code": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$",
+      "description": "ISO 3166-1 alpha-2."
+    },
+    "proxy_tier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "provider",
+        "auth_mode",
+        "session_mode"
+      ],
+      "properties": {
+        "tier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "provider": {
+          "$ref": "#/$defs/proxy_provider"
+        },
+        "protocol": {
+          "$ref": "#/$defs/proxy_protocol"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "auth_mode": {
+          "$ref": "#/$defs/proxy_auth_mode"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "writeOnly": true,
+          "x-secret": true
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "writeOnly": true,
+          "x-secret": true
+        },
+        "proxy_urls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "writeOnly": true,
+          "x-secret": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(https?|socks5)://[^\\s]+$",
+            "maxLength": 2048
+          },
+          "description": "For `custom_list`: one proxy URL per entry (`scheme://user:password@host:port`). The extension splits the connection's one-URL-per-line text."
+        },
+        "country": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/country_code"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "city": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_mode": {
+          "$ref": "#/$defs/proxy_session_mode"
+        },
+        "sticky_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1440,
+          "default": 10,
+          "description": "Lifetime of a sticky provider session; required when `session_mode` is `sticky`."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "custom_list"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "proxy_urls"
+            ]
+          },
+          "else": {
+            "required": [
+              "protocol",
+              "host",
+              "port"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "not": {
+                  "const": "custom_list"
+                }
+              },
+              "auth_mode": {
+                "const": "user_password"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "username",
+              "password"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "session_mode": {
+                "const": "sticky"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sticky_minutes"
+            ]
+          }
+        }
+      ]
+    },
+    "solver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "api_key"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/solver_provider"
+        },
+        "api_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "writeOnly": true,
+          "x-secret": true
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/http_url"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_solves_per_job": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "default": 20,
+          "description": "Spending guard, capped by `limits.max_solves_per_job`."
+        },
+        "challenge_types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/solver_challenge_type"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "default": [
+            "turnstile"
+          ]
+        }
+      }
+    },
+    "webhook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "signing_secret"
+      ],
+      "properties": {
+        "url": {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        },
+        "signing_secret": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 512,
+          "writeOnly": true,
+          "x-secret": true,
+          "description": "The secret of the platform's \"Signed webhook (HMAC)\" trigger; the HMAC key is its UTF-8 bytes."
+        }
+      },
+      "description": "Where events of the job are delivered. The webhook URL is exempt from the private-address refusal (the platform may be on a private network)."
+    },
+    "profile_summary": {
+      "type": "object",
+      "required": [
+        "proxy_tiers",
+        "solver"
+      ],
+      "description": "The profile as the service shows it back: no secrets.",
+      "properties": {
+        "profile_name": {
+          "type": "string"
+        },
+        "proxy_tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "tier",
+              "provider",
+              "auth_mode",
+              "session_mode"
+            ],
+            "properties": {
+              "tier": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "provider": {
+                "$ref": "#/$defs/proxy_provider"
+              },
+              "protocol": {
+                "$ref": "#/$defs/proxy_protocol"
+              },
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer"
+              },
+              "auth_mode": {
+                "$ref": "#/$defs/proxy_auth_mode"
+              },
+              "country": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/country_code"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "city": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "session_mode": {
+                "$ref": "#/$defs/proxy_session_mode"
+              },
+              "sticky_minutes": {
+                "type": "integer"
+              },
+              "proxy_url_count": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "solver": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "provider",
+                "max_solves_per_job"
+              ],
+              "properties": {
+                "provider": {
+                  "$ref": "#/$defs/solver_provider"
+                },
+                "max_solves_per_job": {
+                  "type": "integer"
+                },
+                "challenge_types": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/solver_challenge_type"
+                  }
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "webhook_url": {
+          "anyOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/http_url"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "proxy_test_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "tier"
+      ],
+      "properties": {
+        "profile": {
+          "$ref": "#"
+        },
+        "tier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "target_url": {
+          "allOf": [
+            {
+              "$ref": "job_config.schema.json#/$defs/http_url"
+            }
+          ],
+          "description": "Optional page to load through the tier; default: the service's IP echo endpoint."
+        }
+      }
+    },
+    "proxy_test_response": {
+      "allOf": [
+        {
+          "$ref": "error.schema.json#/$defs/test_result"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "tier",
+        "exit_ip",
+        "country"
+      ],
+      "properties": {
+        "ok": {},
+        "checked_at": {},
+        "latency_ms": {},
+        "code": {},
+        "message": {},
+        "tier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "exit_ip": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 45
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "country": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/country_code"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "city": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_http_status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "solver_test_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile"
+      ],
+      "properties": {
+        "profile": {
+          "$ref": "#"
+        }
+      }
+    },
+    "solver_test_response": {
+      "allOf": [
+        {
+          "$ref": "error.schema.json#/$defs/test_result"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "provider",
+        "balance",
+        "balance_currency"
+      ],
+      "properties": {
+        "ok": {},
+        "checked_at": {},
+        "latency_ms": {},
+        "code": {},
+        "message": {},
+        "provider": {
+          "$ref": "#/$defs/solver_provider"
+        },
+        "balance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "balance_currency": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

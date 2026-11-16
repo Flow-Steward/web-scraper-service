@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/record.schema.json",
+  "title": "Result record",
+  "description": "One line of the result file (`*.jsonl`): one JSON object, UTF-8, no BOM, terminated by LF. Readers must ignore unknown properties.",
+  "type": "object",
+  "required": [
+    "record_id",
+    "source_url",
+    "site",
+    "template_id",
+    "mapping_version",
+    "item_index",
+    "extracted_at",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "record_id": {
+      "$ref": "#/$defs/record_id"
+    },
+    "source_url": {
+      "allOf": [
+        {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        }
+      ],
+      "description": "Canonical URL of the page (README \"Canonical URL\"). Since 2026-11-14: the page's declared canonical address (`<link rel=\"canonical\">` or the `Link` header, same site) when the run trusts canonicals; the address loaded is then `requested_url`."
+    },
+    "requested_url": {
+      "allOf": [
+        {
+          "$ref": "job_config.schema.json#/$defs/http_url"
+        }
+      ],
+      "description": "Present only when the URL as discovered or listed differs from `source_url` (redirect or normalisation)."
+    },
+    "source_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Present only when the job's `urls` entry carried a `key`."
+    },
+    "site": {
+      "$ref": "run_summary.schema.json#/$defs/site"
+    },
+    "template_id": {
+      "$ref": "mapping.schema.json#/$defs/template_id"
+    },
+    "mapping_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "item_index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Position of the item on the page: 0 for a page without variants; the variant's position when the mapping has `variants` (one record per variant)."
+    },
+    "variant": {
+      "type": "object",
+      "required": [
+        "index",
+        "count",
+        "source",
+        "options"
+      ],
+      "additionalProperties": false,
+      "description": "Added 2026-11-13. Present on a variant's record: its position among the page's variants (`index` = `item_index`), how many the page has, the variant source kind, the option values (name → value, the shop's words) and the shop's variant id when it has one.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "embedded_json",
+            "shop_json",
+            "jsonld",
+            "microdata"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "propertyNames": {
+            "maxLength": 100
+          }
+        }
+      }
+    },
+    "price_status": {
+      "$ref": "#/$defs/price_status",
+      "description": "Added 2026-11-14. Present on every record of a template with a field of type `price` (the field named `price`, else the first `price` field): `shown` — the field has a value; `range` — the page showed a range, the field holds its lowest value and `price_max` the highest; `on_request` — no price and the page says it is given on request (an empty price block with request wording, or a schema.org offer without a price); `missing` — no price and no sign why (README 6.5)."
+    },
+    "price_max": {
+      "type": "number",
+      "description": "Added 2026-11-14. With `price_status: range` only: the highest value of the range."
+    },
+    "regular_price": {
+      "type": "number",
+      "description": "Added 2026-11-14. Present when the page (or the variant) shows a sale: the old, struck-through or regular price; `data`'s price field holds the current price. From a variant's own regular price (WooCommerce `display_regular_price`, Shopify `compare_at_price`, Store API `regular_price`), else schema.org `priceSpecification` with `priceType` StrikethroughPrice/ListPrice, else the struck-through amount of the product's price block (`del`, `s`, `strike`, line-through, `old-price`, `price-old`, `was`, `compare-at` …) — when this record's price is the page's current price (README 6.5)."
+    },
+    "on_sale": {
+      "type": "boolean",
+      "const": true,
+      "description": "Added 2026-11-14. Present (true) with `regular_price`."
+    },
+    "currency_from_default": {
+      "type": "boolean",
+      "const": true,
+      "description": "Added 2026-11-14. Present (true) when a `currency` field holds the `default_currency` of its `currency` transform because the page names no currency. A default currency on a record without a price is dropped (the field is `null`); when the page names a currency elsewhere (schema.org `priceCurrency`, `product:price:currency`, a price element), that one is used instead (README 6.5)."
+    },
+    "extracted_at": {
+      "$ref": "run_summary.schema.json#/$defs/timestamp"
+    },
+    "data": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "mapping.schema.json#/$defs/field_name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/field_value"
+      },
+      "description": "Every field of the template's mapping is present: `null` (or `[]` for `multiple`) when not found."
+    }
+  },
+  "$defs": {
+    "record_id": {
+      "type": "string",
+      "pattern": "^rec_[0-9a-f]{32}$"
+    },
+    "scalar_value": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ]
+    },
+    "field_value": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/scalar_value"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scalar_value"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Added 2026-11-14: a `spec_table` field (name → value)."
+        }
+      ]
+    },
+    "price_status": {
+      "type": "string",
+      "enum": [
+        "shown",
+        "range",
+        "on_request",
+        "missing"
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "ok": false,
+  "checked_at": "2026-11-12T08:44:31Z",
+  "latency_ms": 20000,
+  "tier": 1,
+  "code": "proxy_timeout",
+  "message": "No answer through dc-proxy.example.net:3128 within 20 s",
+  "exit_ip": null,
+  "country": null,
+  "city": null,
+  "target_http_status": null
+}

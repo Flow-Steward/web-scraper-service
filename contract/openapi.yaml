@@ -1,0 +1,1302 @@
+# OpenAPI 3.1 contract of the web-scraper-service. Shapes are normative; semantics are in README.md.
+openapi: "3.1.0"
+info:
+  title: "Web Scraper Service API"
+  version: "1.0.0-contract"
+  summary: "Contract between the Flow Steward web-scraper extension and the scraper service."
+  description: "Semantics are in `contract/README.md`; this file and `schemas/*.json` are normative for shapes. All enums are defined once in `schemas/` and referenced here."
+  license:
+    name: "Apache-2.0"
+    identifier: "Apache-2.0"
+jsonSchemaDialect: "https://json-schema.org/draft/2020-12/schema"
+servers:
+  - url: "{base_url}"
+    variables:
+      base_url:
+        default: "http://web-scraper:8080"
+        description: "The service address configured in the `scraper_profile` connection."
+security:
+  - bearer: []
+tags:
+  - name: "service"
+  - name: "config"
+  - name: "setup"
+  - name: "mappings"
+  - name: "runs"
+  - name: "results"
+  - name: "events"
+  - name: "admin"
+paths:
+  "/health":
+    get:
+      operationId: "getHealth"
+      tags:
+        - "service"
+      summary: "Liveness, versions, browsers, limits, protection settings"
+      description: "Requires the bearer token, so the connection test checks address and token in one call. `status` is `degraded` when the job-secret key is missing, free disk is below 2 GiB, or the browser named by the image's configuration is missing; `problems` says which."
+      responses:
+        "200":
+          description: "Service state"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/job_config.schema.json#/$defs/service_health"
+              examples:
+                get_health_response:
+                  externalValue: "./examples/get_health.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "unauthorized"
+        - "internal_error"
+  "/v1/config/validate":
+    post:
+      operationId: "validateConfig"
+      tags:
+        - "config"
+      summary: "Merge the layers and check them against the limits"
+      description: "Merges `run_inputs` → `site_settings` → `profile.defaults` → schema defaults, applies the service limits and the protection rules. Always 200 for a well-formed body; problems are in `errors` / `warnings`. Pure: no state is written. Secrets in `profile` are checked for presence only."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/job_config.schema.json#/$defs/validate_request"
+            examples:
+              post_config_validate_request:
+                externalValue: "./examples/post_config_validate.request.json"
+              post_config_validate_request_invalid:
+                externalValue: "./examples/post_config_validate.request.invalid.json"
+      responses:
+        "200":
+          description: "Merged configuration or field errors"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/job_config.schema.json#/$defs/validate_response"
+              examples:
+                post_config_validate_response:
+                  externalValue: "./examples/post_config_validate.response.json"
+                post_config_validate_response_invalid:
+                  externalValue: "./examples/post_config_validate.response.invalid.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/analyze":
+    post:
+      operationId: "analyzeSite"
+      tags:
+        - "setup"
+      summary: "Sitemap, JavaScript need, protection, robots, recommended strategy"
+      description: "Fetches robots.txt, the sitemap (counting up to 100,000 URLs) and the start page over HTTP and, when needed, a browser, through the profile's tiers. Takes up to 120 s. Pure: nothing is stored. Added 2026-11-13: once the protection route fails for the host, robots.txt and sitemaps are read over plain HTTP only (no second route) and `warnings[]` carries `protection_not_passed` (README 2)."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/analysis.schema.json#/$defs/analyze_request"
+            examples:
+              post_analyze_request:
+                externalValue: "./examples/post_analyze.request.json"
+      responses:
+        "200":
+          description: "Analysis"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/analysis.schema.json"
+              examples:
+                post_analyze_response:
+                  externalValue: "./examples/post_analyze.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/proxies/test":
+    post:
+      operationId: "testProxy"
+      tags:
+        - "setup"
+      summary: "One request through a proxy tier"
+      description: "Returns exit IP and country. A failed check is `ok: false` with a `code`, not an HTTP error."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/connection_profile.schema.json#/$defs/proxy_test_request"
+            examples:
+              post_proxies_test_request:
+                externalValue: "./examples/post_proxies_test.request.json"
+      responses:
+        "200":
+          description: "Test result"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/connection_profile.schema.json#/$defs/proxy_test_response"
+              examples:
+                post_proxies_test_response:
+                  externalValue: "./examples/post_proxies_test.response.json"
+                post_proxies_test_response_failed:
+                  externalValue: "./examples/post_proxies_test.response.failed.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/solvers/test":
+    post:
+      operationId: "testSolver"
+      tags:
+        - "setup"
+      summary: "Solver key check and balance"
+      description: "A failed check is `ok: false` with a `code`. `balance` is null when the provider reports none."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/connection_profile.schema.json#/$defs/solver_test_request"
+            examples:
+              post_solvers_test_request:
+                externalValue: "./examples/post_solvers_test.request.json"
+      responses:
+        "200":
+          description: "Test result"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/connection_profile.schema.json#/$defs/solver_test_response"
+              examples:
+                post_solvers_test_response:
+                  externalValue: "./examples/post_solvers_test.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/samples":
+    post:
+      operationId: "fetchSamples"
+      tags:
+        - "mappings"
+      summary: "Fetch a few target pages"
+      description: "Fetches up to `config.sample_count` target pages (or exactly `urls`), budget 40 fetched pages; returns distilled HTML, JSON-LD, meta and a template hint. The raw pages are kept for `retention.samples_hours` under `sample_id`. Added 2026-11-13: once a URL of a host fails the protection route, nothing more of that host is fetched in the call; the answer comes at once with `stopped` and a `protection_not_passed` warning (README 2)."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/samples.schema.json#/$defs/samples_request"
+            examples:
+              post_samples_request:
+                externalValue: "./examples/post_samples.request.json"
+      responses:
+        "200":
+          description: "Samples"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/samples.schema.json"
+              examples:
+                post_samples_response:
+                  externalValue: "./examples/post_samples.response.json"
+                post_samples_response_stopped:
+                  summary: "Added 2026-11-13. The host failed the protection route: stopped at once, `protection_not_passed`"
+                  externalValue: "./examples/post_samples.response.stopped.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/mappings/test":
+    post:
+      operationId: "testMapping"
+      tags:
+        - "mappings"
+      summary: "Apply candidate mappings to stored samples"
+      description: "Pure: nothing is stored. The pass rule is in the README (\"Mapping test\"). Added 2026-11-13: `templates[].empty_fields` and a `fields_never_filled` warning name fields that no matched sample filled. Added 2026-11-14: `templates[].failures[]` (`price_not_extracted`, `variants_not_used`, also in `warnings[]`) fail the template; sample results carry `price_on_page` and `price_status`."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/mapping_test.schema.json#/$defs/request"
+            examples:
+              post_mappings_test_request:
+                externalValue: "./examples/post_mappings_test.request.json"
+      responses:
+        "200":
+          description: "Per-field results"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/mapping_test.schema.json#/$defs/response"
+              examples:
+                post_mappings_test_response:
+                  externalValue: "./examples/post_mappings_test.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "sample_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/sites":
+    get:
+      operationId: "listSites"
+      tags:
+        - "mappings"
+      summary: "Sites that have mappings (for `export_mappings`)"
+      description: "Paginated, ordered by `site`."
+      parameters:
+        - "$ref": "#/components/parameters/cursor"
+        - "$ref": "#/components/parameters/limit"
+      responses:
+        "200":
+          description: "Sites"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/mapping.schema.json#/$defs/site_list"
+              examples:
+                get_sites_response:
+                  externalValue: "./examples/get_sites.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_cursor"
+        - "service_unavailable"
+        - "unauthorized"
+        - "validation_failed"
+  "/v1/sites/{site}/mappings":
+    get:
+      operationId: "getSiteMappings"
+      tags:
+        - "mappings"
+      summary: "Mapping versions per template of a site"
+      description: "Unknown site → 200 with `templates: []`."
+      parameters:
+        - "$ref": "#/components/parameters/site"
+        - name: "template_id"
+          in: "query"
+          required: false
+          schema:
+            "$ref": "./schemas/mapping.schema.json#/$defs/template_id"
+        - name: "versions"
+          in: "query"
+          required: false
+          schema:
+            "$ref": "./schemas/mapping.schema.json#/$defs/versions_view"
+        - name: "include_content"
+          in: "query"
+          required: false
+          schema:
+            type: "boolean"
+            default: true
+      responses:
+        "200":
+          description: "Templates and versions"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/mapping.schema.json#/$defs/site_mappings"
+              examples:
+                get_site_mappings_response:
+                  externalValue: "./examples/get_site_mappings.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "service_unavailable"
+        - "unauthorized"
+        - "validation_failed"
+    put:
+      operationId: "activateMapping"
+      tags:
+        - "mappings"
+      summary: "Activate a mapping for one template"
+      description: "Guarded by `expected_version`; activating content equal to the active version is a no-op (`changed: false`). See README \"Mapping versions\"."
+      parameters:
+        - "$ref": "#/components/parameters/site"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/mapping.schema.json#/$defs/activate_request"
+            examples:
+              put_site_mappings_request:
+                externalValue: "./examples/put_site_mappings.request.json"
+      responses:
+        "200":
+          description: "Active version"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/mapping.schema.json#/$defs/activate_response"
+              examples:
+                put_site_mappings_response:
+                  externalValue: "./examples/put_site_mappings.response.json"
+        "409":
+          description: "`mapping_version_conflict`"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/error.schema.json"
+              examples:
+                put_site_mappings_response_conflict:
+                  externalValue: "./examples/put_site_mappings.response.conflict.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "mapping_version_conflict"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/runs":
+    post:
+      operationId: "startRun"
+      tags:
+        - "runs"
+      summary: "Start a job (idempotent)"
+      description: "Requires `Idempotency-Key`. New key → 201 and a new run. Same key and same body (fingerprint of `config` + `platform`) → 200 with the existing run, whatever its state. Same key, other body → 409 `idempotency_key_reused`."
+      parameters:
+        - "$ref": "#/components/parameters/idempotency_key"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/run_summary.schema.json#/$defs/run_create_request"
+            examples:
+              post_runs_request:
+                externalValue: "./examples/post_runs.request.json"
+      responses:
+        "201":
+          description: "Created"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json"
+              examples:
+                post_runs_response:
+                  externalValue: "./examples/post_runs.response.json"
+          headers:
+            Location:
+              description: "`/v1/runs/{run_id}`"
+              schema:
+                type: "string"
+        "200":
+          description: "Repeated start: the existing run"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json"
+          headers:
+            Location:
+              description: "`/v1/runs/{run_id}`"
+              schema:
+                type: "string"
+        "409":
+          description: "`idempotency_key_reused`"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/error.schema.json"
+              examples:
+                post_runs_response_conflict:
+                  externalValue: "./examples/post_runs.response.conflict.json"
+          headers:
+            Location:
+              description: "`/v1/runs/{run_id}`"
+              schema:
+                type: "string"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "idempotency_key_invalid"
+        - "idempotency_key_required"
+        - "idempotency_key_reused"
+        - "internal_error"
+        - "invalid_json"
+        - "queue_full"
+        - "site_busy"
+        - "request_too_large"
+        - "secrets_key_unavailable"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+    get:
+      operationId: "listRuns"
+      tags:
+        - "runs"
+      summary: "List runs, newest first"
+      description: "Paginated."
+      parameters:
+        - "$ref": "#/components/parameters/cursor"
+        - "$ref": "#/components/parameters/limit"
+        - name: "state"
+          in: "query"
+          required: false
+          schema:
+            "$ref": "./schemas/run_summary.schema.json#/$defs/run_state"
+        - name: "site"
+          in: "query"
+          required: false
+          schema:
+            "$ref": "./schemas/run_summary.schema.json#/$defs/site"
+        - name: "project_id"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+        - name: "connection_id"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+        - name: "platform_job_id"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Runs"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json#/$defs/run_list"
+              examples:
+                get_runs_response:
+                  externalValue: "./examples/get_runs.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_cursor"
+        - "service_unavailable"
+        - "unauthorized"
+        - "validation_failed"
+  "/v1/runs/{run_id}":
+    get:
+      operationId: "getRun"
+      tags:
+        - "runs"
+      summary: "State, outcome, templates, counters, events, errors"
+      parameters:
+        - "$ref": "#/components/parameters/run_id"
+      responses:
+        "200":
+          description: "Run"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json"
+              examples:
+                get_run_response:
+                  externalValue: "./examples/get_run.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "run_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+  "/v1/runs/{run_id}/unextracted":
+    get:
+      operationId: "listUnextracted"
+      tags:
+        - "runs"
+      summary: "URLs that ended without a record"
+      description: "`Accept: application/json` (default): paginated, ordered by `url`. `Accept: application/x-ndjson`: the whole list streamed, one `unextracted_page` per line, no pagination (`cursor` and `limit` ignored); file name `<site>_<run_id>_unextracted.jsonl`. While the run is not final the list is a snapshot."
+      parameters:
+        - "$ref": "#/components/parameters/run_id"
+        - "$ref": "#/components/parameters/cursor"
+        - "$ref": "#/components/parameters/limit"
+        - name: "reason"
+          in: "query"
+          required: false
+          schema:
+            "$ref": "./schemas/run_summary.schema.json#/$defs/unextracted_reason"
+        - name: "template_id"
+          in: "query"
+          required: false
+          schema:
+            "$ref": "./schemas/mapping.schema.json#/$defs/template_id"
+      responses:
+        "200":
+          description: "Unextracted URLs"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json#/$defs/unextracted_list"
+              examples:
+                get_run_unextracted_response:
+                  externalValue: "./examples/get_run_unextracted.response.json"
+            "application/x-ndjson":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json#/$defs/unextracted_page"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_cursor"
+        - "not_acceptable"
+        - "run_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+  "/v1/runs/{run_id}/stop":
+    post:
+      operationId: "stopRun"
+      tags:
+        - "runs"
+      summary: "Stop fetching and finish the job"
+      description: "`queued`/`running`/`waiting_for_credentials` → `stopping` (→ `completed`, `stop_reason: stopped`). In `stopping` or a final state: 200 with the current state, nothing changes."
+      parameters:
+        - "$ref": "#/components/parameters/run_id"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/run_summary.schema.json#/$defs/run_stop_request"
+            examples:
+              post_run_stop_request:
+                externalValue: "./examples/post_run_stop.request.json"
+      responses:
+        "200":
+          description: "Run"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json"
+              examples:
+                post_run_stop_response:
+                  externalValue: "./examples/post_run_stop.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "run_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/runs/{run_id}/resume":
+    post:
+      operationId: "resumeRun"
+      tags:
+        - "runs"
+      summary: "Send the job's secrets again"
+      description: "Replaces the stored secrets still kept for the run's state. `waiting_for_credentials` → `running`; in any other state the secrets are replaced (signing secret always, proxy/solver secrets only before a final state) and the state is unchanged. Pending deliveries are retried at once."
+      parameters:
+        - "$ref": "#/components/parameters/run_id"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/run_summary.schema.json#/$defs/run_resume_request"
+            examples:
+              post_run_resume_request:
+                externalValue: "./examples/post_run_resume.request.json"
+      responses:
+        "200":
+          description: "Run"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json"
+              examples:
+                post_run_resume_response:
+                  externalValue: "./examples/post_run_resume.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "run_not_found"
+        - "secrets_key_unavailable"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/runs/{run_id}/recollect":
+    post:
+      operationId: "recollectRun"
+      tags:
+        - "runs"
+      summary: "Added 2026-11-14. Collect a finished run's missed pages again in a new linked run"
+      description: "Starts a new run (201, `Location`) over only the parent's unextracted URLs whose reason is in `reasons` (default `fetch_failed`, `blocked`, `incomplete`, `no_template`, `template_failed`, `stopped`): the parent's config in `url_list` mode with each entry's `key` kept, no mapping rebuild, the site's active mappings, the caller's `profile` and `platform`. The new run has its own result; `recollect_of` links it to the parent, the parent's `recollected_by` lists it. Same `Idempotency-Key` rules as `POST /v1/runs` (README 4.10, 5)."
+      parameters:
+        - "$ref": "#/components/parameters/run_id"
+        - "$ref": "#/components/parameters/idempotency_key"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/run_summary.schema.json#/$defs/run_recollect_request"
+            examples:
+              post_run_recollect_request:
+                externalValue: "./examples/post_run_recollect.request.json"
+      responses:
+        "201":
+          description: "The new run (queued)"
+          headers:
+            Location:
+              schema:
+                type: "string"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json"
+        "200":
+          description: "Replay: the run created with this Idempotency-Key"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/run_summary.schema.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "idempotency_key_invalid"
+        - "idempotency_key_required"
+        - "idempotency_key_reused"
+        - "internal_error"
+        - "invalid_json"
+        - "nothing_to_recollect"
+        - "queue_full"
+        - "request_too_large"
+        - "run_not_finished"
+        - "run_not_found"
+        - "secrets_key_unavailable"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/runs/{run_id}/result":
+    get:
+      operationId: "getResult"
+      tags:
+        - "results"
+      summary: "Result descriptor"
+      parameters:
+        - "$ref": "#/components/parameters/run_id"
+      responses:
+        "200":
+          description: "Descriptor"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/result_descriptor.schema.json#/$defs/service_result"
+              examples:
+                get_run_result_response:
+                  externalValue: "./examples/get_run_result.response.json"
+        "409":
+          description: "`result_not_ready` / `result_not_available`"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/error.schema.json"
+              examples:
+                get_run_result_response_not_ready:
+                  externalValue: "./examples/get_run_result.response.not_ready.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "result_expired"
+        - "result_not_available"
+        - "result_not_ready"
+        - "run_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+  "/v1/runs/{run_id}/result/download":
+    get:
+      operationId: "downloadResult"
+      tags:
+        - "results"
+      summary: "The result file, streamed"
+      description: "200 with the whole file, or 206 for one byte range (`Range: bytes=a-b`). Multi-range requests get the whole file (200). `ETag` is the quoted SHA-256 hex; `If-Range` and `If-None-Match` are honoured. Headers: `Content-Type: application/x-ndjson`, `Content-Length`, `Accept-Ranges: bytes`, `Content-Disposition: attachment; filename=\"<file_name>\"`, `Repr-Digest: sha-256=:<base64>:`. Added 2026-11-14: `format=csv` serves the same records as CSV (README 7.5) with the CSV file's own ETag, digest and size (`csv` in the descriptor), `Content-Type: text/csv; charset=utf-8`. Sending the last byte in either format marks the result fetched (README 16.3)."
+      parameters:
+        - "$ref": "#/components/parameters/run_id"
+        - name: "format"
+          in: "query"
+          required: false
+          description: "Added 2026-11-14. `jsonl` (default) or `csv`; anything else is `422 validation_failed`."
+          schema:
+            type: "string"
+            enum:
+              - "jsonl"
+              - "csv"
+            default: "jsonl"
+        - name: "Range"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            pattern: "^bytes=[0-9]*-[0-9]*(,.*)?$"
+      responses:
+        "200":
+          description: "Whole file; every line is a record (or, with `format=csv`, the CSV file)"
+          content:
+            "application/x-ndjson":
+              schema:
+                "$ref": "./schemas/record.schema.json"
+            "text/csv":
+              schema:
+                type: "string"
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Content-Disposition:
+              "$ref": "#/components/headers/Content-Disposition"
+            Accept-Ranges:
+              "$ref": "#/components/headers/Accept-Ranges"
+            Repr-Digest:
+              "$ref": "#/components/headers/Repr-Digest"
+        "206":
+          description: "Requested byte range (may cut lines)"
+          content:
+            "application/x-ndjson":
+              schema:
+                "$ref": "./schemas/record.schema.json"
+            "text/csv":
+              schema:
+                type: "string"
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Content-Disposition:
+              "$ref": "#/components/headers/Content-Disposition"
+            Accept-Ranges:
+              "$ref": "#/components/headers/Accept-Ranges"
+            Repr-Digest:
+              "$ref": "#/components/headers/Repr-Digest"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "range_not_satisfiable"
+        - "result_expired"
+        - "result_not_available"
+        - "result_not_ready"
+        - "run_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+        - "validation_failed"
+  "/v1/screenshots/{screenshot_id}":
+    get:
+      operationId: "getScreenshot"
+      tags:
+        - "setup"
+      summary: "Added 2026-11-13. A screenshot kept by analysis or samples with `debug: true`"
+      description: "The page after the last protection-route step (PNG, at most 4 MiB), referenced by `protection_trace[].screenshot_id`; kept as long as samples (`retention.samples_hours`)."
+      parameters:
+        - name: "screenshot_id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+            pattern: "^shot_[A-Za-z0-9]{1,64}$"
+      responses:
+        "200":
+          description: "PNG image"
+          content:
+            "image/png":
+              schema:
+                type: "string"
+                format: "binary"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "screenshot_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+  "/v1/mapping-requests/{mapping_request_id}":
+    get:
+      operationId: "getMappingRequest"
+      tags:
+        - "mappings"
+      summary: "Samples, reason, previous mapping and its version, failures"
+      parameters:
+        - "$ref": "#/components/parameters/mapping_request_id"
+      responses:
+        "200":
+          description: "Mapping request"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/mapping_request.schema.json"
+              examples:
+                get_mapping_request_response:
+                  externalValue: "./examples/get_mapping_request.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "mapping_request_not_found"
+        - "service_unavailable"
+        - "unauthorized"
+  "/v1/mapping-requests/{mapping_request_id}/fail":
+    post:
+      operationId: "failMappingRequest"
+      tags:
+        - "mappings"
+      summary: "Report that no passing mapping was built"
+      description: "Closes an `open` request as `failed` and counts one repair. Repeating it on a `failed` request returns it unchanged (200); on `resolved`, `expired` or `cancelled` → 409 `mapping_request_closed`."
+      parameters:
+        - "$ref": "#/components/parameters/mapping_request_id"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/mapping_request.schema.json#/$defs/fail_request"
+            examples:
+              post_mapping_request_fail_request:
+                externalValue: "./examples/post_mapping_request_fail.request.json"
+      responses:
+        "200":
+          description: "Mapping request"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/mapping_request.schema.json"
+              examples:
+                post_mapping_request_fail_response:
+                  externalValue: "./examples/post_mapping_request_fail.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "mapping_request_closed"
+        - "mapping_request_not_found"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/events/{event_id}/claim":
+    post:
+      operationId: "claimEvent"
+      tags:
+        - "events"
+      summary: "Reserve an event for one handler run"
+      description: "See README \"Events\". Repeated by the same `claimant.job_id` while its claim is current → 200 with the same `claim_id`."
+      parameters:
+        - "$ref": "#/components/parameters/event_id"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/event.schema.json#/$defs/claim_request"
+            examples:
+              post_event_claim_request:
+                externalValue: "./examples/post_event_claim.request.json"
+      responses:
+        "200":
+          description: "Claim"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/event.schema.json#/$defs/claim_response"
+              examples:
+                post_event_claim_response:
+                  externalValue: "./examples/post_event_claim.response.json"
+        "409":
+          description: "`event_already_claimed`, `event_already_handled`, `event_stale`"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/error.schema.json"
+              examples:
+                post_event_claim_response_already_claimed:
+                  externalValue: "./examples/post_event_claim.response.already_claimed.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "event_already_claimed"
+        - "event_already_handled"
+        - "event_not_found"
+        - "event_stale"
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/events/{event_id}/stage":
+    post:
+      operationId: "recordEventStage"
+      tags:
+        - "events"
+      summary: "Record a stage of the handling"
+      description: "Needs the current `claim_id`; refreshes the claim's `expires_at`. Recording a stage that is already recorded → 200, unchanged."
+      parameters:
+        - "$ref": "#/components/parameters/event_id"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/event.schema.json#/$defs/stage_request"
+            examples:
+              post_event_stage_request:
+                externalValue: "./examples/post_event_stage.request.json"
+      responses:
+        "200":
+          description: "Event"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/event.schema.json#/$defs/event_record"
+              examples:
+                post_event_stage_response:
+                  externalValue: "./examples/post_event_stage.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "claim_superseded"
+        - "event_already_handled"
+        - "event_not_found"
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "stage_out_of_order"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/events/{event_id}/complete":
+    post:
+      operationId: "completeEvent"
+      tags:
+        - "events"
+      summary: "Mark the event handled"
+      description: "Needs the current `claim_id`. Repeated with the same `claim_id` on a `handled` event → 200, unchanged."
+      parameters:
+        - "$ref": "#/components/parameters/event_id"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/event.schema.json#/$defs/complete_request"
+            examples:
+              post_event_complete_request:
+                externalValue: "./examples/post_event_complete.request.json"
+      responses:
+        "200":
+          description: "Event"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/event.schema.json#/$defs/event_record"
+              examples:
+                post_event_complete_response:
+                  externalValue: "./examples/post_event_complete.response.json"
+        "409":
+          description: "`claim_superseded`"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/error.schema.json"
+              examples:
+                post_event_complete_response_superseded:
+                  externalValue: "./examples/post_event_complete.response.superseded.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "claim_superseded"
+        - "event_not_found"
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/events/{event_id}/resend":
+    post:
+      operationId: "resendEvent"
+      tags:
+        - "events"
+      summary: "Revoke the current claim and deliver again"
+      description: "Operator action. Not idempotent unless `expected_generation` is given."
+      parameters:
+        - "$ref": "#/components/parameters/event_id"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/event.schema.json#/$defs/resend_request"
+            examples:
+              post_event_resend_request:
+                externalValue: "./examples/post_event_resend.request.json"
+      responses:
+        "200":
+          description: "Event, now `pending` with the next generation"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/event.schema.json#/$defs/event_record"
+              examples:
+                post_event_resend_response:
+                  externalValue: "./examples/post_event_resend.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "event_claim_live"
+        - "event_generation_conflict"
+        - "event_not_found"
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "secrets_key_unavailable"
+        - "service_unavailable"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+  "/v1/admin/storage":
+    get:
+      operationId: "getStorage"
+      tags:
+        - "admin"
+      summary: "Added 2026-11-14. Disk use of the data volume, retention and the last clean-ups"
+      description: "Bytes, item counts and the oldest item per kind (run working files, result files, samples, protection screenshots, database + WAL + SHM, identities, other), runs by state, the retention settings, total/free bytes of the volume, and the last automatic and manual clean-ups. No per-file lists. Read-only (README 16.1)."
+      responses:
+        "200":
+          description: "Storage"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/storage.schema.json"
+              examples:
+                get_admin_storage_response:
+                  externalValue: "./examples/get_admin_storage.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "unauthorized"
+  "/v1/admin/cleanup":
+    post:
+      operationId: "cleanUp"
+      tags:
+        - "admin"
+      summary: "Added 2026-11-14. Remove finished runs' files and records, samples, screenshots; compact the database"
+      description: "`dry_run` defaults to true: the answer says what would be removed and how many bytes. Never touches a run that is not finished, `identities.json`, unknown files, or a result file the platform has not fetched yet unless `include_unfetched` is true. Compaction: WAL checkpoint always, VACUUM only when no run is active (else `skipped` with the reason). Serialised with the automatic sweeper (README 16.2, 16.3)."
+      requestBody:
+        required: false
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/cleanup.schema.json#/$defs/cleanup_request"
+            examples:
+              post_admin_cleanup_request:
+                externalValue: "./examples/post_admin_cleanup.request.json"
+      responses:
+        "200":
+          description: "What was removed (or, in a dry run, would be)"
+          content:
+            "application/json":
+              schema:
+                "$ref": "./schemas/cleanup.schema.json"
+              examples:
+                post_admin_cleanup_response_dry_run:
+                  summary: "Dry run (the default)"
+                  externalValue: "./examples/post_admin_cleanup.response.dry_run.json"
+                post_admin_cleanup_response:
+                  summary: "Applied; VACUUM skipped because a run is active"
+                  externalValue: "./examples/post_admin_cleanup.response.json"
+        default:
+          "$ref": "#/components/responses/error"
+      x-error-codes:
+        - "internal_error"
+        - "invalid_json"
+        - "request_too_large"
+        - "unauthorized"
+        - "unsupported_media_type"
+        - "validation_failed"
+webhooks:
+  scraper_event:
+    post:
+      operationId: "deliverEvent"
+      summary: "Event delivery to the `Scraper events` workflow's signed webhook"
+      description: "Signed as described in README \"Webhook signing\". Accepted = any 2xx. Everything else is retried on the schedule in `GET /health` `webhook_delivery`."
+      security: []
+      parameters:
+        - name: "X-Scraper-Signature"
+          in: "header"
+          required: true
+          description: "Lower-case hex HMAC-SHA256 of `timestamp + \".\" + raw body`."
+          schema:
+            type: "string"
+            pattern: "^[0-9a-f]{64}$"
+        - name: "X-Scraper-Body-Signature"
+          in: "header"
+          required: false
+          description: "Added 2026-11-13. `sha256=` + lower-case hex HMAC-SHA256 of the raw body only (no timestamp), for the platform's older signed-webhook mode. Sent on every delivery next to `X-Scraper-Signature`."
+          schema:
+            type: "string"
+            pattern: "^sha256=[0-9a-f]{64}$"
+        - name: "X-Scraper-Timestamp"
+          in: "header"
+          required: true
+          description: "Unix time in seconds at this attempt."
+          schema:
+            type: "string"
+            pattern: "^[0-9]{10}$"
+        - name: "Idempotency-Key"
+          in: "header"
+          required: true
+          description: "`<event_id>.<delivery_generation>`; equal on every attempt of one generation."
+          schema:
+            type: "string"
+            pattern: "^evt_[A-Za-z0-9]{1,64}\\.[0-9]+$"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "./schemas/event.schema.json"
+            examples:
+              run_completed:
+                externalValue: "./examples/webhook_event.request.json"
+      responses:
+        "2XX":
+          description: "Accepted"
+        default:
+          description: "Not accepted; retried"
+components:
+  securitySchemes:
+    bearer:
+      type: "http"
+      scheme: "bearer"
+      description: "The service token of the `scraper_profile` connection."
+  parameters:
+    run_id:
+      name: "run_id"
+      in: "path"
+      required: true
+      schema:
+        "$ref": "./schemas/run_summary.schema.json#/$defs/run_id"
+    event_id:
+      name: "event_id"
+      in: "path"
+      required: true
+      schema:
+        "$ref": "./schemas/run_summary.schema.json#/$defs/event_id"
+    mapping_request_id:
+      name: "mapping_request_id"
+      in: "path"
+      required: true
+      schema:
+        "$ref": "./schemas/run_summary.schema.json#/$defs/mapping_request_id"
+    site:
+      name: "site"
+      in: "path"
+      required: true
+      description: "Site key (README \"Site key\")."
+      schema:
+        "$ref": "./schemas/run_summary.schema.json#/$defs/site"
+    cursor:
+      name: "cursor"
+      in: "query"
+      required: false
+      description: "Opaque `next_cursor` of the previous page; valid 24 h."
+      schema:
+        type: "string"
+        maxLength: 512
+    limit:
+      name: "limit"
+      in: "query"
+      required: false
+      schema:
+        type: "integer"
+        minimum: 1
+        maximum: 200
+        default: 50
+    idempotency_key:
+      name: "Idempotency-Key"
+      in: "header"
+      required: true
+      description: "`fs:<platform job id>:<step id>` or `fs:<job id>:<step id>:<loop position>`."
+      schema:
+        "$ref": "./schemas/run_summary.schema.json#/$defs/idempotency_key"
+  headers:
+    ETag:
+      schema:
+        type: "string"
+        pattern: "^\"[0-9a-f]{64}\"$"
+      description: "Quoted SHA-256 hex of the whole file."
+    Content-Disposition:
+      schema:
+        type: "string"
+      description: "`attachment; filename=\"<file_name>\"`."
+    Accept-Ranges:
+      schema:
+        type: "string"
+        const: "bytes"
+    Repr-Digest:
+      schema:
+        type: "string"
+      description: "RFC 9530: `sha-256=:<base64 of the SHA-256>:` of the whole file."
+  responses:
+    error:
+      description: "Any 4xx/5xx. `code` is in `schemas/error.schema.json`; see `x-error-codes` of the operation."
+      content:
+        "application/json":
+          schema:
+            "$ref": "./schemas/error.schema.json"

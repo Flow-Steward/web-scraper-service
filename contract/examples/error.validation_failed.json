@@ -1,0 +1,21 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "2 fields are invalid",
+    "request_id": "req_01JCXF7Z8Y7X6W5V4T3S2R1Q0P",
+    "fields": [
+      {
+        "field": "max_pages",
+        "code": "limit_exceeded",
+        "message": "max_pages 250000 is above the service limit 100000",
+        "limit": 100000
+      },
+      {
+        "field": "challenge_click",
+        "code": "rotating_proxy_with_challenge_handling",
+        "message": "challenge_click needs a sticky proxy session; tier 1 is rotating"
+      }
+    ],
+    "details": {}
+  }
+}

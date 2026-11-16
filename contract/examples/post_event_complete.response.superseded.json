@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "claim_superseded",
+    "message": "The claim was revoked by a resend",
+    "request_id": "req_01JCXF7Z8Y7X6W5V4T3S2R1Q0P",
+    "details": {
+      "event_id": "evt_01JCXF5T6V7W8X9Y0Z1A2B3C4D",
+      "delivery_generation": 2
+    }
+  }
+}

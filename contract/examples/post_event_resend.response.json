@@ -1,0 +1,30 @@
+{
+  "event_id": "evt_01JCXF5T6V7W8X9Y0Z1A2B3C4D",
+  "event_type": "run_completed",
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "resource_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "state": "pending",
+  "created_at": "2026-11-12T10:31:10Z",
+  "delivery": {
+    "generation": 2,
+    "resend_mode": "resume",
+    "attempts": 0,
+    "last_attempt_at": null,
+    "last_status_code": null,
+    "last_error": null,
+    "delivered_at": null,
+    "next_attempt_at": "2026-11-12T17:02:09Z"
+  },
+  "claim": null,
+  "progress": {
+    "stages": [
+      {
+        "stage": "processed",
+        "recorded_at": "2026-11-12T10:33:20Z",
+        "claimant_job_id": "job_e2a8d4410b"
+      }
+    ],
+    "last_stage": "processed"
+  },
+  "handled_at": null
+}

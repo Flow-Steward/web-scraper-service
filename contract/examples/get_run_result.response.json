@@ -1,0 +1,30 @@
+{
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "format": "jsonl",
+  "file_name": "lumen-shop.example_run_01JCXA7Q3M5VZ8K2N4P6R8T0W1.jsonl",
+  "size_bytes": 2874112,
+  "record_count": 1318,
+  "sha256": "a2264950b2cf780ce1de2763bbfab087fbb2ca7a61e7933ee17e5567bd8eb126",
+  "templates": [
+    {
+      "template_id": "product",
+      "record_count": 1102
+    },
+    {
+      "template_id": "spare_part",
+      "record_count": 216
+    }
+  ],
+  "outcome": "complete",
+  "stop_reason": "finished",
+  "created_at": "2026-11-12T10:31:09Z",
+  "expires_at": "2026-11-26T10:31:09Z",
+  "download_path": "/v1/runs/run_01JCXA7Q3M5VZ8K2N4P6R8T0W1/result/download",
+  "csv": {
+    "file_name": "lumen-shop.example_run_01JCXA7Q3M5VZ8K2N4P6R8T0W1.csv",
+    "size_bytes": 2011876,
+    "sha256": "5d41b3e1c8a7f2e09b6c4d3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e",
+    "download_path": "/v1/runs/run_01JCXA7Q3M5VZ8K2N4P6R8T0W1/result/download?format=csv"
+  },
+  "fetched_at": null
+}

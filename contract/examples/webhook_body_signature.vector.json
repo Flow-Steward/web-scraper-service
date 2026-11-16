@@ -1,0 +1,8 @@
+{
+  "description": "Webhook signing test vectors (README 9). body is the raw request body, one line, no trailing newline.",
+  "signing_secret": "fs_whsec_3b1f0e6c9a2d47f8b5c1d0e9",
+  "timestamp": "1794915070",
+  "body": "{\"event_id\":\"evt_01JCXF5T6V7W8X9Y0Z1A2B3C4D\",\"event_type\":\"run_completed\",\"run_id\":\"run_01JCXA7Q3M5VZ8K2N4P6R8T0W1\",\"resource_id\":\"run_01JCXA7Q3M5VZ8K2N4P6R8T0W1\",\"occurred_at\":\"2026-11-12T10:31:10Z\",\"delivery_generation\":1,\"outcome\":\"complete\",\"stop_reason\":\"finished\"}",
+  "x_scraper_signature": "d0789b1469a56d54c6f52a16c3783f9092b2f33e81e69d84912268bc7279a1a7",
+  "x_scraper_body_signature": "sha256=802db653da86a7c4a84d5f14f7c8486ff578f44802de31d8b2bf45d22df5b65d"
+}

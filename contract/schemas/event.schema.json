@@ -1,0 +1,483 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/event.schema.json",
+  "title": "Webhook event",
+  "description": "The body the service POSTs to the webhook. Small: no HTML, no records. The body of one delivery generation is byte-identical on every attempt; only the timestamp and signature headers change.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "run_id",
+    "resource_id",
+    "occurred_at",
+    "delivery_generation"
+  ],
+  "properties": {
+    "event_id": {
+      "$ref": "run_summary.schema.json#/$defs/event_id"
+    },
+    "event_type": {
+      "$ref": "#/$defs/event_type"
+    },
+    "run_id": {
+      "$ref": "run_summary.schema.json#/$defs/run_id"
+    },
+    "resource_id": {
+      "type": "string",
+      "pattern": "^(run|mrq)_[A-Za-z0-9]{1,64}$",
+      "description": "The `mapping_request_id` for `mapping_required`; the `run_id` otherwise."
+    },
+    "occurred_at": {
+      "$ref": "run_summary.schema.json#/$defs/timestamp"
+    },
+    "delivery_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1 for the first delivery; +1 per resend. Part of the `Idempotency-Key` header."
+    },
+    "outcome": {
+      "$ref": "run_summary.schema.json#/$defs/outcome"
+    },
+    "stop_reason": {
+      "$ref": "run_summary.schema.json#/$defs/stop_reason"
+    },
+    "problem_code": {
+      "$ref": "run_summary.schema.json#/$defs/problem_code"
+    },
+    "template_id": {
+      "$ref": "mapping.schema.json#/$defs/template_id"
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "parent_run_id": {
+      "$ref": "run_summary.schema.json#/$defs/run_id",
+      "description": "Added 2026-11-14. In a re-collect run's `run_completed`: the run it re-collects (README 4.10)."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "run_completed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "outcome",
+          "stop_reason"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "problem"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "problem_code"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "mapping_required"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "resource_id": {
+            "pattern": "^mrq_"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "resource_id": {
+            "pattern": "^run_"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "mapping_required",
+        "problem",
+        "run_completed",
+        "run_failed"
+      ]
+    },
+    "event_state": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "delivered",
+        "claimed",
+        "handled",
+        "stale"
+      ]
+    },
+    "event_stage": {
+      "type": "string",
+      "enum": [
+        "processed",
+        "completed"
+      ]
+    },
+    "resend_mode": {
+      "type": "string",
+      "enum": [
+        "resume",
+        "from_start"
+      ]
+    },
+    "claimant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "workflow_id": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "step_id": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "stage_entry": {
+      "type": "object",
+      "required": [
+        "stage",
+        "recorded_at",
+        "claimant_job_id"
+      ],
+      "properties": {
+        "stage": {
+          "$ref": "#/$defs/event_stage"
+        },
+        "recorded_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "claimant_job_id": {
+          "type": "string"
+        }
+      }
+    },
+    "progress": {
+      "type": "object",
+      "required": [
+        "stages",
+        "last_stage"
+      ],
+      "description": "Recorded progress of the event's handling.",
+      "properties": {
+        "stages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/stage_entry"
+          }
+        },
+        "last_stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/event_stage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "event_record": {
+      "type": "object",
+      "required": [
+        "event_id",
+        "event_type",
+        "run_id",
+        "resource_id",
+        "state",
+        "created_at",
+        "delivery",
+        "claim",
+        "progress",
+        "handled_at"
+      ],
+      "description": "The service's journal entry of an event (run page). Never contains a `claim_id`.",
+      "properties": {
+        "event_id": {
+          "$ref": "run_summary.schema.json#/$defs/event_id"
+        },
+        "event_type": {
+          "$ref": "#/$defs/event_type"
+        },
+        "run_id": {
+          "$ref": "run_summary.schema.json#/$defs/run_id"
+        },
+        "resource_id": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/event_state"
+        },
+        "created_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "delivery": {
+          "type": "object",
+          "required": [
+            "generation",
+            "attempts",
+            "delivered_at",
+            "next_attempt_at"
+          ],
+          "properties": {
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "resend_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/resend_mode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "last_attempt_at": {
+              "anyOf": [
+                {
+                  "$ref": "run_summary.schema.json#/$defs/timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "last_status_code": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "last_error": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "delivered_at": {
+              "anyOf": [
+                {
+                  "$ref": "run_summary.schema.json#/$defs/timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "next_attempt_at": {
+              "anyOf": [
+                {
+                  "$ref": "run_summary.schema.json#/$defs/timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "claimant",
+                "claimed_at",
+                "expires_at"
+              ],
+              "properties": {
+                "claimant": {
+                  "$ref": "#/$defs/claimant"
+                },
+                "claimed_at": {
+                  "$ref": "run_summary.schema.json#/$defs/timestamp"
+                },
+                "expires_at": {
+                  "$ref": "run_summary.schema.json#/$defs/timestamp"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "progress": {
+          "$ref": "#/$defs/progress"
+        },
+        "handled_at": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "claim_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claimant"
+      ],
+      "properties": {
+        "claimant": {
+          "$ref": "#/$defs/claimant"
+        }
+      }
+    },
+    "claim_response": {
+      "type": "object",
+      "required": [
+        "event",
+        "claim_id",
+        "claimed_at",
+        "expires_at",
+        "delivery_generation",
+        "resend_mode",
+        "progress",
+        "state"
+      ],
+      "properties": {
+        "event": {
+          "$ref": "#"
+        },
+        "state": {
+          "$ref": "#/$defs/event_state"
+        },
+        "claim_id": {
+          "$ref": "run_summary.schema.json#/$defs/claim_id"
+        },
+        "claimed_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "delivery_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resend_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/resend_mode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "progress": {
+          "$ref": "#/$defs/progress"
+        }
+      }
+    },
+    "stage_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "stage"
+      ],
+      "properties": {
+        "claim_id": {
+          "$ref": "run_summary.schema.json#/$defs/claim_id"
+        },
+        "stage": {
+          "$ref": "#/$defs/event_stage"
+        }
+      }
+    },
+    "complete_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id"
+      ],
+      "properties": {
+        "claim_id": {
+          "$ref": "run_summary.schema.json#/$defs/claim_id"
+        }
+      }
+    },
+    "resend_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "webhook"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/resend_mode"
+        },
+        "webhook": {
+          "$ref": "connection_profile.schema.json#/$defs/webhook"
+        },
+        "revoke_live_claim": {
+          "type": "boolean",
+          "default": false,
+          "description": "Must be true when the event has a live claim (the page asked the operator); otherwise 409 `event_claim_live`."
+        },
+        "expected_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional guard: refused with `event_generation_conflict` unless it equals the current generation."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "artifact_handle": "artifact:6b0d3f2c-91e7-4c55-a1f4-0e2d9c7b8a13",
+  "run_id": "run_01JCXA7Q3M5VZ8K2N4P6R8T0W1",
+  "format": "jsonl",
+  "file_name": "lumen-shop.example_run_01JCXA7Q3M5VZ8K2N4P6R8T0W1.jsonl",
+  "size_bytes": 2874112,
+  "record_count": 1318,
+  "sha256": "a2264950b2cf780ce1de2763bbfab087fbb2ca7a61e7933ee17e5567bd8eb126",
+  "templates": [
+    {
+      "template_id": "product",
+      "record_count": 1102
+    },
+    {
+      "template_id": "spare_part",
+      "record_count": 216
+    }
+  ],
+  "outcome": "complete",
+  "stop_reason": "finished",
+  "created_at": "2026-11-12T10:31:09Z"
+}

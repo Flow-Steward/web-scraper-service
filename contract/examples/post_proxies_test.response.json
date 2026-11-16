@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "checked_at": "2026-11-12T08:44:12Z",
+  "latency_ms": 812,
+  "tier": 2,
+  "exit_ip": "93.184.12.77",
+  "country": "DE",
+  "city": "Frankfurt am Main",
+  "target_http_status": 200
+}

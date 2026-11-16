@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/error.schema.json",
+  "title": "Error envelope",
+  "description": "The body of every 4xx and 5xx response, and the shape of field errors and warnings everywhere.",
+  "type": "object",
+  "required": [
+    "error"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "request_id"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/error_code"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "For people; never contains a secret. Do not parse."
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^req_[A-Za-z0-9]{1,64}$"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field_error"
+          }
+        },
+        "details": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "error_code": {
+      "type": "string",
+      "enum": [
+        "invalid_json",
+        "idempotency_key_required",
+        "idempotency_key_invalid",
+        "invalid_cursor",
+        "unauthorized",
+        "not_found",
+        "run_not_found",
+        "event_not_found",
+        "mapping_request_not_found",
+        "sample_not_found",
+        "method_not_allowed",
+        "not_acceptable",
+        "idempotency_key_reused",
+        "mapping_version_conflict",
+        "event_already_claimed",
+        "event_already_handled",
+        "event_stale",
+        "claim_superseded",
+        "event_claim_live",
+        "event_generation_conflict",
+        "stage_out_of_order",
+        "mapping_request_closed",
+        "result_not_ready",
+        "result_not_available",
+        "result_expired",
+        "request_too_large",
+        "unsupported_media_type",
+        "range_not_satisfiable",
+        "validation_failed",
+        "queue_full",
+        "internal_error",
+        "service_unavailable",
+        "secrets_key_unavailable",
+        "required",
+        "invalid_type",
+        "invalid_value",
+        "unknown_field",
+        "pattern_invalid",
+        "limit_exceeded",
+        "browser_not_available",
+        "rotating_proxy_with_challenge_handling",
+        "private_address_refused",
+        "proxy_tier_not_configured",
+        "duplicate_proxy_tier",
+        "solver_not_configured",
+        "solver_not_allowed",
+        "challenge_click_not_allowed",
+        "robots_override_not_allowed",
+        "header_not_allowed",
+        "required_field_not_in_fields",
+        "duplicate_field_name",
+        "template_id_mismatch",
+        "template_limit_reached",
+        "secret_missing",
+        "delay_range_invalid",
+        "proxy_connect_failed",
+        "proxy_auth_failed",
+        "proxy_timeout",
+        "proxy_geo_mismatch",
+        "solver_auth_failed",
+        "solver_unreachable",
+        "solver_provider_error",
+        "target_pages_guessed",
+        "screenshot_not_found",
+        "protection_not_passed",
+        "fields_never_filled",
+        "run_not_finished",
+        "nothing_to_recollect",
+        "price_not_extracted",
+        "variants_not_used",
+        "price_mismatch",
+        "price_is_old_price",
+        "site_busy"
+      ],
+      "description": "Stable machine code. New codes may be added within v1; a client treats an unknown code by its HTTP status."
+    },
+    "field_error": {
+      "type": "object",
+      "required": [
+        "field",
+        "code",
+        "message"
+      ],
+      "properties": {
+        "field": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^[a-z_][a-z0-9_]*(\\[[0-9]+\\])?(\\.[a-z_][a-z0-9_]*(\\[[0-9]+\\])?)*$",
+          "description": "Dotted path, array positions in brackets: `max_pages`, `urls[3].url`, `profile.proxy_tiers[0].session_mode`."
+        },
+        "code": {
+          "$ref": "#/$defs/error_code"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "limit": {
+          "type": [
+            "number",
+            "string",
+            "boolean"
+          ]
+        }
+      }
+    },
+    "test_result": {
+      "type": "object",
+      "required": [
+        "ok",
+        "checked_at"
+      ],
+      "description": "Common part of the test endpoints' 200 responses. A failed check is a 200 with `ok: false`, not an HTTP error.",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "checked_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "code": {
+          "$ref": "#/$defs/error_code"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    }
+  }
+}

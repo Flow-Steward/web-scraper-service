@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/mapping_request.schema.json",
+  "title": "Mapping request",
+  "description": "Response of `GET /v1/mapping-requests/{id}`: everything `build_mapping` needs to repair a template or map a new one.",
+  "type": "object",
+  "required": [
+    "mapping_request_id",
+    "run_id",
+    "site",
+    "reason",
+    "status",
+    "template_id",
+    "suggested_template_id",
+    "created_at",
+    "expires_at",
+    "closed_at",
+    "previous",
+    "samples",
+    "failures",
+    "instructions",
+    "resolution"
+  ],
+  "properties": {
+    "mapping_request_id": {
+      "$ref": "run_summary.schema.json#/$defs/mapping_request_id"
+    },
+    "run_id": {
+      "$ref": "run_summary.schema.json#/$defs/run_id"
+    },
+    "site": {
+      "$ref": "run_summary.schema.json#/$defs/site"
+    },
+    "reason": {
+      "$ref": "run_summary.schema.json#/$defs/mapping_request_reason"
+    },
+    "status": {
+      "$ref": "run_summary.schema.json#/$defs/mapping_request_status"
+    },
+    "template_id": {
+      "anyOf": [
+        {
+          "$ref": "mapping.schema.json#/$defs/template_id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "suggested_template_id": {
+      "$ref": "mapping.schema.json#/$defs/template_id"
+    },
+    "created_at": {
+      "$ref": "run_summary.schema.json#/$defs/timestamp"
+    },
+    "expires_at": {
+      "$ref": "run_summary.schema.json#/$defs/timestamp"
+    },
+    "closed_at": {
+      "anyOf": [
+        {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "$ref": "mapping.schema.json#/$defs/mapping_version"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expected_version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The value to send as `expected_version` when activating the repair: the previous version, or 0."
+    },
+    "samples": {
+      "type": "array",
+      "items": {
+        "$ref": "samples.schema.json#/$defs/sample"
+      },
+      "description": "Stored pages of the failing template (or unmatched target pages); usable as `sample_ids` in a mapping test."
+    },
+    "failures": {
+      "type": "object",
+      "required": [
+        "pages_considered",
+        "pages_failing",
+        "fields"
+      ],
+      "properties": {
+        "pages_considered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pages_failing": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "required",
+              "fill_rate"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "mapping.schema.json#/$defs/field_name"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "fill_rate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        },
+        "example_urls": {
+          "type": "array",
+          "items": {
+            "$ref": "job_config.schema.json#/$defs/http_url"
+          },
+          "maxItems": 10
+        },
+        "gaps": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "propertyNames": {
+            "enum": [
+              "variants_not_used",
+              "price_not_extracted"
+            ]
+          },
+          "description": "Added 2026-11-14. Stored pages of the template that are incomplete only because the mapping misses what they show, by code (README 4.5, 4.6): `variants_not_used` — add a `variants` block (the samples' `variant_sources`); `price_not_extracted` — read the product's price block. Those pages come first in `example_urls` and `samples`."
+        }
+      }
+    },
+    "instructions": {
+      "type": "object",
+      "required": [
+        "extraction_instructions",
+        "fields",
+        "required_fields",
+        "required_fill_threshold",
+        "extraction_mode",
+        "structured_data_types"
+      ],
+      "description": "The job's settings that shape a mapping.",
+      "properties": {
+        "extraction_instructions": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "mapping.schema.json#/$defs/field_name"
+          }
+        },
+        "required_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "mapping.schema.json#/$defs/field_name"
+          }
+        },
+        "required_fill_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "extraction_mode": {
+          "$ref": "job_config.schema.json#/$defs/extraction_mode"
+        },
+        "structured_data_types": {
+          "type": "array",
+          "items": {
+            "$ref": "job_config.schema.json#/$defs/structured_data_type"
+          }
+        },
+        "target_page_selector": {
+          "anyOf": [
+            {
+              "$ref": "mapping.schema.json#/$defs/css_selector"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_refinements": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Added 2026-11-13. The job's `max_refinements` (refinements of `build_mapping` after the first generation). Optional: absent means the default 2."
+        },
+        "ai_choose_fields": {
+          "type": "boolean",
+          "description": "Added 2026-11-14: the job asks the agent to add the fields the samples really carry."
+        },
+        "fields_hint": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Added 2026-11-14: the operator's hint for those fields."
+        }
+      }
+    },
+    "resolution": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "$ref": "run_summary.schema.json#/$defs/mapping_request_status"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "failure_reason": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "fail_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "failure_reason"
+      ],
+      "description": "Body of `POST /v1/mapping-requests/{id}/fail`: `build_mapping` did not pass.",
+      "properties": {
+        "failure_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "platform_job_id": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}

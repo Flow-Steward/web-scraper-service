@@ -1,0 +1,23 @@
+{
+  "dry_run": true,
+  "time": "2026-11-14T10:01:00Z",
+  "removed": {
+    "run_working_files": {"items": 3, "bytes": 786432},
+    "result_files": {"items": 4, "bytes": 151552},
+    "run_records": {"items": 0, "bytes": 0},
+    "samples": {"items": 38, "bytes": 11534336},
+    "protection_screenshots": {"items": 3, "bytes": 419430}
+  },
+  "kept": {"active_runs": 1, "unfetched_results": 1},
+  "compaction": {
+    "checkpoint": "would_run",
+    "vacuum": "skipped",
+    "vacuum_skipped_reason": "1 run(s) not finished; VACUUM runs only when no run is queued, running, waiting or stopping",
+    "database_bytes_before": 7966720,
+    "wal_bytes_before": 4141192,
+    "reclaimable_bytes": 1114112,
+    "database_bytes_after": null,
+    "bytes_freed": null
+  },
+  "bytes_freed": 12891750
+}

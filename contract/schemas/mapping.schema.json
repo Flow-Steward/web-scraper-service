@@ -1,0 +1,873 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.flowsteward.org/web-scraper/v1/mapping.schema.json",
+  "title": "Template mapping",
+  "description": "Declarative extraction rules for one page template of one site. No expressions, no code. A mapping belongs to a site and a template, not to a job; versions are kept by the service.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "template_id",
+    "match",
+    "fields"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "template_id": {
+      "$ref": "#/$defs/template_id"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 100
+    },
+    "match": {
+      "$ref": "#/$defs/match"
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/field"
+      },
+      "minItems": 1,
+      "maxItems": 50,
+      "description": "Field names are unique within a template (`duplicate_field_name`)."
+    },
+    "variants": {
+      "$ref": "#/$defs/variants"
+    }
+  },
+  "$defs": {
+    "template_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "field_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "css_selector": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "field_type": {
+      "type": "string",
+      "enum": [
+        "text",
+        "html",
+        "number",
+        "price",
+        "currency",
+        "url",
+        "image_url",
+        "date",
+        "boolean",
+        "spec_table"
+      ],
+      "description": "`spec_table` (added 2026-11-14): a specification table as an object name → value (from a `spec_table` source, or `jsonld`/`microdata` `additionalProperty` PropertyValues)."
+    },
+    "source_kind": {
+      "type": "string",
+      "enum": [
+        "jsonld",
+        "css",
+        "meta",
+        "microdata",
+        "spec_table"
+      ],
+      "description": "`microdata` (added 2026-11-13): schema.org microdata (`itemscope`/`itemtype`/`itemprop`), read like `jsonld`: `schema_type` and `path` follow the same rules."
+    },
+    "css_extract": {
+      "type": "string",
+      "enum": [
+        "text",
+        "html",
+        "attribute"
+      ]
+    },
+    "transform_op": {
+      "type": "string",
+      "enum": [
+        "trim",
+        "regex_extract",
+        "number",
+        "price",
+        "currency",
+        "absolute_url",
+        "date",
+        "html_clean",
+        "regex_replace",
+        "srcset_largest",
+        "join"
+      ],
+      "description": "Added 2026-11-14: `regex_replace` (`pattern`, `replacement`, `count`), `srcset_largest` (the largest candidate of a `srcset`), `join` (`separator`: all matches of the source as one string)."
+    },
+    "decimal_separator": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "dot",
+        "comma"
+      ]
+    },
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A page belongs to the template when every given condition holds: one of `url_patterns` matches the canonical URL (if any are given) and `selector` is present (if given). At least one condition is required. Templates of a site are tried in order of `template_id`; the first match wins.",
+      "properties": {
+        "url_patterns": {
+          "type": "array",
+          "items": {
+            "$ref": "job_config.schema.json#/$defs/regex"
+          },
+          "maxItems": 20
+        },
+        "selector": {
+          "$ref": "#/$defs/css_selector"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "url_patterns"
+          ],
+          "properties": {
+            "url_patterns": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "selector"
+          ]
+        }
+      ]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "sources"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/field_name"
+        },
+        "type": {
+          "$ref": "#/$defs/field_type"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "multiple": {
+          "type": "boolean",
+          "default": false,
+          "description": "The value is a list (possibly empty) instead of a single value or null."
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source"
+          },
+          "minItems": 1,
+          "maxItems": 5,
+          "description": "Tried in order; the first source that yields a value (for `multiple`: at least one value) wins."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/source_kind"
+        },
+        "schema_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}$",
+          "description": "`jsonld` / `microdata`: the `@type` of the node the path starts at (first such node in document order; nested nodes count)."
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*)(\\.([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*))*$",
+          "description": "`jsonld`: dot-separated property names; a number selects an array item, `*` all items. An array met without an index or `*` yields its first item (all items when the field is `multiple`)."
+        },
+        "selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "extract": {
+          "$ref": "#/$defs/css_extract"
+        },
+        "attribute": {
+          "type": "string",
+          "pattern": "^[A-Za-z_:][A-Za-z0-9_.:-]{0,63}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "`meta`: matched against the `name`, then the `property` attribute of `<meta>` (e.g. `og:title`); the value is `content`."
+        },
+        "transforms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transform"
+          },
+          "maxItems": 5,
+          "default": []
+        },
+        "row_selector": {
+          "$ref": "#/$defs/css_selector",
+          "description": "`spec_table`: one match per row."
+        },
+        "key_selector": {
+          "$ref": "#/$defs/css_selector",
+          "description": "`spec_table`: the name inside a row (text, a trailing `:` dropped)."
+        },
+        "value_selector": {
+          "$ref": "#/$defs/css_selector",
+          "description": "`spec_table`: the value inside a row (text)."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "jsonld"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "schema_type",
+              "path"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "microdata"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "schema_type",
+              "path"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "css"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "selector",
+              "extract"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "meta"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "extract": {
+                "const": "attribute"
+              }
+            },
+            "required": [
+              "extract"
+            ]
+          },
+          "then": {
+            "required": [
+              "attribute"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "spec_table"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "row_selector",
+              "key_selector",
+              "value_selector"
+            ]
+          }
+        }
+      ]
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op"
+      ],
+      "description": "One step of the closed transform list, applied in order to each extracted string.",
+      "properties": {
+        "op": {
+          "$ref": "#/$defs/transform_op"
+        },
+        "pattern": {
+          "$ref": "job_config.schema.json#/$defs/regex"
+        },
+        "group": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9,
+          "default": 1
+        },
+        "decimal_separator": {
+          "$ref": "#/$defs/decimal_separator"
+        },
+        "default_currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "day_first": {
+          "type": "boolean",
+          "default": false
+        },
+        "replacement": {
+          "type": "string",
+          "maxLength": 500,
+          "default": "",
+          "description": "`regex_replace`: Python `re.sub` replacement; `\\\\1` back-references allowed."
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0,
+          "description": "`regex_replace`: at most this many replacements; 0 = all."
+        },
+        "separator": {
+          "type": "string",
+          "maxLength": 20,
+          "default": ", ",
+          "description": "`join`: between the values."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "regex_extract"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pattern"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "regex_replace"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pattern"
+            ]
+          }
+        }
+      ]
+    },
+    "mapping_version_status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "superseded"
+      ]
+    },
+    "versions_view": {
+      "type": "string",
+      "enum": [
+        "active",
+        "all"
+      ],
+      "default": "active",
+      "description": "`GET /v1/sites/{site}/mappings?versions=`: `active` = only the active version; `all` = every version, newest first."
+    },
+    "mapping_version": {
+      "type": "object",
+      "required": [
+        "site",
+        "template_id",
+        "version",
+        "status",
+        "content_sha256",
+        "created_at"
+      ],
+      "description": "One stored version of a template mapping.",
+      "properties": {
+        "site": {
+          "$ref": "run_summary.schema.json#/$defs/site"
+        },
+        "template_id": {
+          "$ref": "#/$defs/template_id"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "$ref": "#/$defs/mapping_version_status"
+        },
+        "content_sha256": {
+          "$ref": "run_summary.schema.json#/$defs/sha256_hex"
+        },
+        "created_at": {
+          "$ref": "run_summary.schema.json#/$defs/timestamp"
+        },
+        "superseded_at": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/mapping_origin"
+        },
+        "mapping": {
+          "$ref": "#"
+        }
+      }
+    },
+    "mapping_origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Who activated a version (informational).",
+      "properties": {
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/run_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mapping_request_id": {
+          "anyOf": [
+            {
+              "$ref": "run_summary.schema.json#/$defs/mapping_request_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "platform_job_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 200
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "activate_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "template_id",
+        "expected_version",
+        "mapping"
+      ],
+      "description": "Body of `PUT /v1/sites/{site}/mappings`.",
+      "properties": {
+        "template_id": {
+          "$ref": "#/$defs/template_id"
+        },
+        "expected_version": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The active version the candidate was built against; 0 = no active version."
+        },
+        "mapping": {
+          "$ref": "#"
+        },
+        "origin": {
+          "$ref": "#/$defs/mapping_origin"
+        }
+      }
+    },
+    "activate_response": {
+      "type": "object",
+      "required": [
+        "site",
+        "template_id",
+        "changed",
+        "active"
+      ],
+      "properties": {
+        "site": {
+          "$ref": "run_summary.schema.json#/$defs/site"
+        },
+        "template_id": {
+          "$ref": "#/$defs/template_id"
+        },
+        "changed": {
+          "type": "boolean",
+          "description": "false = the content equalled the active version; nothing was written."
+        },
+        "active": {
+          "$ref": "#/$defs/mapping_version"
+        },
+        "resolved_mapping_request_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "run_summary.schema.json#/$defs/mapping_request_id"
+          }
+        }
+      }
+    },
+    "site_mappings": {
+      "type": "object",
+      "required": [
+        "site",
+        "templates"
+      ],
+      "description": "Response of `GET /v1/sites/{site}/mappings`. An unknown site returns an empty `templates` list.",
+      "properties": {
+        "site": {
+          "$ref": "run_summary.schema.json#/$defs/site"
+        },
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "template_id",
+              "active_version",
+              "versions",
+              "versions_total"
+            ],
+            "properties": {
+              "template_id": {
+                "$ref": "#/$defs/template_id"
+              },
+              "active_version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "versions_total": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/mapping_version"
+                },
+                "description": "Newest first. `versions=active` (default) returns only the active one."
+              }
+            }
+          }
+        }
+      }
+    },
+    "site_list": {
+      "type": "object",
+      "required": [
+        "items",
+        "next_cursor"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "site",
+              "templates"
+            ],
+            "properties": {
+              "site": {
+                "$ref": "run_summary.schema.json#/$defs/site"
+              },
+              "templates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "template_id",
+                    "active_version",
+                    "updated_at"
+                  ],
+                  "properties": {
+                    "template_id": {
+                      "$ref": "#/$defs/template_id"
+                    },
+                    "active_version": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "updated_at": {
+                      "$ref": "run_summary.schema.json#/$defs/timestamp"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "variants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources"
+      ],
+      "description": "Added 2026-11-13. One record per variant of the page: the first source that yields at least one variant wins; every variant gets the page's fields, with its own values over them (`fields`). Without variants the page stays one record. README 6.1.",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "items": {
+            "$ref": "#/$defs/variant_source"
+          },
+          "description": "Tried in order."
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/variant_field"
+          },
+          "description": "Which record field takes which variant value. Absent: the mapping's fields named `price`, `currency`, `sku`, `barcode`, `gtin`, `availability`, `weight`, `description`, `image`, `image_url` take the variant's value of that name (`gtin` from `barcode`, `image_url` from `image`). A name not among `fields` adds a field that only variants fill (null on pages without variants)."
+        }
+      }
+    },
+    "variant_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "embedded_json",
+            "shop_json",
+            "jsonld",
+            "microdata"
+          ],
+          "description": "`embedded_json`: JSON inside the page (an element's `attribute`, else the element's text), `path` to the variant list. `shop_json`: the shop's own product JSON, one light request per product through the page's session (a host that needed the browser: through the cleared browser context only), robots.txt and the politeness delay — `shopify` = `/products/<handle>.js`, `woocommerce` = Store API `/wp-json/wc/store/v1/products/<id>` + one request for its variations. `jsonld` / `microdata`: `offers` as a list (two or more) or a `ProductGroup`'s `hasVariant`."
+        },
+        "selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "attribute": {
+          "type": "string",
+          "pattern": "^[A-Za-z_:][A-Za-z0-9_.:-]{0,63}$"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*)(\\.([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*))*$",
+          "description": "Dot path to the variant list (`variants`, `product.variants`; empty/absent = the JSON itself); for `jsonld`/`microdata`: `offers` or `hasVariant`."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "woocommerce",
+            "shopify",
+            "generic"
+          ],
+          "default": "auto",
+          "description": "How to read one variant: `woocommerce` (`attributes`, `display_price`, `variation_id`; option slugs shown with the labels of the page's variation form), `shopify` (`option1..3` named by the product's `options`, prices in minor units), `generic` (`options`/`attributes`, `price`, `sku` …); `auto` decides from the keys."
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "shopify",
+            "woocommerce"
+          ]
+        },
+        "schema_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}$"
+        },
+        "price_divisor": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1000000,
+          "description": "Prices in minor units: divide by this (100 for cents/pence). Shopify JSON defaults to 100, WooCommerce Store API uses its own `currency_minor_unit`, everything else 1."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "Currency code for variants whose data carries none (Shopify product JSON)."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "embedded_json"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "selector"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "shop_json"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "platform"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "jsonld",
+                  "microdata"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "schema_type",
+              "path"
+            ]
+          }
+        }
+      ]
+    },
+    "variant_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/field_name"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*)(\\.([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*))*$",
+          "description": "In the normalised variant: `id`, `title`, `price`, `regular_price`, `currency`, `sku`, `barcode`, `availability`, `in_stock`, `weight`, `description`, `image`, or `raw.<path>` into the source's own object."
+        },
+        "option": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "An option's value by option name (case-insensitive), e.g. `Format`, `Sticker`."
+        },
+        "type": {
+          "$ref": "#/$defs/field_type",
+          "description": "Default: the type of the mapping field of that name, else `text`."
+        },
+        "transforms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transform"
+          },
+          "maxItems": 5
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "required": [
+            "option"
+          ]
+        }
+      ]
+    }
+  }
+}
