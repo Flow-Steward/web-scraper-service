@@ -2,9 +2,12 @@
 # release notes in release-notes/vX.Y.Z.md and whose docker-compose.yml builds that tag:
 #   git tag -a v0.2.1 -m "web-scraper-service 0.2.1" && git push origin v0.2.1
 #
-# 1. resolve  checks the tag, the version, the notes file and docker-compose.yml
-# 2. tests    the whole suite (the CI workflow)
-# 3. native   builds the runtime image on a native runner per architecture (linux/amd64 on
+# 1. resolve    checks the tag, the version, the notes file and docker-compose.yml
+# 2. ci-result  the whole suite has already run for the tagged commit when it is on main (the
+#               CI workflow on push): this job waits for that run and reuses its success
+#    tests      runs the suite (the CI workflow) only when there is no passed CI run of the
+#               commit (a tag outside main, or a failed CI run)
+# 3. native     runs at the same time as 2: builds the runtime image on a native runner per architecture (linux/amd64 on
 #             ubuntu-24.04, linux/arm64 on ubuntu-24.04-arm), checks its labels and starts it
 #             once (GET /health: version, build, both browsers); this proves the image builds
 #             from the tag on both architectures
@@ -69,12 +72,48 @@ jobs:
             echo "revision=${revision}"
           } >> "$GITHUB_OUTPUT"
 
-  tests:
+  ci-result:
     needs: resolve
+    runs-on: ubuntu-24.04
+    # the suite takes about 35 minutes; a CI run may still be running when the tag is pushed
+    timeout-minutes: 200
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      passed: ${{ steps.ci.outputs.passed }}
+    steps:
+      - name: A passed CI run of the tagged commit
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.resolve.outputs.revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 360 x 30 s: wait while a CI push run of this commit is queued or in progress
+          for _ in $(seq 1 360); do
+            runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&event=push&per_page=20" \
+              --jq '[.workflow_runs[] | {id, status, conclusion, html_url}]')"
+            passed="$(jq -r '[.[] | select(.conclusion == "success")][0].html_url // empty' <<<"$runs")"
+            if [ -n "$passed" ]; then
+              echo "The suite passed for ${SHA} in ${passed}; it is not run again."
+              echo "passed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! jq -e 'any(.[]; .status != "completed")' <<<"$runs" >/dev/null; then break; fi
+            sleep 30
+          done
+          echo "No passed CI run of ${SHA}; the release runs the suite itself."
+          echo "passed=false" >> "$GITHUB_OUTPUT"
+
+  tests:
+    needs: ci-result
+    if: needs.ci-result.outputs.passed != 'true'
     uses: ./.github/workflows/ci.yml
 
   native:
-    needs: [resolve, tests]
+    needs: resolve
     strategy:
       fail-fast: true
       matrix:
@@ -162,7 +201,14 @@ jobs:
           docker image rm web-scraper-service:release-smoke || true
 
   release:
-    needs: [resolve, native]
+    needs: [resolve, ci-result, tests, native]
+    # tests is skipped when ci-result found a passed CI run of the commit
+    if: >-
+      ${{ !cancelled()
+      && needs.resolve.result == 'success'
+      && needs.native.result == 'success'
+      && needs.ci-result.result == 'success'
+      && (needs.ci-result.outputs.passed == 'true' || needs.tests.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

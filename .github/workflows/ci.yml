@@ -1,7 +1,8 @@
 # Every push to main and every pull request runs the whole test suite the way the
 # repository runs it: in the dev image (target `dev` of the Dockerfile) with the working
 # tree mounted read-only (scripts/test.sh), never on the runner's own Python.
-# The Release workflow runs this same workflow before it builds anything.
+# The Release workflow reuses a passed run of this workflow for the tagged commit, or runs
+# this same workflow itself when there is none.
 name: CI
 
 on:
