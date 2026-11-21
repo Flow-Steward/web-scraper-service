@@ -320,3 +320,42 @@ process.stdout.write(JSON.stringify([inspect("data:text/html,blocked"),inspect("
     node = shutil.which("node") or str(Path(playwright.__file__).parent / "driver" / "node")
     result = subprocess.run([node, "-"], input=harness + source + cases, text=True, capture_output=True, check=True, timeout=10)
     assert json.loads(result.stdout) == [True, True, True, False, False]
+
+
+def test_addon_internal_route_redirect_does_not_consume_http_redirect_count():
+    import json
+    from pathlib import Path
+    import shutil
+    import subprocess
+    import playwright
+    source = Path(__file__).parents[2].joinpath("app/fetching/firefox_policy_addon.js").read_text().replace("/*BRIDGE_CONFIG*/", "{}")
+    harness = r'''
+const callbacks = {};
+const observed = [];
+const event = name => ({addListener: callback => callbacks[name] = callback});
+globalThis.browser = {
+  tabs: {onUpdated: event("updated"), onRemoved: event("removed")},
+  webRequest: Object.fromEntries(["onBeforeRequest", "onBeforeRedirect", "onHeadersReceived", "onCompleted", "onErrorOccurred"].map(name => [name, event(name)])),
+  extension: {isAllowedIncognitoAccess: async () => true},
+};
+globalThis.fetch = async (url, options) => {
+  const payload = JSON.parse(options.body);
+  if (payload.frameKind) observed.push(payload.redirects);
+  return {ok: true, json: async () => ({allow: true, generation: payload.generation})};
+};
+'''
+    cases = r'''
+(async () => {
+  tabs.set(5, {storeId:"private-1", generation:"current"});
+  const details = {tabId:5,type:"main_frame",requestId:"chain-1",url:"https://shop.test/list"};
+  await callbacks.onBeforeRequest(details);
+  callbacks.onBeforeRedirect({...details,statusCode:0,redirectUrl:details.url});
+  await callbacks.onBeforeRequest(details);
+  callbacks.onBeforeRedirect({...details,statusCode:302,redirectUrl:details.url});
+  await callbacks.onBeforeRequest(details);
+  process.stdout.write(JSON.stringify(observed));
+})();
+'''
+    node = shutil.which("node") or str(Path(playwright.__file__).parent / "driver" / "node")
+    result = subprocess.run([node, "-"], input=harness + source + cases, text=True, capture_output=True, check=True, timeout=10)
+    assert json.loads(result.stdout) == [0, 0, 1]

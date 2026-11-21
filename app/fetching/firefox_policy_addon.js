@@ -67,7 +67,12 @@ browser.webRequest.onHeadersReceived.addListener(details => {
   } catch (_) { return {cancel: true}; }
 }, {urls: ["<all_urls>"], types: ["main_frame", "sub_frame"]}, ["blocking", "responseHeaders"]);
 browser.webRequest.onBeforeRedirect.addListener(details => {
-  if (requests.has(details.requestId)) requests.set(details.requestId, requests.get(details.requestId) + 1);
+  // Playwright's native interception can restart the same channel with a
+  // status-zero internal redirect. Only HTTP hops consume the redirect budget
+  // or turn the caller-admitted original URL into a new destination.
+  if ([301, 302, 303, 307, 308].includes(details.statusCode) && requests.has(details.requestId)) {
+    requests.set(details.requestId, requests.get(details.requestId) + 1);
+  }
 }, {urls: ["<all_urls>"], types: ["main_frame", "sub_frame"]});
 for (const event of [browser.webRequest.onCompleted, browser.webRequest.onErrorOccurred]) {
   event.addListener(details => requests.delete(details.requestId), {urls: ["<all_urls>"], types: ["main_frame", "sub_frame"]});

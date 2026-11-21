@@ -182,3 +182,19 @@ async def test_camoufox_native_non_http_or_malformed_redirect_fails_closed(nativ
         assert not page.url.startswith(("data:", "javascript:"))
     finally:
         await guard.close()
+
+
+async def test_camoufox_native_original_admission_not_rejected_by_route_restart(native_browser, native_documents):
+    origin, _, _, hits = native_documents
+    calls = []
+    async def reject_new_destinations(url):
+        calls.append(url)
+        return False
+    page, guard = await guarded_page(native_browser, origin + "/list/original", reject_new_destinations)
+    try:
+        response = await page.goto(origin + "/list/original", timeout=10000)
+        assert response.status == 200
+        assert "/list/original" in [path for path, _ in hits]
+        assert calls == [] and guard.errors == []
+    finally:
+        await guard.close()
