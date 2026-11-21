@@ -34,6 +34,7 @@ class ChromiumDocumentGuard:
         self._close_lock = asyncio.Lock()
         self._cleaned = False
         self._overflow_close = None
+        self.child_targets = None
 
     async def start(self):
         try:
@@ -44,6 +45,14 @@ class ChromiumDocumentGuard:
             await self.session.send("Fetch.enable", {"patterns": [{
                 "resourceType": "Document", "requestStage": "Response",
             }]})
+            from app.fetching.chromium_targets import ChildTargets
+            self.child_targets = ChildTargets(
+                self.session, on_paused=self._on_paused, on_failure=self._child_failure,
+                spawn=self._spawn, is_closed=lambda: self.closed,
+                timeout_s=self.timeout_s, max_children=self.max_chains,
+                on_detached=self._child_detached,
+            )
+            await self.child_targets.start()
             return self
         except BaseException:
             await self.close()
@@ -55,19 +64,37 @@ class ChromiumDocumentGuard:
         if len(self.errors) < 100:
             self.errors.append(exc)
 
-    def _on_paused(self, event):
+    def _child_detached(self, channel):
+        namespace = id(channel)
+        self.chains = {key: count for key, count in self.chains.items() if key[0] != namespace}
+        self.paused = {key for key in self.paused if key[0] != namespace}
+
+    def _child_failure(self, reason):
         if self.closed:
-            return  # Held in CDP until the already-started page close completes.
-        if len(self.tasks) >= self.max_pending:
-            self._remember(DestinationDenied(event["request"]["url"], "guard_capacity"))
-            self.closed = True
-            self.generation += 1
-            self._overflow_close = asyncio.create_task(self.close())
             return
-        self.paused.add(event["requestId"])
-        task = asyncio.create_task(self._response(event, self.generation))
+        self._remember(DestinationDenied(self.initial_url, reason))
+        self.closed = True
+        self.generation += 1
+        self._overflow_close = asyncio.create_task(self.close())
+
+    def _spawn(self, coroutine):
+        if self.closed or len(self.tasks) >= self.max_pending:
+            coroutine.close()
+            self._child_failure("guard_capacity")
+            return None
+        task = asyncio.create_task(coroutine)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+        return task
+
+    def _on_paused(self, event, channel=None):
+        if self.closed:
+            return  # Held until the already-started page close completes.
+        channel = self.session if channel is None else channel
+        key = (id(channel), event["requestId"])
+        self.paused.add(key)
+        if self._spawn(self._response(event, self.generation, channel)) is None:
+            self.paused.discard(key)
 
     async def rebind(self, initial_url, destination_policy=None):
         if self.paused:
@@ -94,18 +121,21 @@ class ChromiumDocumentGuard:
                 target, site_url=self.initial_url, destination_policy=self.destination_policy,
             )
 
-    async def _response(self, event, generation=None):
+    async def _response(self, event, generation=None, channel=None):
         generation = self.generation if generation is None else generation
+        channel = self.session if channel is None else channel
         request_id = event["requestId"]
+        namespace = id(channel)
+        key = (namespace, request_id)
         url = event["request"]["url"]
         try:
             if self.closed:
                 raise DestinationDenied(url, "guard_closed")
             headers = {h["name"].lower(): h["value"] for h in event.get("responseHeaders", [])}
             location = headers.get("location")
-            network_id = event.get("networkId")
-            chain = network_id or request_id
-            previous = event.get("redirectedRequestId")
+            network_id = (namespace, event["networkId"]) if event.get("networkId") else None
+            chain = network_id or key
+            previous = (namespace, event["redirectedRequestId"]) if event.get("redirectedRequestId") else None
             if event.get("responseStatusCode") in REDIRECT_STATUSES and location:
                 count = (self.chains.get(network_id, 0) if network_id else self.chains.pop(previous, 0)) + 1
                 if chain not in self.chains and len(self.chains) >= self.max_chains:
@@ -116,23 +146,24 @@ class ChromiumDocumentGuard:
                 target = absolute(url, location)
                 # Third-party challenge frames retain their native networking;
                 # every document hop still receives the private-address check.
-                private_only = event["frameId"] != self.main_frame_id
+                private_only = channel is not self.session or event["frameId"] != self.main_frame_id
                 if target is None or not await self._allowed(target, private_only=private_only):
                     raise DestinationDenied(target or url)
             else:
                 self.chains.pop(network_id or previous or chain, None)
             if self.closed or generation != self.generation:
                 raise DestinationDenied(url, "guard_revoked")
-            await self.session.send("Fetch.continueRequest", {"requestId": request_id})
+            await channel.send("Fetch.continueRequest", {"requestId": request_id})
         except Exception as exc:
-            self._remember(exc, generation)
-            self.chains.pop(event.get("networkId", request_id), None)
+            if not getattr(channel, "closed", False):
+                self._remember(exc, generation)
+            self.chains.pop((namespace, event.get("networkId", request_id)), None)
             try:
-                await self.session.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+                await channel.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
             except Exception:
                 pass  # A closed target cannot issue the paused request.
         finally:
-            self.paused.discard(request_id)
+            self.paused.discard(key)
 
     async def request(self, route):
         """Use behind private_route_guard; retains native browser request I/O."""
@@ -163,6 +194,8 @@ class ChromiumDocumentGuard:
                 if not self.page.is_closed():
                     await self.page.close()
             finally:
+                if self.child_targets is not None:
+                    self.child_targets.close()
                 if self.session is not None:
                     self.session.remove_listener("Fetch.requestPaused", self._on_paused)
                 pending = list(self.tasks)
