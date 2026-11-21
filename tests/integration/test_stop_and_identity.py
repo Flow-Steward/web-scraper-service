@@ -101,6 +101,12 @@ def test_one_identity_per_exit(guarded_service, fixture_world, browser):
     a = check(guarded_service.post("/v1/analyze", {"config": cfg, "profile": prof}), "analysis.schema.json", 200)
     fixture_world.set(8603, reset_clearances=True)
     s = check(guarded_service.post("/v1/samples", {"config": cfg, "profile": prof, "urls": [f"{GUARD}/p/2"]}), "samples.schema.json", 200)
+    assert a.get("protection_trace"), {
+        "phase": "analysis", "response": a, "service_log": guarded_service.log()[-12000:],
+    }
+    assert s.get("protection_trace"), {
+        "phase": "samples", "response": s, "service_log": guarded_service.log()[-12000:],
+    }
     ta, ts = a["protection_trace"][0], s["protection_trace"][0]
     assert ta["exit_ip"] == ts["exit_ip"] == "203.0.113.7"
     pa, ps = ta["environment"]["preset_id"], ts["environment"]["preset_id"]
