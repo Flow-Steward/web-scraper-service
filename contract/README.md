@@ -840,9 +840,11 @@ With `when_site_busy: queue` the run is stored and waits as described next.
 
 A queued run of a site that has a run `running` or `stopping` waits until that
 run ends; queued runs of other sites may start before it. While queued, the
-summary (also the answer of `POST /v1/runs`) has `queued_reason`
+summary (also the answer of `POST /v1/runs`) may have `queued_reason`
 {`code`: `same_site_running` | `no_free_slot`, `run_id`, `message`}. A run in
-`waiting_for_credentials` does not hold its site. Politeness (delays, 429
+`waiting_for_credentials` does not hold its site. A queued run waiting only for
+the scheduler with free capacity has no `queued_reason`; `no_free_slot` requires
+all concurrent slots to be occupied by running or stopping jobs. Politeness (delays, 429
 back-off, crawl-delay) stays per run; with one run per site at a time a
 throttle shared across runs is not needed.
 

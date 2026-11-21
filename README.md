@@ -340,7 +340,9 @@ while a run of the same site is `queued`, `running`, `stopping` or
 (`error.details`), and nothing is stored, so a daily schedule never piles up runs behind
 a long one; the same `Idempotency-Key` may be sent again later. With
 `when_site_busy: queue` the run is stored and starts when the running one ends; while it
-waits, its summary has `queued_reason` (`same_site_running` or `no_free_slot`).
+waits on a running site or exhausted capacity, its summary has `queued_reason`
+(`same_site_running` or `no_free_slot`). A queued run with free capacity is waiting
+for the scheduler and has no blocker reason.
 
 **Politeness presets.** `politeness` fills the politeness fields that the run, the
 connection profile and the mapping do not set:
