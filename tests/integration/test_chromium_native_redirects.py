@@ -16,7 +16,8 @@ from tests.integration.test_redirect_destinations import redirect_documents
 
 @pytest_asyncio.fixture
 async def native_page(monkeypatch):
-    monkeypatch.setenv("WSS_UNSAFE_ALLOW_PRIVATE_TARGETS", "1")
+    from tests.unit.test_logic import settings
+    monkeypatch.setattr("app.settings._settings", settings())
     async def forbidden(*args, **kwargs):
         raise AssertionError("Native browser guard must never call Route.fetch")
     monkeypatch.setattr(Route, "fetch", forbidden)
