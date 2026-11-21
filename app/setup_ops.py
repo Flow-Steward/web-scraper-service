@@ -1086,6 +1086,20 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         if pats:  # a known target pattern (url_include, an active mapping): matching shapes first
             groups.sort(key=lambda g: 0 if any(p.search(u) for u in g["urls"] for p in pats) else 1)
         ex.discovery["links"] = sum(len(g["urls"]) for g in groups)
+        # A loaded start page can itself be the requested record. Intermediate
+        # links must not displace it merely because they now remain traversable.
+        if _url_looks_target(canonical_url(site_url), config, mappings):
+            from app.extraction.sampling import url_shape
+
+            shape = url_shape(site_url)
+            own = next((g for g in groups if g["shape"] == shape), None)
+            if own is None:
+                own = {"shape": shape, "urls": [], "links": 0, "in_menus": 0.0}
+            else:
+                groups.remove(own)
+            own["urls"].insert(0, site_url)
+            own["links"] += 1
+            groups.insert(0, own)
     if groups and (sitemap_groups or preferred):
         ex.discovery["source"] = "start_page+sitemap"
         plan = ProbePlan(groups, limit=links_limit + limit, tail=preferred[:limit] or spread_by_shape(
@@ -1103,6 +1117,8 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         ex.discovery["source"] = "start_page"
         plan = ProbePlan([], limit=links_limit, tail=[site_url])
     plan.depths[_url_key(site_url)] = 0
+    if ex.discovery.get("start_page"):
+        plan._known.add(_url_key(site_url))  # backlinks cannot reprobe discovery's root
     ex.discovery["shapes"] = len(plan.groups)
     return plan
 
