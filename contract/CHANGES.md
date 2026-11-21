@@ -11,7 +11,8 @@ directory) must do.
 `found`, `url_count` and `matching_url_count` now also allow `null`: explicit
 `crawl`/`url_list` skips enumeration, and an interrupted preview may not establish
 whether any sitemap URLs exist. Unknown values must not be displayed as zero/false.
-`url_count_capped` also covers the setup file/time budgets; numeric counts with it
+`url_count_capped` also covers the setup file/time budgets and incomplete source reads
+(missing, malformed or refused sources); numeric counts with it
 are lower bounds. The preview caps are 1,000 URLs, 20 files and 10 seconds.
 
 Extension: synchronize `schemas/analysis.schema.json`; accept nullable found/counts,

@@ -111,7 +111,7 @@
         },
         "url_count_capped": {
           "type": "boolean",
-          "description": "True when the setup sitemap preview reached its URL, file or time budget. Counts are lower bounds; full inventory is deferred to the run."
+          "description": "True when the setup sitemap preview reached its URL, file or time budget, or source reads were incomplete. Counts are lower bounds; full inventory is deferred to the run."
         },
         "matching_url_count": {
           "type": [
@@ -151,7 +151,7 @@
             "limited",
             "skipped"
           ],
-          "description": "Setup preview state: complete, stopped at a metadata budget, or skipped for explicit crawl/url_list."
+          "description": "Setup preview state: complete, limited by budgets or incomplete/refused source reads, or skipped for explicit crawl/url_list."
         }
       }
     },

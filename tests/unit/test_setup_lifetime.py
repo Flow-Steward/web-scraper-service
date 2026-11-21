@@ -338,3 +338,32 @@ async def test_asgi_disconnect_after_validated_body_stops_setup(tmp_path, monkey
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         svc.db.close()
+
+
+@pytest.mark.parametrize("problem", ["missing", "malformed", "private"])
+async def test_uninspected_nested_source_keeps_setup_coverage_unknown(monkeypatch, problem):
+    good, bad = SITE + "good.xml", SITE + "bad.xml"
+    sf = SyntheticSetup({INDEX: index([good, bad]), good: urlset(1), bad: b"" if problem == "missing" else b"<html>unavailable</html>"})
+    if problem == "private":
+        async def private(url):
+            return url == bad
+        monkeypatch.setattr("app.jobs.discovery.url_is_private", private)
+    result = await setup._analyze(service(), {"discovery_mode": "auto", "sitemap_url": INDEX}, SITE, sf)
+    assert result["sitemap"]["inspection"] == "limited"
+    assert result["sitemap"]["url_count_capped"] is True
+    assert result["sitemap"]["url_count"] == 1
+    assert result["sitemap"]["target_share"] is None
+    assert not schema_errors("analysis.schema.json", result)
+
+
+async def test_sitemap_metadata_preserves_sanitized_browser_unavailable():
+    sf = SyntheticSetup({})
+
+    async def failed_fetch(url):
+        raise setup.SetupBrowserUnavailable("TargetClosedError")
+
+    sf.fetch = failed_fetch
+    with pytest.raises(setup.SetupBrowserUnavailable) as error:
+        await setup._analyze(service(), {"discovery_mode": "auto", "sitemap_url": INDEX}, SITE, sf)
+    assert error.value.status == 503
+    assert error.value.details["reason"] == "browser_unavailable"

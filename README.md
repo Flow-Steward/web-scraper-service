@@ -377,7 +377,8 @@ window, with no separate 30-second ceiling. Action/page budgets and the run
 intent and skips sitemap enumeration. Its `sitemap.inspection` is `skipped`, with
 `found`, `url_count` and `matching_url_count` set to `null` (unknown, not zero).
 `auto`, `sitemap` and `sitemap_and_crawl` inspect at most 1,000 observed page URLs,
-20 sitemap files and 10 seconds including sitemap discovery. A limited preview reports
+20 sitemap files and 10 seconds including sitemap discovery. Missing, malformed or refused
+nested sources also leave coverage incomplete. A limited preview reports
 `inspection: limited` and `url_count_capped: true`; known counts are lower bounds, and
 counts remain `null` when no count was established. `target_share` remains unknown
 for a limited preview. Full sitemap inventory belongs to a run.

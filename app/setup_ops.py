@@ -42,6 +42,7 @@ from app.jobs.discovery import (  # noqa: E402
     http_fetcher,
     iter_sitemaps,
     robots_from,
+    sitemap_report,
     target_patterns,
     target_share,
 )
@@ -63,6 +64,7 @@ async def _sitemap_metadata(site_url, config, robots, fetch):
 
     sitemaps, urls, latest = [], [], None
     limited = False
+    traversal = {}
     cache = {}
 
     async def bounded_fetch(url):
@@ -75,18 +77,19 @@ async def _sitemap_metadata(site_url, config, robots, fetch):
     try:
         async with asyncio.timeout(SITEMAP_METADATA_SECONDS):
             sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, bounded_fetch)
-            async with aclosing(iter_sitemaps(sitemaps, bounded_fetch, max_files=SITEMAP_METADATA_FILE_CAP)) as entries:
+            async with aclosing(iter_sitemaps(
+                sitemaps, bounded_fetch, max_files=SITEMAP_METADATA_FILE_CAP,
+                max_entries=SITEMAP_METADATA_URL_CAP, state=traversal,
+            )) as entries:
                 async for loc, lastmod in entries:
                     urls.append(loc)
                     if lastmod is not None and (latest is None or lastmod > latest):
                         latest = lastmod
-                    if len(urls) >= SITEMAP_METADATA_URL_CAP:
-                        limited = True
-                        break
-            # Reaching the file cap cannot establish that the index was exhausted.
-            limited = limited or len(cache) >= SITEMAP_METADATA_FILE_CAP
     except (TimeoutError, _SitemapMetadataLimit):
         limited = True
+    if sitemaps:
+        coverage = sitemap_report(traversal)
+        limited = limited or not coverage["complete"] or bool(coverage["refused_sources"])
     return sitemaps, urls, limited, latest
 
 
