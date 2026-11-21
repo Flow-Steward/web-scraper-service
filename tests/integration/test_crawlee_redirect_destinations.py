@@ -48,8 +48,8 @@ async def test_static_crawlee_fixture_allowed_identity_cookie_headers(redirect_d
         assert result.http_response.status_code == 200
         assert request.loaded_url == origin + "/list/final?edition=mono"
         assert [path for path, _ in hits] == ["/list?page=2", "/list/next?page=3", "/list/final?edition=mono"]
-        assert all(headers.get("X-Fixture") == "retained" for _, headers in hits)
-        assert "redirect_cookie=kept" in hits[2][1].get("Cookie", "")
+        assert all({key.lower(): value for key, value in headers.items()}.get("x-fixture") == "retained" for _, headers in hits)
+        assert "redirect_cookie=kept" in {key.lower(): value for key, value in hits[2][1].items()}.get("cookie", "")
     finally:
         await client.cleanup()
 
@@ -80,6 +80,6 @@ async def test_static_crawlee_header_dependent_robots_miss_bypasses_worker_queue
         paths = [path for path, _ in hits]
         assert paths.count("/robots.txt") == 1
         assert "/list/next" in paths and "/list/final" not in paths
-        assert next(headers for path, headers in hits if path == "/robots.txt")["X-Robots-Key"] == "retained"
+        assert {key.lower(): value for key, value in next(headers for path, headers in hits if path == "/robots.txt").items()}["x-robots-key"] == "retained"
     finally:
         await client.cleanup()

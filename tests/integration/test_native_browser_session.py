@@ -6,7 +6,6 @@ from playwright.async_api import Route
 from app.fetching.destinations import DestinationDenied
 from app.fetching.oneoff import BrowserSession
 from tests.integration.test_redirect_destinations import redirect_documents, authenticated_robots_redirects
-from tests.integration.test_firefox_native_policy import native_documents
 
 
 @pytest_asyncio.fixture(params=["chromium", "camoufox"])
@@ -85,6 +84,6 @@ async def test_native_redirect_robots_cache_miss_has_no_worker_queue_deadlock(na
             await native_session.get(origin + "/list", destination_policy=policy)
     paths = [path for path, _ in hits]
     assert paths.count("/robots.txt") == 1
-    assert next(headers for path, headers in hits if path == "/robots.txt")["X-Robots-Key"] == "retained"
+    assert {key.lower(): value for key, value in next(headers for path, headers in hits if path == "/robots.txt").items()}["x-robots-key"] == "retained"
     assert "/list/next" in paths
     assert "/list/final" not in paths
