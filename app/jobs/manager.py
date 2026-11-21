@@ -562,18 +562,34 @@ class JobManager:
         row = self._row(run_id)
         if not self.svc.secrets.configured:
             raise ApiError("secrets_key_unavailable", "the service has no job-secret encryption key configured", headers={"Retry-After": "300"})
-        doc = loads(row["doc"])
-        rt = loads(row["runtime"])
         state = row["state"]
-        if state not in ("completed", "failed"):
-            if profile.get("proxy_tiers") or profile.get("solver"):
+        active = self.runners.get(run_id)
+        owns_state = active is not None and active.state == state
+        # A paused runner may still be draining its queue. Preserve its latest
+        # budgets and synchronize replacement metadata before it persists again.
+        doc = copy.deepcopy(active.doc) if owns_state else loads(row["doc"])
+        rt = copy.deepcopy(active.rt) if owns_state else loads(row["runtime"])
+        replace_credentials = state not in ("completed", "failed") and bool(profile.get("proxy_tiers") or profile.get("solver"))
+        with self.svc.db.tx():
+            if replace_credentials:
                 self.svc.secrets.put(run_id, "proxy_solver", secret_part(profile))
+                summary = profile_summary(profile)
+                doc["profile"].update({key: summary[key] for key in ("proxy_tiers", "solver")})
+                if "profile_name" in summary:
+                    doc["profile"]["profile_name"] = summary["profile_name"]
+                rt["needs_secrets"] = bool(doc["config"].get("use_solver")) or needs_proxy_or_solver_secrets(doc["config"], profile)
                 if doc["secrets"].get("proxy_and_solver") in ("not_configured", "missing"):
                     doc["secrets"]["proxy_and_solver"] = "kept"
-        if profile.get("webhook"):
-            self.svc.secrets.put(run_id, "webhook", profile["webhook"])
-            doc["secrets"]["signing_secret"] = "kept"
-        self.svc.db.execute("UPDATE runs SET doc=? WHERE run_id=?", (dumps(doc), run_id))
+            if profile.get("webhook"):
+                self.svc.secrets.put(run_id, "webhook", profile["webhook"])
+                doc["secrets"]["signing_secret"] = "kept"
+                doc["profile"]["webhook_url"] = profile["webhook"]["url"]
+            self.svc.db.execute("UPDATE runs SET doc=?, runtime=? WHERE run_id=?", (dumps(doc), dumps(rt), run_id))
+        if owns_state:
+            active.doc["profile"] = copy.deepcopy(doc["profile"])
+            active.doc["secrets"] = copy.deepcopy(doc["secrets"])
+            if replace_credentials:
+                active.rt["needs_secrets"] = rt["needs_secrets"]
         if state == "waiting_for_credentials" and self._covers(run_id, doc["config"], rt):
             # The paused crawler must finish reclaiming in-flight requests before
             # a new runner opens the same persistent queue.
@@ -583,10 +599,13 @@ class JobManager:
             fresh = self._row(run_id)
             if fresh["state"] == "waiting_for_credentials":
                 rt = loads(fresh["runtime"])
-                rt.pop("credentials_wait_reason", None)
-                self.svc.db.execute("UPDATE runs SET runtime=? WHERE run_id=?", (dumps(rt), run_id))
-                self._set_state(run_id, "running")
-                self._start_runner(run_id)
+                # Another Resume can replace the profile while we wait for the
+                # old owner. Validate the latest committed replacement again.
+                if self._covers(run_id, loads(fresh["doc"])["config"], rt):
+                    rt.pop("credentials_wait_reason", None)
+                    self.svc.db.execute("UPDATE runs SET runtime=? WHERE run_id=?", (dumps(rt), run_id))
+                    self._set_state(run_id, "running")
+                    self._start_runner(run_id)
         elif state in ("running", "stopping") and (profile.get("proxy_tiers") or profile.get("solver")):
             # rotate a running job's secrets in memory too (README 15.26)
             runner = self.runners.get(run_id)
@@ -598,15 +617,18 @@ class JobManager:
         return self.summary(run_id)
 
     def _covers(self, run_id: str, config: dict, rt: dict) -> bool:
-        """The stored secrets decrypt and cover the job's tiers and solver."""
+        """The approved profile covers the job and decrypts when credentials are needed."""
         from app.core.secrets import SecretsUnavailable
 
-        if not rt.get("needs_secrets"):
-            return True
-        try:
-            secret = self.svc.secrets.get(run_id, "proxy_solver")
-        except SecretsUnavailable:
-            return False
+        if rt.get("needs_secrets"):
+            try:
+                secret = self.svc.secrets.get(run_id, "proxy_solver")
+            except SecretsUnavailable:
+                return False
+        else:
+            # IP allow-list profiles need no decrypted credentials, but must
+            # still cover the job's selected tiers after a replacement.
+            secret = loads(self._row(run_id)["doc"])["profile"]
         wanted = config.get("use_proxy_tiers") or []
         have = {t["tier"] for t in secret.get("proxy_tiers") or []}
         if wanted and not set(wanted) <= have:

@@ -1481,7 +1481,10 @@ links and runtime budgets remain. Proxy secrets that still decrypt remain `kept`
 only unavailable encryption secrets are `missing`. Resume waits for the old crawler
 to release its queue before starting its replacement. Running time excludes the
 pause; page attempts, navigation actions, record limits, clicks and solves retain
-their existing budget usage, including across a service restart.
+their existing budget usage, including across a service restart. A replacement
+proxy/solver profile updates both its public summary and whether the next runner
+requires decrypted secrets, so approved endpoint and authentication-mode changes
+apply on Resume. A webhook-only Resume keeps the current proxy/solver profile.
 
 ### 8.2 Event states
 

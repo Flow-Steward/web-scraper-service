@@ -47,7 +47,7 @@ def test_auth_classifier_does_not_confuse_target_or_transient_failures(error, st
     assert not is_proxy_auth_failure(error, status=status, proxy_used=True)
 
 
-async def make_run(tmp_path, monkeypatch):
+async def make_run(tmp_path, monkeypatch, *, connection_profile=None, config_overrides=None):
     svc = Service(settings(data_dir=str(tmp_path), secrets_key="fixture-only-key-0123456789abcdef"))
     monkeypatch.setattr("app.settings._settings", svc.settings)
     monkeypatch.setattr("app.fetching.browsers.resolve_browser", lambda _: None)
@@ -56,8 +56,9 @@ async def make_run(tmp_path, monkeypatch):
         "discovery_mode": "url_list", "urls": [{"url": "https://target.test/one"}, {"url": "https://target.test/two"}],
         "fetch_mode": "http", "respect_robots": False, "max_retries": 0,
         "delay_min_seconds": 0, "delay_max_seconds": 0,
+        **(config_overrides or {}),
     }, {}, {})
-    _, summary = await svc.jobs.create({"config": config, "profile": profile(), "platform": platform("proxy-auth-fixture")}, "proxy-auth-fixture")
+    _, summary = await svc.jobs.create({"config": config, "profile": connection_profile or profile(), "platform": platform("proxy-auth-fixture")}, "proxy-auth-fixture")
     run_id = summary["run_id"]
     svc.jobs._set_state(run_id, "running")
     runner = JobRunner(svc, run_id)
@@ -182,7 +183,7 @@ async def test_real_crawler_queue_survives_pause_restart_and_resume(tmp_path, mo
     runner.config["urls"] = [{"url": "http://target.test/one"}, {"url": "http://target.test/two"}]
     runner.config.update(use_proxy_tiers=[1], fields=["title"], max_concurrency=1, max_requests_per_minute=60000, respect_robots=False)
     runner.doc["profile"] = profile_summary(profile(proxy_tiers=[tier]))
-    runner.rt["needs_secrets"] = True
+    assert runner.rt["needs_secrets"] is False
     svc.secrets.put(runner.run_id, "proxy_solver", secret_part(profile(proxy_tiers=[tier])))
     runner.doc["secrets"]["proxy_and_solver"] = "kept"
     svc.mappings.activate("target.test", "sheet", 0, {
