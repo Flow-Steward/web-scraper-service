@@ -45,10 +45,24 @@ class ChromiumDocumentGuard:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
-    async def _allowed(self, target):
+    async def rebind(self, initial_url, destination_policy=None):
+        if self.paused:
+            raise RuntimeError("cannot rebind a paused document guard")
+        self.initial_url = initial_url
+        self.destination_policy = destination_policy
+        self.errors.clear()
+        self.chains.clear()
+
+    def raise_if_denied(self):
+        if self.errors:
+            raise self.errors[0]
+
+    async def _allowed(self, target, *, private_only=False):
         async with asyncio.timeout(self.timeout_s):
             if await url_is_private(target):
                 raise PrivateAddress(target)
+            if private_only:
+                return True
             return await redirect_destination_allowed(
                 target, site_url=self.initial_url, destination_policy=self.destination_policy,
             )
@@ -59,20 +73,24 @@ class ChromiumDocumentGuard:
         try:
             if self.closed:
                 raise DestinationDenied(url, "guard_closed")
-            if event["frameId"] == self.main_frame_id:
-                headers = {h["name"].lower(): h["value"] for h in event.get("responseHeaders", [])}
-                location = headers.get("location")
-                chain = event.get("networkId", event.get("redirectedRequestId", request_id))
-                if event.get("responseStatusCode") in REDIRECT_STATUSES and location:
-                    count = self.chains.get(chain, 0) + 1
-                    self.chains[chain] = count
-                    if count > self.max_redirects:
-                        raise DestinationDenied(url, "too_many_redirects")
-                    target = absolute(url, location)
-                    if target is None or not await self._allowed(target):
-                        raise DestinationDenied(target or url)
-                else:
-                    self.chains.pop(chain, None)
+            headers = {h["name"].lower(): h["value"] for h in event.get("responseHeaders", [])}
+            location = headers.get("location")
+            network_id = event.get("networkId")
+            chain = network_id or request_id
+            previous = event.get("redirectedRequestId")
+            if event.get("responseStatusCode") in REDIRECT_STATUSES and location:
+                count = (self.chains.get(network_id, 0) if network_id else self.chains.pop(previous, 0)) + 1
+                self.chains[chain] = count
+                if count > self.max_redirects:
+                    raise DestinationDenied(url, "too_many_redirects")
+                target = absolute(url, location)
+                # Third-party challenge frames retain their native networking;
+                # every document hop still receives the private-address check.
+                private_only = event["frameId"] != self.main_frame_id
+                if target is None or not await self._allowed(target, private_only=private_only):
+                    raise DestinationDenied(target or url)
+            else:
+                self.chains.pop(network_id or previous or chain, None)
             await self.session.send("Fetch.continueRequest", {"requestId": request_id})
         except Exception as exc:
             self.errors.append(exc)
@@ -104,6 +122,8 @@ class ChromiumDocumentGuard:
         self.closed = True
         self.session.remove_listener("Fetch.requestPaused", self._on_paused)
         if self.tasks:
+            for task in self.tasks:
+                task.cancel()
             await asyncio.gather(*self.tasks, return_exceptions=True)
         self.chains.clear()
         try:
