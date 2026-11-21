@@ -366,13 +366,16 @@ async def collect_listing_links(
             if await is_cancelled():
                 request_stop = "cancelled"
                 return
-            from app.core.linkrules import url_skip
+            from app.fetching.destinations import document_destination_allowed
 
             target = _same_site_url(request.url, site)
             if (
                 request.method != "GET"
                 or target is None
-                or url_skip(target, {"sensitive_path", "action_params"})
+                or not await document_destination_allowed(
+                    target, site_url=site_url or page.url,
+                    rules={"sensitive_path", "action_params"}, cancelled=cancelled,
+                )
             ):
                 request_stop = "policy_denied"
                 return

@@ -119,6 +119,7 @@ async def http_get(
     max_redirects: int = 10,
     check_private: bool = True,
     max_bytes: int = 60 * 1024 * 1024,
+    destination_policy=None,
 ) -> Fetched:
     merged = dict(DEFAULT_HEADERS)
     merged.update(headers or {})
@@ -139,6 +140,14 @@ async def http_get(
                         nxt = absolute(current, resp.headers["location"])
                         if not nxt:
                             return Fetched(url, current, resp.status_code, b"", dict(resp.headers), "bad redirect", hops)
+                        if check_private and await url_is_private(nxt):
+                            raise PrivateAddress(nxt)
+                        from app.fetching.destinations import redirect_destination_allowed
+
+                        if not await redirect_destination_allowed(
+                            nxt, site_url=url, destination_policy=destination_policy,
+                        ):
+                            return Fetched(url, current, resp.status_code, b"", dict(resp.headers), "redirect_policy_denied", hops)
                         hops.append(current)
                         current = nxt
                         continue
@@ -158,6 +167,41 @@ async def http_get(
         raise PrivateAddress(current) from exc
     except (httpx.HTTPError, OSError, ValueError) as exc:
         return Fetched(url, current, None, b"", {}, type(exc).__name__, hops)
+
+
+
+async def context_get(context, url: str, *, headers=None, destination_policy=None,
+                      timeout_ms=60000, max_redirects=10) -> Fetched | None:
+    """Raw context GET sharing cookies/proxy with per-hop destination checks."""
+    from app.fetching.destinations import redirect_destination_allowed
+
+    current, hops = url, []
+    for _ in range(max_redirects + 1):
+        if await url_is_private(current):
+            return None
+        response = await context.request.get(
+            current, timeout=timeout_ms, max_redirects=0, headers=headers,
+        )
+        try:
+            if response.status in (301, 302, 303, 307, 308) and response.headers.get("location"):
+                target = absolute(current, response.headers["location"])
+                if target is None:
+                    return Fetched(url, current, response.status, error="bad redirect", redirects=hops)
+                if await url_is_private(target):
+                    return None
+                if not await redirect_destination_allowed(
+                    target, site_url=url, destination_policy=destination_policy,
+                ):
+                    return Fetched(url, current, response.status, error="redirect_policy_denied", redirects=hops)
+                hops.append(current)
+                current = target
+                continue
+            body = await response.body()
+            return Fetched(url, response.url, response.status, body[:MAX_DECOMPRESSED],
+                           {k.lower(): v for k, v in response.headers.items()}, redirects=hops)
+        finally:
+            await response.dispose()
+    return Fetched(url, current, None, error="too many redirects", redirects=hops)
 
 
 def _proxy_cfg(proxy: str | None) -> dict | None:
@@ -445,7 +489,7 @@ class BrowserSession:
         self.traces.append(trace)
         log.info(redact(trace_line(trace), [self.proxy or ""]))
 
-    async def raw(self, url: str) -> Fetched | None:
+    async def raw(self, url: str, *, destination_policy=None, headers=None) -> Fetched | None:
         """The raw bytes of ``url`` (robots.txt, a sitemap) through the session's context: its
         cookies and proxy. A challenge is passed in the page first, then the bytes are fetched."""
         from app.fetching.challenge import detect_html
@@ -456,24 +500,27 @@ class BrowserSession:
             return Fetched(url, url, None, b"", {}, "protection_not_passed")
         for attempt in range(2):
             try:
-                resp = await self.context.request.get(url, timeout=60000, max_redirects=10)
-                body = await resp.body()
+                fetched = await context_get(
+                    self.context, url, headers=headers, destination_policy=destination_policy,
+                )
+                if fetched is None or fetched.error is not None:
+                    return fetched
+                body = fetched.body
+
             except Exception as exc:
                 return Fetched(url, url, None, b"", {}, type(exc).__name__)
             head = body[:300_000].decode("utf-8", errors="replace") if body[:2] != b"\x1f\x8b" else ""
-            if attempt == 0 and detect_html(head, resp.status).is_challenge:
+            if attempt == 0 and detect_html(head, fetched.status).is_challenge:
                 try:
                     await self.get(url)
                 except PrivateAddress:
                     return None
                 except Exception:
-                    return Fetched(url, url, resp.status, b"", {}, "challenge")
+                    return Fetched(url, url, fetched.status, b"", {}, "challenge")
                 if self.failure_for(url) is not None:  # the route failed: no second fetch
-                    return Fetched(url, url, resp.status, b"", {}, "protection_not_passed")
+                    return Fetched(url, url, fetched.status, b"", {}, "protection_not_passed")
                 continue
-            if resp.url != url and await url_is_private(resp.url):
-                return None
-            return Fetched(url, resp.url, resp.status, body[:MAX_DECOMPRESSED], {k.lower(): v for k, v in resp.headers.items()}, None)
+            return fetched
         return None
 
 
