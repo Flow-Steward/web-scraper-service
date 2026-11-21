@@ -33,6 +33,9 @@ def test_refused_proxy_pauses_and_corrected_profile_resumes(service, fixture_wor
     run_id = response.json()["run_id"]
     paused = service.wait_run(run_id, states=("waiting_for_credentials", "completed", "failed"), timeout=60)
     check(service.get(f"/v1/runs/{run_id}"), "run_summary.schema.json", 200)
+    if paused["state"] != "waiting_for_credentials":
+        print(json.dumps({"run": paused, "unextracted": service.get(f"/v1/runs/{run_id}/unextracted").json()}, indent=2))
+        print(service.log()[-20000:])
     assert paused["state"] == "waiting_for_credentials", paused
     assert paused["secrets"]["proxy_and_solver"] == "kept"
     assert paused["counters"]["records_extracted"] == 0
