@@ -628,10 +628,20 @@ class JobRunner:
             self.rt["sitemaps"] = []  # crawl never reads a sitemap
         else:
             robots = await self._robots_for(cfg["site_url"])
-            sitemaps = await find_sitemaps(cfg["site_url"], cfg.get("sitemap_url"), robots, self.aux_fetch)
+            probe = {}
+            sitemaps = await find_sitemaps(cfg["site_url"], cfg.get("sitemap_url"), robots, self.aux_fetch, probe=probe)
+            if mode == "auto" and not sitemaps:
+                # An absent optional default map is ordinary; an unavailable or
+                # invalid one is source uncertainty even when crawl is viable.
+                sitemaps = [u for u, fetched in probe.items() if fetched is None or fetched.status not in (404, 410)]
             self.rt["sitemaps"] = sitemaps
             if mode == "auto":
-                decided, why = await decide_discovery(self, sitemaps, self.aux_fetch)
+                async def probe_fetch(url):
+                    if url in probe:
+                        return probe.pop(url)
+                    return await self.aux_fetch(url)
+
+                decided, why = await decide_discovery(self, sitemaps, probe_fetch)
                 resolved["discovery_mode"] = decided
                 reasons += why
             else:
@@ -1171,9 +1181,10 @@ class JobRunner:
         def checkpoint():
             with self.svc.db.tx():
                 self.rt["sitemap_traversal"] = copy.deepcopy(state)
+                self.rt["sitemap_feeding_started"] = True
                 report = sitemap_report(state)
                 self.doc["sitemap_discovery"] = report
-                self.rt["sitemap_partial"] = not report["complete"]
+                self.rt["sitemap_partial"] = not report["complete"] or bool(self.rt.get("sitemap_probe_partial"))
                 self._persist()
 
         # Recollect retries failed document URLs as well as failed source files.

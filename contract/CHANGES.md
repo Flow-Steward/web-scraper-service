@@ -178,3 +178,8 @@ and caller lifetime; timeout is `503 service_unavailable` with reason
   `POST /v1/runs/{id}/recollect` now retries unfinished source cursors together
   with selected failed document URLs in a new linked run. `recollect_of.source_count`
   is additive; `url_count` may be zero for a source-only retry.
+- Auto discovery retains the bounded initial sitemap inspection as `sitemap_probe`
+  on run/completeness reports. An inaccessible source or cap remains partial when
+  auto falls back to crawl, including default-map outages (ordinary 404/410 remains
+  absent). Probe offsets never stand in for committed feeder cursors; failed
+  source-only traversal can still be recollected after a healthy crawl.

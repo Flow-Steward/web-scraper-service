@@ -327,6 +327,9 @@
         },
         "sitemap_discovery": {
           "$ref": "#/$defs/sitemap_discovery"
+        },
+        "sitemap_probe": {
+          "$ref": "#/$defs/sitemap_discovery"
         }
       }
     },
@@ -527,6 +530,9 @@
       }
     },
     "sitemap_discovery": {
+      "$ref": "#/$defs/sitemap_discovery"
+    },
+    "sitemap_probe": {
       "$ref": "#/$defs/sitemap_discovery"
     }
   },
@@ -1659,6 +1665,9 @@
           }
         },
         "sitemap_discovery": {
+          "$ref": "#/$defs/sitemap_discovery"
+        },
+        "sitemap_probe": {
           "$ref": "#/$defs/sitemap_discovery"
         }
       }

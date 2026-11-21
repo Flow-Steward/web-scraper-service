@@ -556,3 +556,9 @@ or an older cursor has no fingerprint, that source replays from the start throug
 queue/ancestor deduplication; replay spends the current run's remaining location
 budget and stays partial when exhausted. Completed sources are not re-polled; use
 a fresh full run when a complete new inventory is required.
+
+`auto` retains its initial source inspection in `sitemap_probe`, including failed
+sources and caps, even when it falls back to crawling. These remain partial-run
+provenance if a later source body changes. Probe offsets are reset before feeding;
+inspecting a URL never counts as having queued it. A default `/sitemap.xml` that
+returns 404/410 is absent; an inaccessible or invalid default is incomplete.

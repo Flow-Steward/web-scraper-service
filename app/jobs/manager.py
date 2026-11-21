@@ -346,10 +346,11 @@ class JobManager:
             if d.get("source_key"):
                 entry["key"] = d["source_key"]
             urls.append(entry)
-        from app.jobs.discovery import sitemap_report, sitemap_retry_state
+        from app.jobs.discovery import sitemap_coverage, sitemap_retry_state
 
-        traversal = (loads(row["runtime"]) or {}).get("sitemap_traversal") or {}
-        retry_sources = bool(traversal) and not sitemap_report(traversal)["complete"]
+        parent_runtime = loads(row["runtime"]) or {}
+        traversal = parent_runtime.get("sitemap_traversal") or {}
+        retry_sources = bool(traversal) and not sitemap_coverage(parent_runtime)["complete"]
         if not urls and not retry_sources and existing is None:
             counts = {r["reason"]: int(r["n"]) for r in self.svc.db.all("SELECT reason, COUNT(*) AS n FROM unextracted WHERE run_id=? GROUP BY reason", (parent_id,))}
             raise ApiError("nothing_to_recollect", "the run has no unextracted URLs with these reasons",
@@ -368,7 +369,7 @@ class JobManager:
             config["sitemap_url"] = next(iter(traversal["sources"]), None)
             link["source_count"] = sum(e.get("status") in ("pending", "failed") for e in traversal["sources"].values()) + int(bool(traversal.get("pending_root")))
             retry = {"traversal": sitemap_retry_state(traversal), "urls": urls,
-                     "roots": (loads(row["runtime"]) or {}).get("sitemap_retry_roots") or (loads(row["runtime"]) or {}).get("sitemaps") or list(traversal["sources"])}
+                     "roots": parent_runtime.get("sitemap_retry_roots") or parent_runtime.get("sitemaps") or list(traversal["sources"])}
         return await self.create({"config": config, "profile": body["profile"], "platform": body["platform"]}, idem_key,
                                  recollect_of=link, sitemap_retry=retry)
 
@@ -443,9 +444,11 @@ class JobManager:
         from app.jobs.report import comparison, completeness, explanation
 
         if rt.get("sitemap_traversal"):
-            from app.jobs.discovery import sitemap_report
+            from app.jobs.discovery import sitemap_coverage
 
-            doc["sitemap_discovery"] = sitemap_report(rt["sitemap_traversal"])
+            doc["sitemap_discovery"] = sitemap_coverage(rt)
+            if rt.get("sitemap_probe"):
+                doc["sitemap_probe"] = copy.deepcopy(rt["sitemap_probe"])
         cur = completeness(db, run_id, doc)
         doc["completeness"] = cur
         cmp = comparison(db, run_id, doc, cur, self.svc.settings.compare_drop_share)
@@ -513,6 +516,8 @@ class JobManager:
         comp = {k: snap[k] for k in keys}
         if snap.get("sitemap_discovery"):
             comp["sitemap_discovery"] = snap["sitemap_discovery"]
+        if snap.get("sitemap_probe"):
+            comp["sitemap_probe"] = snap["sitemap_probe"]
         if row["state"] not in ("completed", "failed") and snap.get("progress"):
             comp["progress"] = snap["progress"]
         item["completeness"] = comp
@@ -702,10 +707,12 @@ class JobManager:
         csv_info = self._write_result_csv(run_id, results_dir / names["result_csv"])
         ts = now()
         if rt.get("sitemap_traversal"):
-            from app.jobs.discovery import sitemap_report
+            from app.jobs.discovery import sitemap_coverage
 
-            doc["sitemap_discovery"] = sitemap_report(rt["sitemap_traversal"])
-            rt["sitemap_partial"] = not doc["sitemap_discovery"]["complete"]
+            doc["sitemap_discovery"] = sitemap_coverage(rt)
+            if rt.get("sitemap_probe"):
+                doc["sitemap_probe"] = copy.deepcopy(rt["sitemap_probe"])
+            rt["sitemap_partial"] = not doc["sitemap_discovery"]["complete"] or bool(rt.get("sitemap_probe_partial"))
         templates_failed = any(t.get("status") == "failed" for t in (rt.get("templates") or {}).values())
         # outcome-neutral entries: not_found, and sitemap URLs refused by robots.txt or the private rule
         non_neutral = int(svc.db.scalar("SELECT COUNT(*) FROM unextracted WHERE run_id=? AND neutral=0", (run_id,)) or 0)
@@ -744,6 +751,8 @@ class JobManager:
             doc["completeness"] = {k: snap[k] for k in ("target_pages_found", "pages_collected", "records", "not_collected", "not_collected_by_reason")}
             if snap.get("sitemap_discovery"):
                 doc["completeness"]["sitemap_discovery"] = snap["sitemap_discovery"]
+            if snap.get("sitemap_probe"):
+                doc["completeness"]["sitemap_probe"] = snap["sitemap_probe"]
         except Exception:
             pass
         tl = doc.setdefault("timeline", [])

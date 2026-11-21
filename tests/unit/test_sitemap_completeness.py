@@ -33,6 +33,8 @@ def fetcher(bodies):
         body = bodies.get(url)
         if isinstance(body, Exception):
             raise body
+        if isinstance(body, Fetched):
+            return body
         return None if body is None else Fetched(url, url, 200, body)
     return fetch
 
@@ -438,3 +440,134 @@ async def test_completed_sources_are_not_repolled_for_body_changes():
     urls, state = await collect({ROOT: RuntimeError('completed source must not be fetched again')}, state)
     assert urls == []
     assert discovery.sitemap_report(state)['complete'] is True
+
+
+@pytest.mark.parametrize('map_body,partial', [(None, True), (Fetched(ROOT, ROOT, 503, b'<html>unavailable</html>'), True), (b'<urlset/>', False)])
+async def test_auto_crawl_fallback_keeps_explicit_source_probe_failure(service, map_body, partial):
+    svc, doc = service
+    doc['config'].update(discovery_mode='auto', url_include=[], url_exclude=[])
+    runtime = {'sitemaps': [ROOT]}
+    runner = SimpleNamespace(doc=doc, config=doc['config'], rt=runtime, mappings_for=lambda site: [])
+    mode, _ = await discovery.decide_discovery(runner, [ROOT], fetcher({ROOT: map_body}))
+    assert mode == 'crawl'
+    doc['resolved']['discovery_mode'] = mode
+    await svc.jobs._complete_doc(doc['run_id'], doc, runtime, None)
+    summary = svc.jobs.summary(doc['run_id'])
+    assert summary['outcome'] == ('partial' if partial else 'complete')
+    if partial:
+        assert summary['sitemap_discovery']['failed_sources'] == [{'url': ROOT, 'reason': 'fetch_failed'}]
+        assert 'none missing' not in summary['completeness']['sentence']
+        assert summary['sitemap_probe']['complete'] is False
+        assert runtime['sitemap_traversal']['sources'][ROOT]['page_offset'] == 0
+
+
+async def test_auto_probe_successful_prefix_is_not_a_committed_feeder_cursor(service):
+    _, doc = service
+    product = 'https://supplier.example/product/a'
+    doc['config'].update(discovery_mode='auto', url_include=[], url_exclude=[])
+    bodies = {ROOT: index(A, B), A: urlset(product), doc['config']['site_url']: b'<main>Healthy start page</main>'}
+    runtime = {'sitemaps': [ROOT]}
+    runner = SimpleNamespace(doc=doc, config=doc['config'], rt=runtime, mappings_for=lambda site: [])
+    mode, _ = await discovery.decide_discovery(runner, [ROOT], fetcher(bodies))
+    assert mode == 'sitemap'
+    assert runtime['sitemap_traversal']['sources'][A]['page_offset'] == 0
+    feeder = fake_runner(bodies, runtime)
+    accepted = []
+    async def enqueue(entries, **kwargs):
+        accepted.extend(e['url'] for e in entries)
+    feeder.enqueue = enqueue
+    await feeder.feed()
+    assert accepted == [product]
+    assert feeder.rt['sitemap_partial'] is True
+
+
+async def test_auto_initial_probe_cap_remains_partial_if_next_body_changes(service, monkeypatch):
+    svc, doc = service
+    monkeypatch.setattr(discovery, 'SITEMAP_CAP', 5)
+    doc['config'].update(discovery_mode='auto', url_include=['/product/'], url_exclude=[])
+    runtime = {'sitemaps': [ROOT]}
+    runner = SimpleNamespace(doc=doc, config=doc['config'], rt=runtime, mappings_for=lambda site: [])
+    body = urlset(*[f'https://supplier.example/{"listing" if i < 5 else "product"}/{i}' for i in range(10)])
+    mode, _ = await discovery.decide_discovery(runner, [ROOT], fetcher({ROOT: body}))
+    assert mode == 'crawl'
+    assert runtime['sitemap_probe']['capped'] is True
+    feeder = fake_runner({ROOT: urlset()}, runtime)
+    feeder.doc = doc
+    async def enqueue(*args, **kwargs):
+        pass
+    feeder.enqueue = enqueue
+    await feeder.feed()  # A later healthy, shorter body must not erase the initial cap.
+    await svc.jobs._complete_doc(doc['run_id'], doc, runtime, None)
+    summary = svc.jobs.summary(doc['run_id'])
+    assert summary['outcome'] == 'partial'
+    assert summary['sitemap_probe']['cap_reason'] == 'entry_limit'
+    assert 'none missing' not in summary['completeness']['sentence']
+
+
+@pytest.mark.parametrize('status,partial', [(503, True), (404, False), (410, False)])
+async def test_auto_default_probe_distinguishes_unavailable_from_absent(service, monkeypatch, status, partial):
+    import asyncio
+    from app.jobs.runner import JobRunner
+    svc, doc = service
+    doc['config'].update(discovery_mode='auto', sitemap_url=None, single_page=False, url_include=[], url_exclude=[])
+    runtime = {}
+    calls = []
+    async def fetch(url):
+        calls.append(url)
+        if url == ROOT:
+            return Fetched(url, url, status, b'<html>unavailable</html>')
+        return Fetched(url, url, 200, b'<main>Healthy start page</main>')
+    async def public(url):
+        return False
+    async def robots(url):
+        return None
+    async def allowed(url):
+        return True
+    monkeypatch.setattr('app.jobs.runner.url_is_private', public)
+    runner = SimpleNamespace(doc=doc, config=doc['config'], rt=runtime, mappings_for=lambda site: [],
+                             aux_fetch=fetch, _robots_for=robots, robots_allowed=allowed,
+                             timeline=lambda *args: None, lock=asyncio.Lock(), _persist=lambda: None)
+    assert await JobRunner._resolve_discovery(runner)
+    assert doc['resolved']['discovery_mode'] == 'crawl'
+    assert calls.count(ROOT) == 1
+    await svc.jobs._complete_doc(doc['run_id'], doc, runtime, None)
+    summary = svc.jobs.summary(doc['run_id'])
+    assert summary['outcome'] == ('partial' if partial else 'complete')
+    if partial:
+        assert summary['sitemap_discovery']['failed_sources'] == [{'url': ROOT, 'reason': 'fetch_failed'}]
+
+
+async def test_auto_failed_source_recollect_preserves_healthy_crawl_documents(service, monkeypatch):
+    import json
+    from app.core.db import loads
+    from app.core.schemas import CONTRACT_DIR, validator
+    svc, doc = service
+    done, new = 'https://supplier.example/complete', 'https://supplier.example/new'
+    doc['config'].update(discovery_mode='auto', url_include=[], url_exclude=[])
+    runtime = {'sitemaps': [ROOT]}
+    runner = SimpleNamespace(doc=doc, config=doc['config'], rt=runtime, mappings_for=lambda site: [])
+    assert (await discovery.decide_discovery(runner, [ROOT], fetcher({ROOT: None})))[0] == 'crawl'
+    svc.db.execute('INSERT INTO urls(run_id,unique_key,url,source,status) VALUES (?,?,?,?,?)',
+                   (doc['run_id'], done, done, 'link', 'done'))
+    await svc.jobs._complete_doc(doc['run_id'], doc, runtime, None)
+    before = dict(svc.jobs._row(doc['run_id']))
+    body = json.loads((CONTRACT_DIR / 'examples/post_run_recollect.request.json').read_text())
+    async def rules(config, *args):
+        return config, [], []
+    monkeypatch.setattr('app.jobs.manager.apply_rules', rules)
+    status, child = await svc.jobs.recollect(doc['run_id'], body, 'auto-source-retry')
+    assert status == 201
+    assert child['recollect_of']['source_count'] == 1
+    assert child['recollect_of']['url_count'] == 0
+    child_runtime = loads(svc.jobs._row(child['run_id'])['runtime'])
+    feeder = fake_runner({ROOT: urlset(done, new)}, child_runtime)
+    feeder.svc = svc
+    feeder.doc = child
+    accepted = []
+    async def enqueue(entries, **kwargs):
+        accepted.extend(e['url'] for e in entries)
+    feeder.enqueue = enqueue
+    await feeder.feed()
+    assert accepted == [new]
+    assert not list(validator('run_summary.schema.json').iter_errors(svc.jobs.summary(doc['run_id'])))
+    assert dict(svc.jobs._row(doc['run_id'])) == before

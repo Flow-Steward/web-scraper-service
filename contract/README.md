@@ -2115,3 +2115,12 @@ removes result files after `retention.result_days` as before.
   service answers nothing else.
 - `database_bytes_before` / `_after` are main + WAL + SHM; `bytes_freed` is
   their difference (`null` in a dry run).
+
+Auto discovery source provenance: `sitemap_probe` has the same coverage shape as
+`sitemap_discovery` and is retained on summaries and completeness reports. Failed
+sources and caps in this initial inspection keep the run partial even when auto
+chooses a healthy crawl or a later source body changes. The inspection's source
+offsets are reset before actual feeding; they never advance queue checkpoints.
+Source-only recollection remains available after a crawl fallback. An optional
+default `/sitemap.xml` 404/410 means absent; an unavailable or invalid default
+means incomplete source coverage.

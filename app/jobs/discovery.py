@@ -66,7 +66,8 @@ def _looks_like_sitemap(body: bytes) -> bool:
     return head[:2] == b"\x1f\x8b" or b"<urlset" in head or b"<sitemapindex" in head or head.startswith(b"<?xml")
 
 
-async def find_sitemaps(site_url: str, sitemap_url: str | None, robots, fetch: Fetcher | None = None) -> list[str]:
+async def find_sitemaps(site_url: str, sitemap_url: str | None, robots, fetch: Fetcher | None = None,
+                        *, probe: dict[str, Fetched | None] | None = None) -> list[str]:
     """``sitemap_url``, else robots.txt ``Sitemap:`` lines, else ``/sitemap.xml`` (when it answers)."""
     if sitemap_url:
         return [sitemap_url]
@@ -83,6 +84,8 @@ async def find_sitemaps(site_url: str, sitemap_url: str | None, robots, fetch: F
         return found
     candidate = _origin(site_url) + "/sitemap.xml"
     fetched = await (fetch or http_fetcher())(candidate)
+    if probe is not None:
+        probe[candidate] = fetched
     if fetched is not None and fetched.status and 200 <= fetched.status < 300 and fetched.body and _looks_like_sitemap(fetched.body):
         return [candidate]
     return []
@@ -188,6 +191,13 @@ def sitemap_report(state: dict) -> dict:
             "capped": bool(state.get("capped")), "cap_reason": state.get("cap_reason"),
             "entries_seen": int(state.get("entries_seen", 0)), "source_files": len(sources),
             "failed_sources": failed, "pending_sources": pending, "refused_sources": refused}
+
+
+def sitemap_coverage(runtime: dict) -> dict:
+    """Inspection coverage until the first feeder commit, then queued coverage."""
+    if runtime.get("sitemap_probe") and not runtime.get("sitemap_feeding_started"):
+        return copy.deepcopy(runtime["sitemap_probe"])
+    return sitemap_report(runtime.get("sitemap_traversal") or {})
 
 
 def sitemap_retry_state(state: dict) -> dict:
@@ -303,19 +313,17 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
             entry["status"] = "complete"
 
 
-async def collect_sitemap_urls(sitemaps: list[str], cap: int = SITEMAP_CAP, fetch: Fetcher | None = None) -> tuple[list[str], bool, Any]:
-    """All page URLs of the sitemaps (index, text and gzip included), up to ``cap``."""
+async def collect_sitemap_urls(sitemaps: list[str], cap: int = SITEMAP_CAP, fetch: Fetcher | None = None,
+                               *, state: dict | None = None) -> tuple[list[str], bool, Any]:
+    """Inspect source URLs up to the total enumeration cap, optionally retaining coverage."""
     urls: list[str] = []
     latest = None
-    capped = False
-    async for loc, lastmod in iter_sitemaps(sitemaps, fetch or http_fetcher()):
+    state = {} if state is None else state
+    async for loc, lastmod in iter_sitemaps(sitemaps, fetch or http_fetcher(), state=state, max_entries=cap):
         urls.append(loc)
         if lastmod is not None and (latest is None or lastmod > latest):
             latest = lastmod
-        if len(urls) >= cap:
-            capped = True
-            break
-    return urls, capped, latest
+    return urls, bool(state.get("capped")), latest
 
 
 @url_batch
@@ -394,7 +402,26 @@ async def start_page_links(site_url: str, fetch: Fetcher | None = None) -> tuple
 
 async def decide_discovery(runner, sitemaps: list[str], fetch: Fetcher | None = None) -> tuple[str, list[str]]:
     cfg = runner.config
-    urls, _capped, _ = await collect_sitemap_urls(sitemaps, fetch=fetch) if sitemaps else ([], False, None)
+    probe_state: dict = {}
+    urls, _capped, _ = await collect_sitemap_urls(sitemaps, cap=SITEMAP_CAP, fetch=fetch, state=probe_state) if sitemaps else ([], False, None)
+    if probe_state:
+        report = sitemap_report(probe_state)
+        runner.rt["sitemap_probe"] = report
+        runner.rt["sitemap_probe_partial"] = not report["complete"]
+        runner.doc["sitemap_probe"] = copy.deepcopy(report)
+        runner.doc["sitemap_discovery"] = copy.deepcopy(report)
+        # Inspection emitted no queue requests. Keep only zero-offset discovery
+        # intent: neither a successful probe prefix nor its budget is a committed
+        # feeder cursor. Failed sources remain available for linked recollection.
+        intent = copy.deepcopy(probe_state)
+        intent.update(entries_seen=0, capped=False, cap_reason=None)
+        for entry in intent["sources"].values():
+            if entry["page_offset"] or entry["nested_offset"]:
+                entry["status"] = "pending"
+                entry.pop("reason", None)
+            entry.update(page_offset=0, nested_offset=0)
+        runner.rt["sitemap_traversal"] = intent
+        runner.rt["sitemap_partial"] = not report["complete"]
     matching = filter_urls(urls, cfg.get("url_include") or [], cfg.get("url_exclude") or [])
     share = None
     if matching:
