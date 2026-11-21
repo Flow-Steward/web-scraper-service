@@ -129,7 +129,7 @@ async def test_camoufox_native_iframe_public_allowed_private_redirect_zero_hits(
         paths = [path for path, _ in hits]
         assert "/public-frame" in paths and "/frame-redirect" in paths
         assert "/private-frame" not in paths
-        assert calls == [origin + "/list/frame-host"]
+        assert calls == []
     finally:
         await guard.close()
 

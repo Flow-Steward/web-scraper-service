@@ -129,7 +129,7 @@ class FirefoxPolicyBridge:
             await self._reply(writer, 200, result)
         except asyncio.CancelledError:
             raise
-        except (Exception,):
+        except Exception:
             try:
                 await self._reply(writer, 400, {"allow": False})
             except Exception:
@@ -278,8 +278,8 @@ class FirefoxDocumentGuard:
         self.generation = secrets.token_urlsafe(24)
         self.errors.clear()
         self.active = True
-        nonce, enrolled = self.bridge.prepare(self)
         try:
+            nonce, enrolled = self.bridge.prepare(self)
             await self.page.goto("about:blank#wss-document-policy=" + nonce, wait_until="commit", timeout=self.timeout_s * 1000)
             await asyncio.wait_for(asyncio.shield(enrolled), self.timeout_s)
         except BaseException:
@@ -287,6 +287,7 @@ class FirefoxDocumentGuard:
             raise
 
     async def decide(self, url, frame_kind, redirects):
+        generation = self.generation
         try:
             async with asyncio.timeout(self.timeout_s):
                 if not self.active:
@@ -296,16 +297,22 @@ class FirefoxDocumentGuard:
                     raise PrivateAddress(url)
                 if redirects > self.max_redirects:
                     raise DestinationDenied(url, "too_many_redirects")
-                if frame_kind == "main_frame" and not await redirect_destination_allowed(
+                if (frame_kind == "main_frame" and (redirects > 0 or url != self.initial_url)
+                        and not await redirect_destination_allowed(
                     url, site_url=self.initial_url, destination_policy=self.destination_policy,
-                ):
+                )):
                     raise DestinationDenied(url)
                 return True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.errors.append(exc)
+            if self.active and self.generation == generation and len(self.errors) < 32:
+                self.errors.append(exc)
             return False
+
+    def raise_if_denied(self):
+        if self.errors:
+            raise self.errors[0]
 
     async def request(self, route):
         # Native addon is the only Firefox document authorizer. Existing route

@@ -202,3 +202,55 @@ async def test_connection_limit_rejects_without_more_tasks():
             writer.close()
             await writer.wait_closed()
         await bridge.close()
+
+
+async def test_old_policy_error_does_not_contaminate_rebound_generation(monkeypatch):
+    from app.fetching import firefox_policy
+    async def public(url):
+        return False
+    monkeypatch.setattr(firefox_policy, "url_is_private", public)
+    started, finish = asyncio.Event(), asyncio.Event()
+    async def delayed(url):
+        started.set()
+        await finish.wait()
+        return False
+    guard = firefox_policy.FirefoxDocumentGuard(SimpleNamespace(context=SimpleNamespace(browser=None)),
+                                              "https://shop.test/list", destination_policy=delayed)
+    guard.active = True
+    pending = asyncio.create_task(guard.decide("https://shop.test/list/next", "main_frame", 0))
+    await asyncio.wait_for(started.wait(), 1)
+    guard.generation = "rebound"
+    finish.set()
+    assert await pending is False
+    assert guard.errors == []
+
+
+def test_raise_if_denied_preserves_original_error():
+    from app.fetching.firefox_policy import FirefoxDocumentGuard
+    from app.fetching.destinations import DestinationDenied
+    guard = FirefoxDocumentGuard(SimpleNamespace(context=SimpleNamespace(browser=None)), "https://shop.test/list")
+    guard.raise_if_denied()
+    denied = DestinationDenied("https://shop.test/cart")
+    guard.errors.append(denied)
+    with pytest.raises(DestinationDenied) as raised:
+        guard.raise_if_denied()
+    assert raised.value is denied
+
+
+async def test_original_admission_remains_caller_owned_but_redirect_return_checked(monkeypatch):
+    from app.fetching import firefox_policy
+    async def public(url):
+        return False
+    monkeypatch.setattr(firefox_policy, "url_is_private", public)
+    calls = []
+    async def policy(url):
+        calls.append(url)
+        return False
+    initial = "https://shop.test/list"
+    guard = firefox_policy.FirefoxDocumentGuard(SimpleNamespace(context=SimpleNamespace(browser=None)), initial,
+                                              destination_policy=policy)
+    guard.active = True
+    assert await guard.decide(initial, "main_frame", 0)
+    assert calls == []
+    assert not await guard.decide(initial, "main_frame", 2)
+    assert calls == [initial]
