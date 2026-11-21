@@ -350,7 +350,8 @@ def test_explanation_counts_summary_hints_and_log_line():
                                      "(/*-c<n> ×1028, /*-p<n> ×12), 3 pagination/filter variants skipped; "
                                      "probed: /*-p<n> 1 (selector on 0) (product signals on 1); /*-c<n> 2 (selector on 0); "
                                      "3 pages tried (1 over HTTP, 2 in the browser, 0 already loaded); 0 samples, 2 not target pages, 1 challenged"), out["summary"]
-    assert "Next: none of the 3 pages loaded had the product page selector .pp" in out["summary"]
+    # The HTTP 403 challenge was not a usable document inspected for the selector.
+    assert "Next: none of the 2 pages loaded had the product page selector .pp" in out["summary"]
     line = ex.log_line("s.example")
     assert line.startswith("samples site=s.example source=crawl start_links=2186/1040 shapes=2 sitemap=- tried=3 http=1 browser=2")
     assert "pages: https://s.example/cat-c1 browser 200 sel=no links=1040 start | https://s.example/a-p1 browser 200 sel=no links=40 not_target" in line
