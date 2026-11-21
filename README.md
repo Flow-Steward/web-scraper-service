@@ -482,6 +482,14 @@ extraction. Optional missing values can remain null without inheriting a parent
 value. Navigation limits and unsupported controls must be reviewed before claiming
 complete catalogue coverage. Test and deployment evidence is separate from a release.
 
+Listing observation permits in-page DOM/AJAX updates. A control requesting a new
+main-frame document is checked and deferred to normal discovery rather than loaded
+by the click collector; this prevents an unvalidated redirect chain from executing
+inside an observation. The deferred URL remains eligible for sample discovery,
+including validated pagination URLs. Such an observation reports bounded coverage.
+Browser contexts block Service Workers so request guards remain effective;
+layouts that require Service Workers may remain partially discovered.
+
 Embedded JSON variants may declare `children_path` relative to each object selected
 by `path`. A source with `path: "editions"` and `children_path: "packages"` emits
 each package with its own `raw` data and its corresponding edition at `parent.raw`.
