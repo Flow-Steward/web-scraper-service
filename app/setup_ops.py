@@ -90,6 +90,14 @@ async def _sitemap_metadata(site_url, config, robots, fetch):
     if sitemaps:
         coverage = sitemap_report(traversal)
         limited = limited or not coverage["complete"] or bool(coverage["refused_sources"])
+    elif any(
+        probe is None or probe.status not in (404, 410) or probe.error
+        for probe in cache.values()
+    ):
+        # find_sitemaps returns no roots for both absence and an unreadable default
+        # probe. Only ordinary 404/410 establishes absence; all other unsuccessful
+        # probe outcomes leave inventory unknown, including unusable 200 replies.
+        limited = True
     return sitemaps, urls, limited, latest
 
 

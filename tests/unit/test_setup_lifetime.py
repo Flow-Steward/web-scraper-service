@@ -348,6 +348,9 @@ async def test_uninspected_nested_source_keeps_setup_coverage_unknown(monkeypatc
         async def private(url):
             return url == bad
         monkeypatch.setattr("app.jobs.discovery.url_is_private", private)
+        async def private_host(host):
+            return True
+        monkeypatch.setattr("app.jobs.discovery.host_is_private", private_host, raising=False)
     result = await setup._analyze(service(), {"discovery_mode": "auto", "sitemap_url": INDEX}, SITE, sf)
     assert result["sitemap"]["inspection"] == "limited"
     assert result["sitemap"]["url_count_capped"] is True
@@ -366,4 +369,47 @@ async def test_sitemap_metadata_preserves_sanitized_browser_unavailable():
     with pytest.raises(setup.SetupBrowserUnavailable) as error:
         await setup._analyze(service(), {"discovery_mode": "auto", "sitemap_url": INDEX}, SITE, sf)
     assert error.value.status == 503
+    assert error.value.details["reason"] == "browser_unavailable"
+
+
+@pytest.mark.parametrize("status,body,expected_inspection,expected_count", [
+    (503, b"temporarily unavailable", "limited", None),
+    (429, b"rate limited", "limited", None),
+    (None, b"", "limited", None),
+    (None, None, "limited", None),
+    (200, b"<html>maintenance</html>", "limited", None),
+    (200, b"", "limited", None),
+    (404, b"not found", "complete", 0),
+    (410, b"gone", "complete", 0),
+    (200, b"<urlset/>", "complete", 0),
+])
+async def test_default_sitemap_probe_keeps_unavailable_inventory_unknown(status, body, expected_inspection, expected_count):
+    sf = SyntheticSetup({})
+
+    async def probe(url):
+        sf.calls.append(url)
+        return Fetched(url, url, status, body) if body is not None else None
+
+    sf.fetch = probe
+    result = await setup._analyze(service(), {"discovery_mode": "auto"}, SITE, sf)
+    assert sf.calls == [INDEX]
+    assert result["sitemap"]["inspection"] == expected_inspection
+    assert result["sitemap"]["url_count"] == expected_count
+    assert result["sitemap"]["matching_url_count"] == expected_count
+    assert result["sitemap"]["found"] is (None if expected_inspection == "limited" else False)
+    assert result["sitemap"]["url_count_capped"] is (expected_inspection == "limited")
+    if expected_inspection == "limited":
+        assert "no sitemap found" not in result["recommended"]["reasons"]
+    assert not schema_errors("analysis.schema.json", result)
+
+
+async def test_default_sitemap_probe_preserves_browser_unavailable_api_error():
+    sf = SyntheticSetup({})
+
+    async def probe(url):
+        raise setup.SetupBrowserUnavailable("TargetClosedError")
+
+    sf.fetch = probe
+    with pytest.raises(setup.SetupBrowserUnavailable) as error:
+        await setup._analyze(service(), {"discovery_mode": "auto"}, SITE, sf)
     assert error.value.details["reason"] == "browser_unavailable"
