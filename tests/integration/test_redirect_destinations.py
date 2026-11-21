@@ -85,3 +85,37 @@ async def test_http_allowed_redirect_fixture_keeps_identity_cookies_headers(redi
     assert [path for path, _ in hits] == ["/list?page=2", "/list/next?page=3", "/list/final?edition=mono"]
     assert all(headers.get("X-Fixture") == "retained" for _, headers in hits)
     assert "redirect_cookie=kept" in hits[2][1].get("Cookie", "")
+
+
+@pytest.fixture
+def authenticated_robots_redirects():
+    """A robots endpoint whose response depends on the configured caller header."""
+    hits = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append((self.path, dict(self.headers)))
+            if self.path in {"/list", "/list/next"}:
+                self.send_response(302)
+                self.send_header("Location", "/list/next" if self.path == "/list" else "/list/final")
+                self.end_headers()
+                return
+            if self.path == "/robots.txt":
+                authorized = self.headers.get("X-Robots-Key") == "retained"
+                status = 200 if authorized else 401
+                body = b"User-agent: *\nDisallow: /list/final\n" if authorized else b"Authentication required"
+            else:
+                status, body = 200, b"<main>Fixture document</main>"
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Type", "text/plain" if self.path == "/robots.txt" else "text/html")
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}", hits
+    server.shutdown()
+    server.server_close()
+    thread.join()

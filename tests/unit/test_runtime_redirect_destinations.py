@@ -43,3 +43,36 @@ async def test_runtime_redirect_cancellation_and_auxiliary_scope_exemption():
     assert not await JobRunner._document_destination_allowed(
         instance, ORIGIN + "/list", ORIGIN + "/list/next",
     )
+
+
+async def test_runtime_robots_cache_miss_preserves_configured_headers(monkeypatch):
+    from app.fetching.oneoff import Fetched
+    from app.jobs.runner import JobRunner
+
+    seen = []
+    async def robots(origin, fetch):
+        await fetch(origin + "/robots.txt")
+        return SimpleNamespace(is_allowed=lambda url: False, get_crawl_delay=lambda: None)
+    async def fetch(url, **kwargs):
+        seen.append((url, kwargs))
+        return Fetched(url, url, 200)
+    monkeypatch.setattr("app.jobs.discovery.robots_from", robots)
+    instance = SimpleNamespace(config={"headers": {"X-Fixture": "retained"}}, robots={},
+        throttle=SimpleNamespace(set_crawl_delay=lambda *a: None),
+        _redirect_http_client=SimpleNamespace(fetch_auxiliary=fetch))
+    assert not await JobRunner._http_redirect_robots_allowed(instance, ORIGIN + "/list/blocked")
+    assert seen == [(ORIGIN + "/robots.txt", {"headers": {"X-Fixture": "retained"}})]
+
+
+def test_runtime_late_policy_error_is_not_accepted_as_document_success():
+    from app.fetching.destinations import DestinationDenied
+    from app.jobs.runner import raise_document_policy_error
+
+    error = DestinationDenied(ORIGIN + "/cart")
+    def rejected():
+        raise error
+    ctx = SimpleNamespace(request=SimpleNamespace(no_retry=False),
+        page=SimpleNamespace(_wss_native_document_policy=SimpleNamespace(errors=[error], raise_if_denied=rejected)))
+    with pytest.raises(DestinationDenied):
+        raise_document_policy_error(ctx)
+    assert ctx.request.no_retry is True

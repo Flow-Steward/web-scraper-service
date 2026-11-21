@@ -5,7 +5,7 @@ from playwright.async_api import Route
 
 from app.fetching.destinations import DestinationDenied
 from app.fetching.oneoff import BrowserSession
-from tests.integration.test_redirect_destinations import redirect_documents
+from tests.integration.test_redirect_destinations import redirect_documents, authenticated_robots_redirects
 from tests.integration.test_firefox_native_policy import native_documents
 
 
@@ -67,16 +67,15 @@ async def test_ordinary_browser_session_caller_denial_before_redirect(native_ses
     assert "/list/robots-blocked" not in [path for path, _ in hits]
 
 
-async def test_native_redirect_robots_cache_miss_has_no_worker_queue_deadlock(native_session, native_documents):
+async def test_native_redirect_robots_cache_miss_has_no_worker_queue_deadlock(native_session, authenticated_robots_redirects):
     import asyncio
     from types import SimpleNamespace
     from app.jobs.runner import JobRunner
 
-    origin, _, documents, hits = native_documents
-    documents["/robots.txt"] = "User-agent: *\nDisallow: /list/final\n"
+    origin, hits = authenticated_robots_redirects
     async def saturated_worker_queue(*args, **kwargs):
         raise AssertionError("Held navigation must not enqueue robots into its occupied worker")
-    runner = SimpleNamespace(config={"respect_robots": True}, robots={},
+    runner = SimpleNamespace(config={"respect_robots": True, "headers": {"X-Robots-Key": "retained"}}, robots={},
         _shutdown=False, state="running", aux_fetch=saturated_worker_queue,
         throttle=SimpleNamespace(set_crawl_delay=lambda *args: None))
     async def policy(url):
@@ -86,5 +85,6 @@ async def test_native_redirect_robots_cache_miss_has_no_worker_queue_deadlock(na
             await native_session.get(origin + "/list", destination_policy=policy)
     paths = [path for path, _ in hits]
     assert paths.count("/robots.txt") == 1
+    assert next(headers for path, headers in hits if path == "/robots.txt")["X-Robots-Key"] == "retained"
     assert "/list/next" in paths
     assert "/list/final" not in paths

@@ -49,7 +49,9 @@ class ChromiumDocumentGuard:
             await self.close()
             raise
 
-    def _remember(self, exc):
+    def _remember(self, exc, generation=None):
+        if generation is not None and generation != self.generation:
+            return
         if len(self.errors) < 100:
             self.errors.append(exc)
 
@@ -123,7 +125,7 @@ class ChromiumDocumentGuard:
                 raise DestinationDenied(url, "guard_revoked")
             await self.session.send("Fetch.continueRequest", {"requestId": request_id})
         except Exception as exc:
-            self._remember(exc)
+            self._remember(exc, generation)
             self.chains.pop(event.get("networkId", request_id), None)
             try:
                 await self.session.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
@@ -146,7 +148,7 @@ class ChromiumDocumentGuard:
                 raise DestinationDenied(req.url, "guard_revoked")
             await route.continue_()
         except Exception as exc:
-            self._remember(exc)
+            self._remember(exc, generation)
             await route.abort("blockedbyclient")
 
     async def close(self):

@@ -116,6 +116,14 @@ def fail_on_url_pattern_error(handler):
     return bounded
 
 
+def raise_document_policy_error(ctx):
+    """Surface native late navigation refusals before accepting page contents."""
+    policy = getattr(ctx.page, "_wss_native_document_policy", None)
+    if policy is not None and policy.errors:
+        ctx.request.no_retry = True
+        policy.raise_if_denied()
+
+
 def write_unextracted(db, run_id: str, canonical: str, requested: str | None, source_key: str | None, site: str, reason: str,
                       template_id: str | None, http_status: int | None, attempts: int, last_error: str | None = None,
                       missing: list[str] | None = None, neutral: bool = False, secrets: list[str] | None = None,
@@ -1620,6 +1628,7 @@ class JobRunner:
             if not await settle(ctx.page, 20.0):
                 # still loading ("Loading https://…") is not a challenge; Crawlee retries the request
                 raise PageNotLoaded("the page did not finish loading within 20 s")
+            raise_document_policy_error(ctx)
             verdict = await detect_page(ctx.page, status)
         else:
             body = await ctx.http_response.read()
@@ -1668,6 +1677,7 @@ class JobRunner:
         if browser_run:
             await self._browser_waits(ctx.page)
             html = await page_html(ctx.page)
+            raise_document_policy_error(ctx)
             final_url = ctx.page.url
             # the challenge may come back while the page settles
             if html is None or detect_html(html, None).is_challenge:
@@ -1686,6 +1696,8 @@ class JobRunner:
             return
         if ud.get("challenged") and outcome.get("kind") == "page":
             outcome["challenge"] = {"passed_at_step": passed_step}
+        if browser_run:
+            raise_document_policy_error(ctx)
         await ctx.push_data(outcome)
 
     def _rate_limited(self, ctx, host: str) -> None:
@@ -1864,6 +1876,7 @@ class JobRunner:
 
         if not await settle(ctx.page, 20.0):
             raise PageNotLoaded("the page did not finish loading within 20 s")
+        raise_document_policy_error(ctx)
         verdict = await detect_page(ctx.page, status)
         if verdict.is_block:
             self.prot()["hard_blocks"] += 1
@@ -2092,7 +2105,10 @@ class JobRunner:
                     cancelled=lambda: self._shutdown or self.state != "running",
                 )
             async def fetch_aux(url):
-                return await context_get(page.context, url, destination_policy=allowed_aux)
+                return await context_get(
+                    page.context, url, headers=self.config.get("headers") or None,
+                    destination_policy=allowed_aux,
+                )
             # Raw robots reads already use APIRequestContext in browser jobs.
             # This path never loads document bytes through it or queues a worker.
             self.robots[origin] = await robots_from(origin, fetch_aux)
@@ -2112,7 +2128,11 @@ class JobRunner:
             # Never enqueue into the same crawler while its document is held.
             # The nested auxiliary request shares this document's proxy/cookies,
             # has a bounded deadline, and does not recurse into robots policy.
-            robots = await robots_from(origin, self._redirect_http_client.fetch_auxiliary)
+            async def fetch_aux(url):
+                return await self._redirect_http_client.fetch_auxiliary(
+                    url, headers=self.config.get("headers") or None,
+                )
+            robots = await robots_from(origin, fetch_aux)
             self.robots[origin] = robots
             if robots is not None:
                 self.throttle.set_crawl_delay(host_of(target), robots.get_crawl_delay())

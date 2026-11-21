@@ -85,3 +85,29 @@ async def test_cdp_partial_start_failure_can_close():
     guard = ChromiumDocumentGuard(SimpleNamespace(is_closed=lambda: False, close=close), "https://catalogue.example.test/list")
     await guard.close()
     assert guard.closed
+
+
+async def test_cdp_old_fresh_document_callback_cannot_poison_rebound_errors(monkeypatch):
+    import asyncio
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def public(url):
+        return False
+    async def policy(url):
+        entered.set()
+        await release.wait()
+        return True
+    async def continue_request():
+        raise AssertionError("Old generation must never continue")
+    async def abort(*args):
+        pass
+    frame = object()
+    monkeypatch.setattr("app.fetching.chromium_destinations.url_is_private", public)
+    guard = ChromiumDocumentGuard(SimpleNamespace(main_frame=frame), "https://catalogue.test/list", destination_policy=policy)
+    route = SimpleNamespace(request=SimpleNamespace(is_navigation_request=lambda: True, frame=frame,
+        method="GET", url="https://catalogue.test/list/next"), continue_=continue_request, abort=abort)
+    pending = asyncio.create_task(guard.request(route))
+    await entered.wait()
+    await guard.rebind("https://catalogue.test/second-list")
+    release.set()
+    await pending
+    assert guard.errors == []

@@ -147,6 +147,7 @@ async def attempt(url: str, *, browser_name: str, os_name: str, canvas_noise: st
             loads[0] += 1
             resp = await page.goto(url, wait_until="load", timeout=60000)
             verdict = await detect_page(page, resp.status if resp else None)
+            document_policy.raise_if_denied()
             if verdict.kind == "none":
                 out["note"] += "no challenge shown"
                 out["passed"], out["step"] = True, "loaded"
@@ -168,6 +169,7 @@ async def attempt(url: str, *, browser_name: str, os_name: str, canvas_noise: st
                         if passed:
                             out["step"] = "click"
                 out["passed"] = passed
+            document_policy.raise_if_denied()
             if out["passed"]:
                 out["seconds"] = round(time.monotonic() - started, 1)
             try:
@@ -184,6 +186,8 @@ async def attempt(url: str, *, browser_name: str, os_name: str, canvas_noise: st
         except LoadCap:
             raise
         except Exception as exc:
+            out["passed"] = False
+            out["seconds"] = None
             out["note"] += redact(f"{type(exc).__name__}: {str(exc).splitlines()[0][:120] if str(exc) else ''}", [proxy or ""])
         finally:
             if browser is not None:
