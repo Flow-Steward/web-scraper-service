@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import random
@@ -434,8 +433,6 @@ def _as_fetched(url: str, got: tuple) -> Fetched:
 
 # ====================================================================== analysis
 async def analyze(svc, body: dict) -> dict:
-    from app.fetching.browsers import resolve_browser
-
     config, profile = body["config"], body["profile"]
     site_url = config.get("site_url")
     if not site_url:
@@ -677,7 +674,7 @@ async def samples(svc, body: dict) -> dict:
 @url_batch
 def _sample_link_groups(page, site, config, mappings):
     """Navigation scope applies to intermediate links, not extraction admission."""
-    from app.core.scope import crawl_patterns, in_scope
+    from app.core.scope import crawl_patterns
 
     pats = target_patterns(mappings, config.get("url_include") or [])
     groups, _ = link_groups(
@@ -1080,7 +1077,7 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
     if mode == "crawl" or not (sitemap_groups or preferred) or (deep and mode == "auto" and not pats):
         groups = await _start_link_groups(site_url, fetch, exclude, ex, config)
         # Include patterns select extracted pages, not intermediate navigation.
-        from app.core.scope import crawl_patterns, in_scope
+        from app.core.scope import crawl_patterns
 
         with url_pattern_batch():
             scope = crawl_patterns(config)

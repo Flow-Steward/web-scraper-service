@@ -32,7 +32,6 @@ import json
 import copy
 import hashlib
 import logging
-import re
 import shutil
 import time
 from functools import wraps
@@ -62,6 +61,7 @@ from app.fetching.proxies import TierPlan
 from app.jobs.throttle import HostThrottle
 
 if TYPE_CHECKING:
+    from app.fetching.protection import RouteBudget
     from app.service import Service
 
 log = logging.getLogger("wss.job")
@@ -1537,7 +1537,6 @@ class JobRunner:
 
     async def _push_failed_status(self, ctx, url: str, status: int, error: str) -> None:
         request = ctx.request
-        ud = request.user_data
         try:
             canonical = canonical_url(request.loaded_url or url)
             site = site_key(request.loaded_url or url)
@@ -1659,7 +1658,6 @@ class JobRunner:
         from app.fetching.oneoff import Fetched
 
         request = ctx.request
-        ud = request.user_data
         url = request.url
         if not browser_run:
             body = await ctx.http_response.read()
