@@ -5,6 +5,33 @@ and clarified text. Nullable fields introduced below require consumers to handle
 the extension (`flowsteward.web-scraper`, which keeps a copy of this
 directory) must do.
 
+## 2026-11-21 (discovery and connection reliability)
+
+- Run summaries and completeness reports add `sitemap_discovery` (`complete`,
+  `capped`, `cap_reason`, `entries_seen`, `source_files`, and sanitized
+  `failed_sources` / `pending_sources` / `refused_sources`). Failed or invalid
+  sources and discovery caps produce `outcome=partial`, including zero-record runs.
+  `recollect` retries unfinished source cursors together with selected failed
+  document URLs in a new linked run. `recollect_of.source_count` is additive;
+  `url_count` may be zero for a source-only retry.
+- Auto discovery retains its bounded initial source inspection as `sitemap_probe`.
+  An inaccessible source or cap remains partial when auto falls back to crawl,
+  including default-map outages (ordinary 404/410 remains absent). Probe offsets
+  never stand in for committed feeder cursors. A source-only failure can be
+  recollected after a healthy crawl.
+- Explicit upstream proxy authentication rejection pauses a run in
+  `waiting_for_credentials` with one sanitized `proxy_auth_failed` problem.
+  Resume applies the approved replacement profile while preserving pending work,
+  completed records and existing budgets. An origin login or ordinary timeout
+  is not evidence of proxy authentication failure.
+- Ordinary HTTP and native browser document redirects now receive destination
+  checks before following each hop. Browser networking, cookies and identity
+  remain native; this also covers redirects from committed cross-site frames.
+
+Extension: the synchronized run-summary schema accepts the additional coverage
+fields. Show partial discovery and the actionable connection problem; never
+present an inaccessible inventory as a proven complete empty catalogue.
+
 ## 2026-11-21 (bounded setup sitemap preview)
 
 `analysis.sitemap` adds optional `inspection: complete | limited | skipped`.
@@ -170,16 +197,3 @@ and caller lifetime; timeout is `503 service_unavailable` with reason
 | 13 | Private-address rule spelled out (README 1): every special range, unresolvable hosts refused, robots.txt/sitemaps/echo URL included, browser requests and final URLs checked; webhook URLs exempt (`WSS_WEBHOOK_ALLOW_PRIVATE`, default on) | The self-hosted platform is reachable only on a private Docker address | Nothing |
 | 14 | Delivery after an outage keeps the schedule's spacing; parked `signing_secret_unavailable` events revive when the service starts with the right key (README 8.5) | Reliability | Nothing |
 | 15 | New warning code `target_pages_guessed` in `POST /v1/samples` `warnings[]` (`error.schema.json` enum, README 11) | Samples for a site without structured data and without hints are guessed by URL shape | Show the warning's message to the operator; an unknown code is handled by the existing rule |
-
-- Sitemap coverage: run summaries and completeness reports add `sitemap_discovery`
-  (`complete`, `capped`, `cap_reason`, `entries_seen`, `source_files`, and sanitized
-  `failed_sources` / `pending_sources` / `refused_sources`). Failed or invalid
-  sources and discovery caps produce `outcome=partial`, including zero-record runs.
-  `POST /v1/runs/{id}/recollect` now retries unfinished source cursors together
-  with selected failed document URLs in a new linked run. `recollect_of.source_count`
-  is additive; `url_count` may be zero for a source-only retry.
-- Auto discovery retains the bounded initial sitemap inspection as `sitemap_probe`
-  on run/completeness reports. An inaccessible source or cap remains partial when
-  auto falls back to crawl, including default-map outages (ordinary 404/410 remains
-  absent). Probe offsets never stand in for committed feeder cursors; failed
-  source-only traversal can still be recollected after a healthy crawl.
