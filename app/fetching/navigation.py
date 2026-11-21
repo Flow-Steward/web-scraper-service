@@ -31,12 +31,18 @@ class NavigationLimits:
     action_timeout_ms: int = 3000
     max_no_progress: int = 2
     allow_scroll: bool = False
+    # Runtime catalogues renew the transition deadline on real link progress.
+    # Setup callers can retain one absolute wall-clock budget.
+    progress_timeout: bool = True
+    max_total_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.max_steps < 0 or self.max_seconds <= 0:
             raise ValueError("Navigation needs a nonnegative step and positive time budget")
         if self.settle_ms <= 0 or self.action_timeout_ms <= 0 or self.max_no_progress <= 0:
             raise ValueError("Navigation wait and no-progress limits must be positive")
+        if self.max_total_seconds is not None and self.max_total_seconds <= 0:
+            raise ValueError("Total navigation budget must be positive")
 
 
 @dataclass(frozen=True)
@@ -299,6 +305,7 @@ def _stopped(result: NavigationResult, reason: str) -> NavigationResult:
         "controls_exhausted": "No further recognized enabled listing controls; custom or unlabelled navigation may remain.",
         "step_limit": "Navigation reached its action budget; additional listing pages may remain.",
         "time_limit": "Navigation reached its time budget; additional listing pages may remain.",
+        "total_time_limit": "Navigation reached the remaining job duration; additional listing pages may remain.",
         "no_progress": "Repeated listing actions revealed no new same-site links; coverage may be partial.",
         "loop_detected": "Listing navigation returned to an already observed state; coverage may be partial.",
         "navigation_deferred": "Document navigation was deferred to normal fetching before issuing a browser request; listing coverage is partial.",
@@ -318,8 +325,15 @@ async def collect_listing_links(
     limits: NavigationLimits | None = None,
     before_action: ActionPolicy | None = None,
     cancelled: CancellationCheck | None = None,
+    pace_action: Callable[[NavigationAction], Awaitable[None]] | None = None,
+    on_progress: Callable[[], None] | None = None,
 ) -> NavigationResult:
     """Observe initial links and follow safe listing controls within fixed limits.
+
+    New links renew the transition deadline when ``progress_timeout`` is enabled.
+    Explicit host pacing is outside that deadline but requires a total duration
+    bound; cancellation is polled during pacing. Policy/DOM hangs stay bounded.
+    ``on_progress`` is a synchronous heartbeat, called only for new links.
 
     ``page`` is an already-loaded async Playwright page and is left at its final
     listing state. This never opens a product link. ``site_url`` defaults to the
@@ -340,6 +354,11 @@ async def collect_listing_links(
     browser context must block service workers, which bypass Playwright routes.
     """
     limits = limits or NavigationLimits()
+    if pace_action is not None and limits.max_total_seconds is None:
+        raise ValueError("Explicit pacing requires a total navigation duration")
+    loop = asyncio.get_running_loop()
+    transition_timer = asyncio.timeout(limits.max_seconds)
+    total_timer = asyncio.timeout(limits.max_total_seconds)
     result = NavigationResult()
     site = site_key(site_url or page.url)
     seen_links: set[str] = set()
@@ -352,6 +371,26 @@ async def collect_listing_links(
 
     async def is_cancelled() -> bool:
         return bool(await _resolved(cancelled())) if cancelled else False
+
+    async def pace(action: NavigationAction) -> bool:
+        assert pace_action is not None
+        deadline = transition_timer.when()
+        assert deadline is not None
+        remaining = max(0.0, deadline - loop.time())
+        transition_timer.reschedule(None)
+        task = asyncio.create_task(_resolved(pace_action(action)))
+        try:
+            while not task.done():
+                if await is_cancelled():
+                    return False
+                await asyncio.wait({task}, timeout=0.1)
+            await task
+            return not await is_cancelled()
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            transition_timer.reschedule(loop.time() + remaining)
 
     async def guard_document(route):
         nonlocal request_stop
@@ -427,12 +466,17 @@ async def collect_listing_links(
                 result.links.append(link)
                 new += 1
         signature = (snapshot["url"].split("#", 1)[0], tuple(sorted(set(current_links))))
+        if new:
+            if limits.progress_timeout:
+                transition_timer.reschedule(loop.time() + limits.max_seconds)
+            if on_progress is not None:
+                on_progress()
         return snapshot, new, signature
 
     try:
-        # Includes the caller's async policy, DOM inspection and each action;
-        # individual browser timeouts alone cannot bound a hanging callback.
-        async with asyncio.timeout(limits.max_seconds):
+        # Policy, DOM inspection and each transition remain bounded. Only the
+        # deliberate pacing hook pauses the transition clock, never the total.
+        async with total_timer, transition_timer:
             await page.route("**/*", guard_document)
             route_installed = True
             snapshot, _, signature = await observe()
@@ -478,6 +522,8 @@ async def collect_listing_links(
                         return _stopped(result, "policy_denied")
                     if await is_cancelled():
                         return _stopped(result, "cancelled")
+                    if pace_action is not None and not await pace(action):
+                        return _stopped(result, "cancelled")
                     if action.kind == "click":
                         if element is None or not await element.evaluate(
                             _REVALIDATE_JS,
@@ -507,7 +553,6 @@ async def collect_listing_links(
                 # analytics must not consume the whole navigation budget. The
                 # bounded polling also permits prompt cancellation.
                 previous = signature
-                loop = asyncio.get_running_loop()
                 settle_deadline = loop.time() + limits.settle_ms / 1000
                 observed_action = False
                 while True:
@@ -535,7 +580,7 @@ async def collect_listing_links(
                 if no_progress >= limits.max_no_progress:
                     return _stopped(result, "no_progress")
     except TimeoutError:
-        return _stopped(result, "time_limit")
+        return _stopped(result, "total_time_limit" if total_timer.expired() else "time_limit")
     except Exception:
         return _stopped(result, request_stop or "action_error")
     finally:

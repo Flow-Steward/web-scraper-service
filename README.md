@@ -377,9 +377,14 @@ navigation of a run, and every fetch of `POST /v1/analyze` and `POST /v1/samples
 that takes longer fails like a network error (retried up to `max_retries`, then
 `fetch_failed`).
 
-Scripted listing pagination uses the selected timeout for its bounded link-observation
-window, with no separate 30-second ceiling. Action/page budgets and the run
-`max_duration_minutes` limit continue to apply.
+During a crawl, scripted listing pagination renews the selected timeout whenever it
+finds new links. The timeout bounds a stalled transition, not the entire catalogue.
+Deliberate politeness/back-off waits do not consume that transition budget; Stop and
+the job's remaining `max_duration_minutes` still bound those waits. Navigation actions
+consume the shared `max_pages` allowance, without a separate 100-action runtime cap.
+Real link progress also refreshes the stall watchdog. Setup analysis/sampling retains
+one absolute navigation window and its overall setup deadline. Genuine stalls,
+no-progress loops and exhausted budgets still report partial coverage.
 
 **Setup previews and caller lifetime.** Analysis preserves explicit `crawl` or `url_list`
 intent and skips sitemap enumeration. Its `sitemap.inspection` is `skipped`, with

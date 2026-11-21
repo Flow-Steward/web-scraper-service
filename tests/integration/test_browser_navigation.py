@@ -304,6 +304,142 @@ async def test_time_budget_includes_a_blocked_policy_callback(listing_page):
 
 
 @pytest.mark.asyncio
+async def test_productive_pagination_gets_a_fresh_timeout_after_new_links(listing_page):
+    """One transition timeout must not truncate a finite, politely paced catalogue."""
+    limits, collect = navigation_api()
+    await open_fixture(
+        listing_page,
+        """<main><a id="entry" href="/item/0">Item</a></main>
+        <nav aria-label="Pagination"><button aria-label="Next page">Next</button></nav>
+        <script>let index=0; document.querySelector('button').onclick=function() {
+          index++; document.querySelector('#entry').href='/item/'+index;
+          if(index===8) this.disabled=true;
+        };</script>""",
+    )
+
+    async def politely_paced_policy(action):
+        await asyncio.sleep(0.15)
+        return True
+
+    result = await collect(
+        listing_page,
+        limits=limits(max_steps=12, max_seconds=0.75, settle_ms=100),
+        before_action=politely_paced_policy,
+    )
+
+    assert set(result.links) == {
+        f"https://catalogue.example.test/item/{index}" for index in range(9)
+    }
+    assert result.steps == 8
+    assert result.stop_reason == "controls_exhausted"
+    assert result.bounded is False
+
+
+@pytest.mark.asyncio
+async def test_setup_can_retain_an_absolute_listing_budget(listing_page):
+    limits, collect = navigation_api()
+    await open_fixture(listing_page, """<a id="item" href="/item/0">Item</a>
+      <button aria-label="Next page" onclick="const a=document.querySelector('a');a.href='/item/'+(++window.n)">Next</button>
+      <script>window.n=0;</script>""")
+
+    async def paced(action):
+        await asyncio.sleep(0.15)
+        return True
+
+    result = await collect(
+        listing_page,
+        limits=limits(max_steps=30, max_seconds=0.75, progress_timeout=False),
+        before_action=paced,
+    )
+
+    assert result.stop_reason == "time_limit"
+    assert 0 < result.steps < 30
+
+
+@pytest.mark.asyncio
+async def test_host_pacing_does_not_spend_browser_transition_timeout(listing_page):
+    limits, collect = navigation_api()
+    await open_fixture(listing_page, """<a id="item" href="/item/0">Item</a>
+      <button aria-label="Next page" onclick="document.querySelector('a').href='/item/1';this.disabled=true">Next</button>""")
+
+    async def pacing(action):
+        await asyncio.sleep(1)
+
+    result = await collect(
+        listing_page,
+        limits=limits(max_seconds=0.75, max_total_seconds=4),
+        pace_action=pacing,
+    )
+
+    assert result.links == ["https://catalogue.example.test/item/0", "https://catalogue.example.test/item/1"]
+    assert result.stop_reason == "controls_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_hung_policy_after_progress_still_times_out(listing_page):
+    limits, collect = navigation_api()
+    await open_fixture(listing_page, """<a href="/item/0">Item</a>
+      <button aria-label="Next page" onclick="document.querySelector('a').href='/item/1'">Next</button>""")
+    calls = 0
+
+    async def policy(action):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            await asyncio.Event().wait()
+        return True
+
+    result = await collect(listing_page, limits=limits(max_seconds=0.75), before_action=policy)
+
+    assert result.links == ["https://catalogue.example.test/item/0", "https://catalogue.example.test/item/1"]
+    assert result.stop_reason == "time_limit"
+    assert result.steps == 1
+
+
+@pytest.mark.asyncio
+async def test_global_duration_bounds_pacing_even_while_browser_timer_is_paused(listing_page):
+    limits, collect = navigation_api()
+    await open_fixture(listing_page, '<a href="/item/0">Item</a><button aria-label="Next page">Next</button>')
+
+    async def stuck_pacing(action):
+        await asyncio.Event().wait()
+
+    result = await collect(
+        listing_page,
+        limits=limits(max_seconds=0.75, max_total_seconds=0.4),
+        pace_action=stuck_pacing,
+    )
+
+    assert result.stop_reason == "total_time_limit"
+    assert result.links == ["https://catalogue.example.test/item/0"]
+    assert result.steps == 0
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_pacing_prevents_click(listing_page):
+    limits, collect = navigation_api()
+    await open_fixture(listing_page, """<a href="/item/0">Item</a>
+      <button aria-label="Next page" onclick="window.clicked=true">Next</button><script>window.clicked=false;</script>""")
+    stopped = False
+
+    async def pacing(action):
+        nonlocal stopped
+        stopped = True
+        await asyncio.Event().wait()
+
+    result = await collect(
+        listing_page,
+        limits=limits(max_seconds=0.75, max_total_seconds=3),
+        pace_action=pacing,
+        cancelled=lambda: stopped,
+    )
+
+    assert result.stop_reason == "cancelled"
+    assert result.steps == 0
+    assert await listing_page.evaluate('window.clicked') is False
+
+
+@pytest.mark.asyncio
 async def test_ajax_loading_state_does_not_end_navigation_before_new_links(listing_page):
     limits, collect = navigation_api()
     await open_fixture(

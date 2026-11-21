@@ -157,6 +157,17 @@ def productive_shell_listing(slug: str) -> str:
     )
 
 
+def paced_listing(slug: str) -> str:
+    """Five same-URL listing states, long enough to exceed one paced page budget."""
+    return """<!doctype html><html><body><main>
+      <h1>Catalogue</h1><a id="item" href="/v/plain-item/paced-0">Item</a></main>
+      <nav aria-label="Pagination"><button type="button" aria-label="Next page">Next</button></nav>
+      <script>let index=0; document.querySelector('button').onclick=function() {
+        index++; document.querySelector('#item').href='/v/plain-item/paced-'+index;
+        if(index===4) this.disabled=true;
+      };</script></body></html>"""
+
+
 def plain_item(slug: str) -> str:
     return (
         '<html><body><main class="sheet"><h1>Item '

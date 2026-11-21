@@ -70,7 +70,9 @@ async def test_runtime_document_policy_retains_scope_robots_without_another_acti
 
     async def collect(page, **kwargs):
         allowed = kwargs["before_action"]
-        assert await allowed(NavigationAction("click", "Next page", URL))
+        click = NavigationAction("click", "Next page", URL)
+        assert await allowed(click)
+        await kwargs["pace_action"](click)
         assert runner.rt["navigation_actions"] == 1
         assert await allowed(NavigationAction("navigation", "Deferred", URL + "?page=2"))
         assert not await allowed(NavigationAction("navigation", "Deferred", URL + "?blocked=1"))

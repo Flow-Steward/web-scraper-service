@@ -296,6 +296,7 @@ class SetupFetch:
                     limits=NavigationLimits(
                         max_steps=min(100, int(self.config.get("max_pages") or 12)),
                         max_seconds=self.page_timeout,
+                        progress_timeout=False,
                     ),
                     before_action=allowed,
                 )
