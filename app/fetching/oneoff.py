@@ -249,6 +249,7 @@ class BrowserSession:
         self.context = None
         self.page = None
         self._refused: list[str] = []
+        self._native_document_policy = None
         self.cleared_step: str | None = None  # the route step that earned this session's clearance
         self.identity = None  # identity.Identity of this session's exit
         # host -> the first failed protection route of this request: no further
@@ -316,19 +317,39 @@ class BrowserSession:
                                                   viewport={"width": WINDOW[0], "height": WINDOW[1]},
                                                   **(self.geo.context_kwargs(camoufox=False) if self.geo else {}))
         self.page = await self.context.new_page()
-        await self.page.route("**/*", private_route_guard(self._refused))
+        async def native_document(route):
+            if self._native_document_policy is not None:
+                await self._native_document_policy.request(route)
+            else:
+                await route.continue_()
+
+        await self.page.route("**/*", private_route_guard(self._refused, native_document))
         return self
 
     async def close(self) -> None:
+        cancelled = None
+        if self._native_document_policy is not None:
+            try:
+                await self._native_document_policy.close()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception:
+                pass
+            finally:
+                self._native_document_policy = None
         for closer in (getattr(self.context, "close", None), getattr(self._browser, "close", None), getattr(self._pw, "stop", None)):
             if closer is None:
                 continue
             try:
                 await closer()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
             except Exception:
                 pass
+        if cancelled is not None:
+            raise cancelled
 
-    async def get(self, url: str, *, wait_ms: int = 0, settle: bool = False) -> tuple[int | None, str, str, str | None]:
+    async def get(self, url: str, *, wait_ms: int = 0, settle: bool = False, destination_policy=None) -> tuple[int | None, str, str, str | None]:
         """Returns (status, html, final_url, passed_at_step); ``passed_at_step`` is the route
         step that passed a challenge (``wait``, ``click``, ``solver``), else None."""
         from app.fetching.challenge import detect_page, page_html
@@ -340,6 +361,21 @@ class BrowserSession:
         if stopped is not None:
             raise HostStopped(stopped)
         self._refused.clear()
+        if self.is_closed:
+            raise RuntimeError("browser session is closed")
+        from app.fetching.destinations import resolved
+        from app.fetching.document_policy import bind_document_policy
+
+        async def allowed(target):
+            stopped = self.failure_for(target)
+            if stopped is not None:
+                raise HostStopped(stopped)
+            return destination_policy is None or bool(await resolved(destination_policy(target)))
+
+        self._native_document_policy = await bind_document_policy(
+            self.page, self.browser_name, url, destination_policy=allowed,
+            timeout_s=min(3.0, float(self.timeout_s)),
+        )
         page = self.page
         referer = None
         if self._last_url is not None:
@@ -348,7 +384,14 @@ class BrowserSession:
             if host_label(self._last_url) == host_label(url):
                 referer = self._last_url
         self._last_url = url
-        resp = await page.goto(url, timeout=self.timeout_s * 1000, wait_until="load", referer=referer)
+        try:
+            resp = await page.goto(url, timeout=self.timeout_s * 1000, wait_until="load", referer=referer)
+        except Exception:
+            self._native_document_policy.raise_if_denied()
+            if self._refused:
+                raise PrivateAddress(self._refused[0])
+            raise
+        self._native_document_policy.raise_if_denied()
         status = resp.status if resp else None
         passed = None
         from app.fetching.challenge import PageNotLoaded, settle as settle_page
@@ -386,6 +429,8 @@ class BrowserSession:
         if verdict.is_challenge and passed is None and self.budget is not None:
             self._record_failure(url, trace, html)
         # the final URL after HTTP, meta and JavaScript redirects (review M7a)
+        if self._native_document_policy is not None:
+            self._native_document_policy.raise_if_denied()
         if self._refused:
             raise PrivateAddress(self._refused[0])
         if final != url and await url_is_private(final):
@@ -447,6 +492,8 @@ class BrowserSession:
         )
         # Preserve the request guard's normal failure contract if an allowed
         # script attempted a private redirect during listing navigation.
+        if self._native_document_policy is not None:
+            self._native_document_policy.raise_if_denied()
         if self._refused:
             raise PrivateAddress(self._refused[0])
         final_url = self.page.url
@@ -514,7 +561,7 @@ class BrowserSession:
             head = body[:300_000].decode("utf-8", errors="replace") if body[:2] != b"\x1f\x8b" else ""
             if attempt == 0 and detect_html(head, fetched.status).is_challenge:
                 try:
-                    await self.get(url)
+                    await self.get(url, destination_policy=destination_policy)
                 except PrivateAddress:
                     return None
                 except Exception:

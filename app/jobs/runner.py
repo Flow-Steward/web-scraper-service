@@ -1518,7 +1518,33 @@ class JobRunner:
                 pass
 
         # every request of the page passes the private-address rule
-        await page.route("**/*", private_route_guard(None, _allowed))
+        from app.fetching.document_policy import bind_document_policy
+
+        async def destination_allowed(target):
+            try:
+                allowed = await self._document_destination_allowed(
+                    url, target, auxiliary=bool(ud.get("aux")),
+                    robots_allowed=lambda target: self._browser_redirect_robots_allowed(page, target),
+                )
+            except Exception:
+                request.no_retry = True
+                raise
+            if not allowed:
+                request.no_retry = True
+            return allowed
+
+        policy = await bind_document_policy(
+            page, self.browser or "chromium", url, destination_policy=destination_allowed,
+            timeout_s=min(3.0, float(self.config.get("page_timeout_seconds") or 45)),
+        )
+
+        async def native_allowed(route):
+            if route.request.is_navigation_request():
+                await policy.request(route)
+            else:
+                await _allowed(route)
+
+        await page.route("**/*", private_route_guard(None, native_allowed))
 
     def _is_browser(self, ctx) -> bool:
         try:
@@ -2039,6 +2065,31 @@ class JobRunner:
             request.url, target, auxiliary=auxiliary,
             robots_allowed=None if auxiliary else self._http_redirect_robots_allowed,
         )
+
+    async def _browser_redirect_robots_allowed(self, page, target):
+        if not self.config.get("respect_robots", True):
+            return True
+        from app.fetching.destinations import document_destination_allowed
+        from app.fetching.oneoff import context_get
+        from app.jobs.discovery import _origin, robots_from
+
+        origin = _origin(target)
+        if origin not in self.robots:
+            async def allowed_aux(url):
+                return await document_destination_allowed(
+                    url, site_url=target, rules={"sensitive_path", "action_params"},
+                    cancelled=lambda: self._shutdown or self.state != "running",
+                )
+            async def fetch_aux(url):
+                return await context_get(page.context, url, destination_policy=allowed_aux)
+            # Raw robots reads already use APIRequestContext in browser jobs.
+            # This path never loads document bytes through it or queues a worker.
+            self.robots[origin] = await robots_from(origin, fetch_aux)
+            robots = self.robots[origin]
+            if robots is not None:
+                self.throttle.set_crawl_delay(host_of(target), robots.get_crawl_delay())
+        robots = self.robots[origin]
+        return robots is None or robots.is_allowed(target)
 
     async def _http_redirect_robots_allowed(self, target):
         if not self.config.get("respect_robots", True):

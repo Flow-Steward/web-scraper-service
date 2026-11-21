@@ -137,6 +137,11 @@ async def attempt(url: str, *, browser_name: str, os_name: str, canvas_noise: st
         try:
             browser, ctx = await _context(pw, browser_name, variant, humanize=humanize, webgl=webgl, proxy=proxy, geo=geo, out=out)
             page = await ctx.new_page()
+            from app.fetching.document_policy import bind_document_policy
+            from app.fetching.oneoff import private_route_guard
+
+            document_policy = await bind_document_policy(page, browser_name, url)
+            await page.route("**/*", private_route_guard(None, document_policy.request))
             out["env"] = env_of(page)
             out["preset_id"] = preset_id_of(page)
             loads[0] += 1

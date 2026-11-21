@@ -1,4 +1,4 @@
-"""Experimental Chromium native-transport redirect guard; not enabled by default.
+"""Chromium native-transport document redirect guard.
 
 CDP Fetch response interception pauses redirect processing before native follow.
 Pair it with the normal request guard for fresh script/meta document requests.
