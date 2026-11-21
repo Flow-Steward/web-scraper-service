@@ -23,6 +23,8 @@ _AUTH = re.compile(
     r"NS_ERROR_PROXY_AUTHENTICATION_FAILED|ERR_PROXY_AUTH_REQUESTED|"
     r"ERR_PROXY_AUTH_UNSUPPORTED|proxy_auth_failed|"
     r"\b407\s+Proxy\s+Authentication\b|"
+    # Camoufox's exit-IP lookup wraps requests.HTTPError in InvalidIP.
+    r"\b407\s+Client\s+Error:\s*Proxy\s+Authentication\b|"
     r"\b(?:CONNECT|tunnel)[^\n]{0,100}\b407\b|"
     r"\b(?:HTTP/[\d.]+\s+|status(?:\s+code)?\s*[:=]?\s*|response\s+)407\b",
     re.IGNORECASE,

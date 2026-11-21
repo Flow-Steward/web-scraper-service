@@ -24,6 +24,7 @@ from tests.unit.test_logic import settings
     Error("NS_ERROR_PROXY_AUTHENTICATION_FAILED via http://secret:password@proxy.test"),
     Error("net::ERR_PROXY_AUTH_REQUESTED"),
     RuntimeError("CONNECT tunnel failed, response 407"),
+    RuntimeError("Could not look up the proxy's exit IP: 407 Client Error: Proxy Authentication Required for url: http://geo.test/json"),
 ])
 def test_auth_classifier_recognizes_explicit_upstream_rejection(error):
     from app.fetching.proxy_auth import is_proxy_auth_failure
@@ -40,6 +41,8 @@ def test_auth_classifier_recognizes_explicit_upstream_rejection(error):
     (RuntimeError("Cloudflare HTTP 403"), 403),
     (RuntimeError("origin unavailable"), 503),
     (RuntimeError("https://target.test/407/items"), None),
+    (RuntimeError("401 Client Error: Unauthorized for url: https://target.test/login"), None),
+    (RuntimeError("403 Client Error: Proxy Authentication Required for url: https://target.test/product"), None),
 ])
 def test_auth_classifier_does_not_confuse_target_or_transient_failures(error, status):
     from app.fetching.proxy_auth import is_proxy_auth_failure
