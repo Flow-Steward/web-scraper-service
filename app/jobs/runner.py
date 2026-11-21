@@ -674,7 +674,12 @@ class JobRunner:
             desired_concurrency=1,
             max_tasks_per_minute=cfg["max_requests_per_minute"],
         )
+        from app.fetching.crawlee_http import PolicyHttpClient
+
+        http_client = PolicyHttpClient(destination_policy=self._http_redirect_destination_allowed)
+        self._redirect_http_client = http_client
         kwargs: dict[str, Any] = dict(
+            http_client=http_client,
             rendering_type_predictor=JobPredictor(self),
             result_checker=self._result_ok,
             playwright_crawler_specific_kwargs={
@@ -2026,6 +2031,58 @@ class JobRunner:
             except ValueError:
                 tier = None
         return {"fetch_mode": "browser" if browser_run else "http", "browser": (self.browser or "chromium") if browser_run else None, "proxy_tier": tier}
+
+    async def _http_redirect_destination_allowed(self, request, target):
+        """Static Crawlee redirects obey ordinary link admission before issuance."""
+        auxiliary = bool(request.user_data.get("aux"))
+        return await self._document_destination_allowed(
+            request.url, target, auxiliary=auxiliary,
+            robots_allowed=None if auxiliary else self._http_redirect_robots_allowed,
+        )
+
+    async def _http_redirect_robots_allowed(self, target):
+        if not self.config.get("respect_robots", True):
+            return True
+        from app.jobs.discovery import _origin, robots_from
+
+        origin = _origin(target)
+        if origin not in self.robots:
+            # Never enqueue into the same crawler while its document is held.
+            # The nested auxiliary request shares this document's proxy/cookies,
+            # has a bounded deadline, and does not recurse into robots policy.
+            robots = await robots_from(origin, self._redirect_http_client.fetch_auxiliary)
+            self.robots[origin] = robots
+            if robots is not None:
+                self.throttle.set_crawl_delay(host_of(target), robots.get_crawl_delay())
+        robots = self.robots[origin]
+        return robots is None or robots.is_allowed(target)
+
+    async def _document_destination_allowed(self, initial_url, target, *, auxiliary=False, robots_allowed=None):
+        from app.core.scope import in_scope
+        from app.fetching.destinations import document_destination_allowed
+
+        def cancelled():
+            return (
+                self._shutdown or bool(self.rt.get("stop_reason"))
+                or self.state in ("stopping", "completed", "failed")
+                or self.running_seconds() >= self.config["max_duration_minutes"] * 60
+            )
+
+        canonical = canonical_url(target)
+        if not auxiliary and matches_any(self.exclude, canonical):
+            return False
+        target_page = not auxiliary and self._looks_like_target_url(target)
+        scope = self._crawl_scope()
+        if auxiliary or not in_scope(scope, initial_url) or target_page:
+            scope = ()
+        rules = {"sensitive_path", "action_params"} if auxiliary else self.link_rules
+        if target_page:
+            rules = rules - {"facet_params"}
+        return await document_destination_allowed(
+            target, site_url=initial_url, rules=rules, scope=scope,
+            robots_allowed=None if auxiliary else (robots_allowed or self.robots_allowed),
+            cancelled=cancelled,
+        )
 
     async def _collect_navigation(self, ctx, page, canonical, browser_run, ud, out):
         """Discover links across listing states without changing extraction input."""
