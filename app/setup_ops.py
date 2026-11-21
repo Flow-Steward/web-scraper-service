@@ -61,6 +61,18 @@ async def _robots(origin_url: str, fetch=None):
     return await robots_from(origin_url, fetch or http_fetcher())
 
 
+class SetupBrowserUnavailable(ApiError):
+    """A dead setup browser cannot be diagnosed as a missing product selector."""
+
+    def __init__(self, exception_type: str) -> None:
+        super().__init__(
+            "service_unavailable",
+            f"The setup browser session closed or could not start ({exception_type}). "
+            "Retry the setup request; if it repeats, check the scraper service logs.",
+            details={"reason": "browser_unavailable", "exception_type": exception_type},
+        )
+
+
 class SetupFetch:
     """The fetches of one analysis or samples request: HTTP through the profile's first tier
     with the job headers, and — for a challenge or a page that needs JavaScript — ONE browser
@@ -185,14 +197,23 @@ class SetupFetch:
                     self._navigation_actions += 1
                 return True
 
-            result = await session.discover_links(
-                site_url=self.config.get("site_url") or url,
-                limits=NavigationLimits(
-                    max_steps=min(100, int(self.config.get("max_pages") or 12)),
-                    max_seconds=self.page_timeout,
-                ),
-                before_action=allowed,
-            )
+            try:
+                result = await session.discover_links(
+                    site_url=self.config.get("site_url") or url,
+                    limits=NavigationLimits(
+                        max_steps=min(100, int(self.config.get("max_pages") or 12)),
+                        max_seconds=self.page_timeout,
+                    ),
+                    before_action=allowed,
+                )
+            except (PrivateAddress, HostStopped, SetupBrowserUnavailable):
+                raise
+            except Exception as exc:
+                if session.is_closed:
+                    await self._abort_browser(exc)
+                raise
+            if session.is_closed:
+                await self._abort_browser(RuntimeError("browser closed during listing observation"))
             self.navigation[key] = result
         if page is not None and result is not None:
             page.extra_links = list(result.links)
@@ -220,7 +241,11 @@ class SetupFetch:
             return json.loads(fetched.text) if fetched.status and fetched.status < 400 else None
         except (ValueError, PrivateAddress):
             return None
-        except Exception:
+        except SetupBrowserUnavailable:
+            raise
+        except Exception as exc:
+            if self._session is not None and self._session.is_closed:
+                await self._abort_browser(exc)
             return None
 
     def needs_browser_navigation(self, page: Page) -> bool:
@@ -273,15 +298,24 @@ class SetupFetch:
             try:
                 from app.fetching.browsers import Variant
 
-                self._session = await BrowserSession(self.browser, proxy=self.proxy, budget=self.budget, proxy_tier=self.tier,
+                self._session = BrowserSession(self.browser, proxy=self.proxy, budget=self.budget, proxy_tier=self.tier,
                                                      debug=bool(self.config.get("debug")), shots=self.svc.samples,
                                                      variant=Variant.from_config(self.config),
                                                      delay=(0, 0),
-                                                     timeout_s=self.page_timeout).start()
-            except Exception:
-                self._session_failed = True
-                raise
+                                                     timeout_s=self.page_timeout)
+                self._session = await self._session.start()
+            except Exception as exc:
+                await self._abort_browser(exc)
         return self._session
+
+    async def _abort_browser(self, exc: Exception) -> None:
+        session, self._session = self._session, None
+        self._session_failed = True
+        if session is not None:
+            await session.close()
+        # No automatic relaunch: keep this request's deadline and protection budget.
+        # Exception messages may contain proxy credentials; expose only the type.
+        raise SetupBrowserUnavailable(type(exc).__name__) from None
 
     @property
     def traces(self) -> list[dict]:
@@ -318,7 +352,16 @@ class SetupFetch:
             raise RuntimeError("no browser")
         from app.core.urls import host_of
         await self._navigation_throttle.wait(host_of(url))
-        got = await session.get(url, wait_ms=wait_ms, settle=settle)
+        try:
+            got = await session.get(url, wait_ms=wait_ms, settle=settle)
+        except (PrivateAddress, HostStopped):
+            raise
+        except Exception as exc:
+            if session.is_closed:
+                await self._abort_browser(exc)
+            raise
+        if session.is_closed:
+            await self._abort_browser(RuntimeError("browser closed during document read"))
         self._browser[key] = got
         if settle and got[0] and got[0] < 400 and detect_html(got[1], got[0]).kind == "none":
             await self.discover_links(url)
@@ -349,6 +392,8 @@ class SetupFetch:
                 return self._browser_fetched(url, await self.browser_get(url, wait_ms=self.config.get("wait_after_load_ms", 0), settle=True))
             except PrivateAddress:
                 return None
+            except SetupBrowserUnavailable:
+                raise
             except Exception:
                 pass
         try:
@@ -388,6 +433,8 @@ class SetupFetch:
                 )
             except PrivateAddress:
                 return None
+            except SetupBrowserUnavailable:
+                raise
             except Exception:
                 return fetched
         if challenged and self.browser and self.config.get("fetch_mode") != "http":
@@ -402,9 +449,14 @@ class SetupFetch:
                         ),
                     )
                 session = await self.session()
-                return await session.raw(url) if session else fetched
+                result = await session.raw(url) if session else fetched
+                if session is not None and session.is_closed:
+                    await self._abort_browser(RuntimeError("browser closed during auxiliary fetch"))
+                return result
             except PrivateAddress:
                 return None
+            except SetupBrowserUnavailable:
+                raise
             except Exception:
                 return fetched
         return fetched
@@ -505,6 +557,8 @@ async def _analyze(svc, config: dict, site_url: str, sf: SetupFetch) -> dict:
             raise validation_failed([field_error("config.site_url", "private_address_refused", "a redirect leads to a private address")])
         except HostStopped:
             pass
+        except SetupBrowserUnavailable:
+            raise
         except Exception as exc:
             warnings.append(field_error("browser", "invalid_value", f"the browser fetch failed ({type(exc).__name__})"))
     http_chars = Page(html, final_url, status).visible_text_chars if html else 0
@@ -602,6 +656,8 @@ async def fetch_page(svc, url: str, config: dict, sf: SetupFetch) -> tuple[Page 
             raise
         except HostStopped:
             return None, {}, "protection_not_passed"
+        except SetupBrowserUnavailable:
+            raise
         except Exception as exc:
             return None, {"fetch_mode": "browser", "browser": browser, "proxy_tier": tier, "passed_at_step": None}, f"browser fetch failed ({type(exc).__name__})"
         sf.last_how = "browser"
@@ -643,6 +699,8 @@ async def fetch_page(svc, url: str, config: dict, sf: SetupFetch) -> tuple[Page 
                 raise
             except HostStopped:
                 return None, info, "protection_not_passed"
+            except SetupBrowserUnavailable:
+                raise
             except Exception as exc:
                 if verdict.kind != "none":
                     return None, info, f"browser fetch failed ({type(exc).__name__})"
@@ -778,6 +836,8 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
                     page, info, err = await fetch_page(svc, url, config, sf)
                     sf.last_how = "browser"
                 except PrivateAddress:
+                    raise
+                except SetupBrowserUnavailable:
                     raise
                 except Exception as exc:
                     page, err = None, f"browser discovery failed ({type(exc).__name__})"
@@ -924,6 +984,8 @@ async def _attach_variant_sources(svc, sample: dict, page, sf: SetupFetch, ex: E
         src = {"kind": "shop_json", "platform": platform}
         try:
             got = await V.from_shop_json(page, src, remember)
+        except SetupBrowserUnavailable:
+            raise
         except Exception:
             got = []
         if got:

@@ -40,7 +40,7 @@ async def test_setup_document_policy_retains_scope_robots_without_another_action
         assert not await allowed(NavigationAction("navigation", "Deferred", "https://catalogue.example.test/other"))
         return NavigationResult()
 
-    sf._session = SimpleNamespace(page=SimpleNamespace(url=URL), discover_links=collect)
+    sf._session = SimpleNamespace(page=SimpleNamespace(url=URL), discover_links=collect, is_closed=False)
     sf._browser[URL] = (200, "<main>Listing</main>", URL, None)
     await sf.discover_links(URL)
     assert sf._navigation_actions == 1
