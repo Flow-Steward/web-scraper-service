@@ -83,6 +83,7 @@
         "invalid_value",
         "unknown_field",
         "pattern_invalid",
+        "pattern_timeout",
         "limit_exceeded",
         "browser_not_available",
         "rotating_proxy_with_challenge_handling",

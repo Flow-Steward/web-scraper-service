@@ -7,15 +7,25 @@ private-address check (README 1). A browser fetch launches the job's browser for
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import random
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 import httpx
 
 from app.core.netguard import PrivateAddressError, guarded_transport, url_is_private
 from app.core.urls import absolute
+
+if TYPE_CHECKING:
+    from app.fetching.navigation import (
+        ActionPolicy,
+        CancellationCheck,
+        NavigationLimits,
+        NavigationResult,
+    )
 
 log = logging.getLogger("wss.fetch")
 
@@ -79,6 +89,11 @@ class Fetched:
     headers: dict[str, str] = field(default_factory=dict)
     error: str | None = None
     redirects: list[str] = field(default_factory=list)
+    # Discovery observations supplement the original HTML; extraction must keep
+    # using the original body/final_url even after listing controls advance.
+    extra_links: list[str] = field(default_factory=list)
+    navigation: dict = field(default_factory=dict)
+    extra_anchors: list[tuple[str, str | None, bool]] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -204,7 +219,7 @@ class BrowserSession:
     def failure_for(self, url: str) -> dict | None:
         return self.failures.get(host_label(url))
 
-    async def start(self) -> "BrowserSession":
+    async def start(self) -> BrowserSession:
         import os
 
         from playwright.async_api import async_playwright
@@ -283,9 +298,9 @@ class BrowserSession:
         resp = await page.goto(url, timeout=self.timeout_s * 1000, wait_until="load", referer=referer)
         status = resp.status if resp else None
         passed = None
-        from app.fetching.challenge import PageNotLoaded, settle
+        from app.fetching.challenge import PageNotLoaded, settle as settle_page
 
-        if not await settle(page, 20.0):  # a page still loading is not judged
+        if not await settle_page(page, 20.0):  # a page still loading is not judged
             raise PageNotLoaded(f"the page did not finish loading within 20 s ({url})")
         verdict = await detect_page(page, status)
         if verdict.is_challenge:
@@ -326,6 +341,67 @@ class BrowserSession:
             passed = self.cleared_step  # passed thanks to the clearance this session earned earlier
         return status, html, final, passed
 
+    async def discover_links(
+        self,
+        *,
+        site_url: str | None = None,
+        limits: NavigationLimits | None = None,
+        before_action: ActionPolicy | None = None,
+        cancelled: CancellationCheck | None = None,
+    ) -> NavigationResult:
+        """Observe listing states in the already-loaded, guarded browser tab.
+
+        Call after saving ``get()``'s original HTML/final URL. The returned links
+        are supplementary discovery metadata; this leaves the tab at its last
+        listing state. No extra browser or context is created.
+
+        A supplied ``before_action`` owns robots, pause and rate/host spacing,
+        and checks each action and deferred document destination after the
+        private/failed-host checks. A ``navigation`` destination check must not
+        charge another action or delay: the collector sends no document request.
+        Without that callback, the session's inter-navigation delay applies to
+        each action. Robots policy belongs to the caller, as for ``get()``.
+        """
+        from app.fetching.navigation import NavigationLimits, collect_listing_links
+
+        if self.page is None:
+            raise RuntimeError("browser session has no loaded page")
+        initial_url = self.page.url
+        if await url_is_private(initial_url):
+            raise PrivateAddress(initial_url)
+        stopped = self.failure_for(initial_url)
+        if stopped is not None:
+            raise HostStopped(stopped)
+        limits = limits or NavigationLimits()
+        limits = replace(limits, max_seconds=min(limits.max_seconds, float(self.timeout_s)))
+
+        async def allowed(action):
+            if self.failure_for(action.url) is not None or await url_is_private(action.url):
+                return False
+            if before_action is not None:
+                decision = before_action(action)
+                return bool(await decision if inspect.isawaitable(decision) else decision)
+            if action.kind != "navigation" and self.delay[1] > 0:
+                await asyncio.sleep(random.uniform(*self.delay))
+            return True
+
+        result = await collect_listing_links(
+            self.page,
+            site_url=site_url or initial_url,
+            limits=limits,
+            before_action=allowed,
+            cancelled=cancelled,
+        )
+        # Preserve the request guard's normal failure contract if an allowed
+        # script attempted a private redirect during listing navigation.
+        if self._refused:
+            raise PrivateAddress(self._refused[0])
+        final_url = self.page.url
+        if final_url != initial_url and await url_is_private(final_url):
+            raise PrivateAddress(final_url)
+        self._last_url = final_url or initial_url
+        return result
+
     def _record_failure(self, url: str, trace: dict, html: str) -> None:
         host = host_label(url)
         if host in self.failures:
@@ -343,10 +419,8 @@ class BrowserSession:
 
     async def _finish_trace(self, trace: dict, passed: str | None) -> None:
         from app.core.redaction import redact
-        from app.fetching.protection import page_facts, trace_line
-
         from app.fetching.identity import env_of, preset_id_of
-        from app.fetching.protection import page_environment
+        from app.fetching.protection import page_environment, page_facts, trace_line
 
         trace["passed_at_step"] = passed
         trace["cookies"], trace["final_title"] = await page_facts(self.page)
@@ -364,7 +438,7 @@ class BrowserSession:
         self.traces.append(trace)
         log.info(redact(trace_line(trace), [self.proxy or ""]))
 
-    async def raw(self, url: str) -> "Fetched | None":
+    async def raw(self, url: str) -> Fetched | None:
         """The raw bytes of ``url`` (robots.txt, a sitemap) through the session's context: its
         cookies and proxy. A challenge is passed in the page first, then the bytes are fetched."""
         from app.fetching.challenge import detect_html

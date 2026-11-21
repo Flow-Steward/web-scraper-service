@@ -37,6 +37,14 @@
     },
     "variants": {
       "$ref": "#/$defs/variants"
+    },
+    "record_filter": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/record_condition"
+      },
+      "description": "Optional fixed conditions on the final typed data of each page or variant record; all must match. Missing/null never matches. Filtering preserves original source indices and never enables a fallback variant source."
     }
   },
   "$defs": {
@@ -67,7 +75,7 @@
         "boolean",
         "spec_table"
       ],
-      "description": "`spec_table` (added 2026-11-14): a specification table as an object name → value (from a `spec_table` source, or `jsonld`/`microdata` `additionalProperty` PropertyValues)."
+      "description": "`spec_table` (added 2026-11-14): a specification table as an object name \u2192 value (from a `spec_table` source, or `jsonld`/`microdata` `additionalProperty` PropertyValues)."
     },
     "source_kind": {
       "type": "string",
@@ -701,7 +709,7 @@
         },
         "fields": {
           "type": "array",
-          "maxItems": 20,
+          "maxItems": 50,
           "items": {
             "$ref": "#/$defs/variant_field"
           },
@@ -724,7 +732,7 @@
             "jsonld",
             "microdata"
           ],
-          "description": "`embedded_json`: JSON inside the page (an element's `attribute`, else the element's text), `path` to the variant list. `shop_json`: the shop's own product JSON, one light request per product through the page's session (a host that needed the browser: through the cleared browser context only), robots.txt and the politeness delay — `shopify` = `/products/<handle>.js`, `woocommerce` = Store API `/wp-json/wc/store/v1/products/<id>` + one request for its variations. `jsonld` / `microdata`: `offers` as a list (two or more) or a `ProductGroup`'s `hasVariant`."
+          "description": "`embedded_json`: JSON inside the page (an element's `attribute`, else the element's text), `path` to the variant list. `shop_json`: the shop's own product JSON, one light request per product through the page's session (a host that needed the browser: through the cleared browser context only), robots.txt and the politeness delay \u2014 `shopify` = `/products/<handle>.js`, `woocommerce` = Store API `/wp-json/wc/store/v1/products/<id>` + one request for its variations. `jsonld` / `microdata`: `offers` as a list (two or more) or a `ProductGroup`'s `hasVariant`."
         },
         "selector": {
           "$ref": "#/$defs/css_selector"
@@ -739,6 +747,12 @@
           "pattern": "^([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*)(\\.([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*))*$",
           "description": "Dot path to the variant list (`variants`, `product.variants`; empty/absent = the JSON itself); for `jsonld`/`microdata`: `offers` or `hasVariant`."
         },
+        "children_path": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*)(\\.([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*))*$",
+          "description": "Embedded JSON only: relative path to each parent's child variants. `path` selects parents; each child keeps its own `raw` object and its parent at `parent.raw`. No implicit field inheritance. Missing child objects retain one context-only row so required child fields expose incomplete data."
+        },
         "format": {
           "type": "string",
           "enum": [
@@ -748,7 +762,7 @@
             "generic"
           ],
           "default": "auto",
-          "description": "How to read one variant: `woocommerce` (`attributes`, `display_price`, `variation_id`; option slugs shown with the labels of the page's variation form), `shopify` (`option1..3` named by the product's `options`, prices in minor units), `generic` (`options`/`attributes`, `price`, `sku` …); `auto` decides from the keys."
+          "description": "How to read one variant: `woocommerce` (`attributes`, `display_price`, `variation_id`; option slugs shown with the labels of the page's variation form), `shopify` (`option1..3` named by the product's `options`, prices in minor units), `generic` (`options`/`attributes`, `price`, `sku` \u2026); `auto` decides from the keys."
         },
         "platform": {
           "type": "string",
@@ -819,6 +833,20 @@
               "path"
             ]
           }
+        },
+        {
+          "if": {
+            "required": [
+              "children_path"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "embedded_json"
+              }
+            }
+          }
         }
       ]
     },
@@ -836,7 +864,7 @@
           "type": "string",
           "maxLength": 300,
           "pattern": "^([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*)(\\.([A-Za-z@_][A-Za-z0-9@_:-]*|[0-9]+|\\*))*$",
-          "description": "In the normalised variant: `id`, `title`, `price`, `regular_price`, `currency`, `sku`, `barcode`, `availability`, `in_stock`, `weight`, `description`, `image`, or `raw.<path>` into the source's own object."
+          "description": "In the normalised variant: `id`, `title`, `price`, `regular_price`, `currency`, `sku`, `barcode`, `availability`, `in_stock`, `weight`, `description`, `image`, or `raw.<path>` into the source's own object. With embedded `children_path`, `parent.raw.<path>` reads the corresponding parent's original data."
         },
         "option": {
           "type": "string",
@@ -854,6 +882,25 @@
             "$ref": "#/$defs/transform"
           },
           "maxItems": 5
+        },
+        "fallback_to_page": {
+          "type": "boolean",
+          "default": true,
+          "description": "False: a missing variant value replaces a page-level field with null, including authoritative record_filter fields. Default true preserves page fallback."
+        },
+        "selector_template": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "^(?:[^{}]|\\{(?:id|sku)\\})+$",
+          "description": "Optional variant-specific DOM source. Only {id} and {sku} interpolate the normalized variant identifiers, CSS-escaped by the service. This selector reads only the matching fragment on the same page; no code or expressions."
+        },
+        "extract": {
+          "$ref": "#/$defs/css_extract"
+        },
+        "attribute": {
+          "type": "string",
+          "pattern": "^[A-Za-z_:][A-Za-z0-9_.:-]{0,63}$"
         }
       },
       "oneOf": [
@@ -866,6 +913,87 @@
           "required": [
             "option"
           ]
+        },
+        {
+          "required": [
+            "selector_template"
+          ]
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "selector_template"
+            ]
+          },
+          "then": {
+            "required": [
+              "extract"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "extract"
+            ],
+            "properties": {
+              "extract": {
+                "const": "attribute"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "attribute"
+            ]
+          }
+        }
+      ]
+    },
+    "record_condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/field_name"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "gt"
+          ]
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "gt"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
         }
       ]
     }

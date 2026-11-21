@@ -297,6 +297,12 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
   target-looking links (an active mapping's `url_patterns`, `url_include`) at the front
   of the queue; `url_include` decides what is extracted, not what is followed; `url_list`
   with keys; robots.txt honoured by our own check (counts `urls_skipped.robots`).
+  Configured URL patterns retain Python regular-expression syntax, including lookaround
+  and backreferences. Matching is limited to 20 ms per pattern, 50 ms per URL-policy
+  evaluation and 2 seconds of matching work per synchronous bulk operation. Parsing
+  and network time do not consume the regex budget. A limit raises `pattern_timeout`
+  with the configuration field and pattern identifier; a running job fails explicitly
+  instead of silently omitting URLs. These limits do not cover extraction transforms.
 * **Job record and SQLite:** the follower applies page outcomes in one synchronous
   transaction per batch (no `await` inside a transaction, enforced by `Database.tx()`);
   links and refetches go through a backlog table and are enqueued after the commit.
@@ -340,7 +346,9 @@ while a run of the same site is `queued`, `running`, `stopping` or
 (`error.details`), and nothing is stored, so a daily schedule never piles up runs behind
 a long one; the same `Idempotency-Key` may be sent again later. With
 `when_site_busy: queue` the run is stored and starts when the running one ends; while it
-waits, its summary has `queued_reason` (`same_site_running` or `no_free_slot`).
+waits on a running site or exhausted capacity, its summary has `queued_reason`
+(`same_site_running` or `no_free_slot`). A queued run with free capacity is waiting
+for the scheduler and has no blocker reason.
 
 **Politeness presets.** `politeness` fills the politeness fields that the run, the
 connection profile and the mapping do not set:
@@ -359,6 +367,10 @@ timeout 60 s".
 navigation of a run, and every fetch of `POST /v1/analyze` and `POST /v1/samples`. A page
 that takes longer fails like a network error (retried up to `max_retries`, then
 `fetch_failed`).
+
+Scripted listing pagination uses the selected timeout for its bounded link-observation
+window, with no separate 30-second ceiling. Action/page budgets and the run
+`max_duration_minutes` limit continue to apply.
 
 **Automatic slow-down.** Per host the service watches the last 20 pages. When at least
 20 % of them were server errors, timeouts, network errors or unusable answers, or the
@@ -464,3 +476,37 @@ counts time in `running`/`stopping` only; the result never exceeds `max_result_b
 
 Apache-2.0 (see `LICENSE` and `NOTICE`). Users build the image themselves; the
 third-party components in it are downloaded from their upstream sources during the build.
+
+## Generic catalogue development candidate
+
+This branch is an unreleased development candidate. It adds bounded discovery through
+intermediate pages and JavaScript listings, typed record inclusion filters and
+per-variant DOM fields. Discovery never relies on a maintained product URL list.
+Mappings still describe each site's observed data and selectors. Required values
+are checked on included variants; unknown inclusion inputs report incomplete
+extraction. Optional missing values can remain null without inheriting a parent
+value. Navigation limits and unsupported controls must be reviewed before claiming
+complete catalogue coverage. Test and deployment evidence is separate from a release.
+
+Listing observation permits in-page DOM/AJAX updates. A control requesting a new
+main-frame document is checked and deferred to normal discovery rather than loaded
+by the click collector; this prevents an unvalidated redirect chain from executing
+inside an observation. The deferred URL remains eligible for sample discovery,
+including validated pagination URLs. Such an observation reports bounded coverage.
+Browser contexts block Service Workers so request guards remain effective;
+layouts that require Service Workers may remain partially discovered.
+
+Embedded JSON variants may declare `children_path` relative to each object selected
+by `path`. A source with `path: "editions"` and `children_path: "packages"` emits
+each package with its own `raw` data and its corresponding edition at `parent.raw`.
+Map fields explicitly, for example `raw.sku` and `parent.raw.year`; parent values
+are never merged into missing child values. An absent or empty child collection
+keeps one context-only row so required child fields report incomplete extraction.
+The bounded sample candidates expose this relational choice as optional evidence;
+they do not automatically treat every nested array as saleable product variants.
+
+When a sample has no recognized summary/main container, a bounded heading-based
+fallback prioritizes the product's local region and following content before
+large preceding menus. Section comments still name the original DOM paths; no
+supplier-specific selectors are built into this fallback. Unsupported layouts
+and truncated evidence still require review before declaring optional fields absent.

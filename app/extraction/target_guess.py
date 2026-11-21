@@ -17,6 +17,7 @@ leaf group is taken as before; the caller names the signals in its warning.
 from __future__ import annotations
 
 import re
+from app.core.url_patterns import matches_any, url_batch
 from collections import Counter, defaultdict
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
@@ -134,10 +135,14 @@ async def guess_targets(site_url: str, fetch_page: Callable[[str], Awaitable[obj
         start_canonical = site_url
 
     def allowed(u: str) -> bool:
-        return u != start_canonical and not any(p.search(u) for p in exclude)
+        return u != start_canonical and not matches_any(exclude, u)
+
+    @url_batch
+    def allowed_links(page):
+        return [u for u in _in_site_links(page, site) if allowed(u)]
 
     parent_links: dict[str, int] = {}
-    level0 = [u for u in _in_site_links(start, site) if allowed(u)]
+    level0 = allowed_links(start)
     start_count = len(level0)
     for u in level0:
         parent_links.setdefault(u, start_count)
@@ -154,7 +159,7 @@ async def guess_targets(site_url: str, fetch_page: Callable[[str], Awaitable[obj
         if page is None:
             continue
         pages[u] = page
-        links = [v for v in _in_site_links(page, site) if allowed(v)]
+        links = allowed_links(page)
         for v in links:
             parent_links[v] = max(parent_links.get(v, 0), len(links))
     groups = group_by_shape(list(parent_links))
@@ -170,7 +175,7 @@ async def guess_targets(site_url: str, fetch_page: Callable[[str], Awaitable[obj
             if page is None:
                 continue
             pages[m] = page
-            own = len([v for v in _in_site_links(page, site) if allowed(v)])
+            own = len(allowed_links(page))
             parent = parent_links.get(m, start_count) or 1
             if _h1_count(page) <= 1 and own <= 0.5 * parent:
                 leaf_votes += 1

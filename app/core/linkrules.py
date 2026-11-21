@@ -150,17 +150,22 @@ def _hashlike(seg: str) -> bool:
 
 
 def key_url(canonical: str, dynamic: set[str] | frozenset = frozenset()) -> str:
-    """The dedupe key of a canonical URL: long hash-like path segments and learned dynamic
-    parameters left out. Only for "was this page seen"; the page is fetched at its own URL."""
+    """Keep canonical path identity, ignoring only learned dynamic query parameters.
+
+    Opaque-looking path segments can identify distinct resources. Shape heuristics
+    belong to trap grouping, never to the decision that a page was already seen.
+    """
     parts = urlsplit(canonical)
-    segs = parts.path.split("/")
-    path = "/".join("<h>" if _hashlike(s) else s for s in segs)
     query = parts.query
     if dynamic and query:
-        query = "&".join(p for p in query.split("&") if p.partition("=")[0].lower() not in dynamic)
-    if path == parts.path and query == parts.query:
+        query = "&".join(
+            p for p in query.split("&") if p.partition("=")[0].lower() not in dynamic
+        )
+    if query == parts.query:
         return canonical
-    return f"{parts.scheme}://{parts.netloc}{path}" + (f"?{query}" if query else "")
+    return f"{parts.scheme}://{parts.netloc}{parts.path}" + (
+        f"?{query}" if query else ""
+    )
 
 
 PATH_FILTER = re.compile(r"^(color|colour|size|brand|material|price|manufacturer|pattern|width|height|length|finish)-[a-z0-9][a-z0-9_-]*$", re.I)
@@ -179,16 +184,27 @@ def path_filtered(segs: list[str]) -> bool:
 
 
 def trap_pattern(canonical: str) -> str:
-    """The URL pattern the trap budget counts by: the first path segment (digits as ``<n>``) and
-    the query parameter names; depth is left out. A URL with a filter written in its path
+    """Group trap budgets by the first segment and query parameter names.
+
+    Digits and opaque-looking first segments are normalized only for grouping.
+    Depth is left out. A URL with a filter written in its path
     (``/lights/color-red/size-xl/``, ``/lights/f/12-40/``) counts under one site-wide pattern."""
     parts = urlsplit(canonical)
     segs = [s for s in parts.path.split("/") if s]
-    names = sorted({n.lower() for n, _ in parse_qsl(parts.query, keep_blank_values=True)})
+    names = sorted(
+        {n.lower() for n, _ in parse_qsl(parts.query, keep_blank_values=True)}
+    )
     query = ("?" + "&".join(names)) if names else ""
     if path_filtered(segs):
-        return "/<path-filters>" + query  # every path filter of the site shares one budget
-    first = re.sub(r"\d+", "<n>", segs[0]) + ("/*" if len(segs) > 1 else "") if segs else ""
+        return (
+            "/<path-filters>" + query
+        )  # every path filter of the site shares one budget
+    first = (
+        ("<opaque>" if _hashlike(segs[0]) else re.sub(r"\d+", "<n>", segs[0]))
+        if segs
+        else ""
+    )
+    first += "/*" if len(segs) > 1 else ""
     return f"/{first}" + query
 
 

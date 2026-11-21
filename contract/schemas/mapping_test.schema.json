@@ -83,7 +83,8 @@
         },
         "sample_count": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Number of included output records evaluated (per variant when variants are used); excluded records do not contribute. matched_samples remains the number of matched pages."
         },
         "filled_count": {
           "type": "integer",
@@ -240,7 +241,7 @@
           "items": {
             "$ref": "error.schema.json#/$defs/field_error"
           },
-          "description": "Added 2026-11-14. Present when the template matched at least one sample. Each entry fails the template (`passed: false`) whatever the fill rates: `price_not_extracted` — the mapping has a `price` field, yet no record of a sample whose page shows a price (`price_on_page` `shown` or `range`) got one; `variants_not_used` — matched samples carry variant data (a variant source with two or more variants, see the samples' `variant_sources`) and the mapping declares no `variants`. Since 2026-11-14 also `price_mismatch` — the mapped price differs (more than rounding: 0.011 or 0.1 %) from the price the page states for programs (schema.org `offers.price`/`lowPrice`, `meta product:price:amount`, `[itemprop=price][content]`, `data-price`; a `data-*` value in minor units agrees), and `price_is_old_price` — on a sale page the mapped price is the struck-through old price. The same entries are also in the answer's `warnings[]`; `message` says what to change (README 6.3)."
+          "description": "Added 2026-11-14. Present when the template matched at least one sample. Each entry fails the template (`passed: false`) whatever the fill rates: `price_not_extracted` \u2014 the mapping has a `price` field, yet no record of a sample whose page shows a price (`price_on_page` `shown` or `range`) got one; `variants_not_used` \u2014 matched samples carry variant data (a variant source with two or more variants, see the samples' `variant_sources`) and the mapping declares no `variants`. Since 2026-11-14 also `price_mismatch` \u2014 the mapped price differs (more than rounding: 0.011 or 0.1 %) from the price the page states for programs (schema.org `offers.price`/`lowPrice`, `meta product:price:amount`, `[itemprop=price][content]`, `data-price`; a `data-*` value in minor units agrees), and `price_is_old_price` \u2014 on a sale page the mapped price is the struck-through old price. The same entries are also in the answer's `warnings[]`; `message` says what to change (README 6.3)."
         }
       }
     },
@@ -315,6 +316,14 @@
               "items": {
                 "type": "object"
               }
+            },
+            "included_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "excluded_count": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         },

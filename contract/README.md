@@ -796,16 +796,23 @@ answers `link_rules` with every rule, whether it is on, and its lists.
 | `canonical` | Duplicates by canonical address (4.12); counts the duplicate pages |
 
 Session and one-time parameters are dropped from the canonical URL itself
-(7.3); long hash-like path segments are left out when telling pages apart.
-Filters written in the path (`/lights/color-red/size-xl/`) are caught only by
-the trap budget.
+(7.3). Canonical paths, including long opaque-looking identifiers, remain part
+of page identity. URL-shape heuristics group suspected traps; they never merge
+distinct resource paths. Opaque-looking first path segments share a trap-budget
+group, and filters written in the path (`/lights/color-red/size-xl/`) are caught
+only by the trap budget.
 
 ### 4.12 Duplicates by canonical address (added 2026-11-14)
 
 After a page loads, its `<link rel="canonical">` or the HTTP
 `Link: <…>; rel="canonical"` header names its real address; only one on the
-same site counts. Pages reached from links, the sitemap or the start page
-(never `urls` entries):
+same site counts. A declared canonical does not replace the loaded address when
+it would remove or change its non-pagination query parameters: `/item?id=2`,
+`?edition=…` and `?fit=…` can identify distinct resources even if an SEO canonical
+names their parent. Tracking/session parameters are normalized first (7.3).
+Query-free path aliases still adopt their canonical address.
+
+For pages reached from links, the sitemap or the start page (never `urls` entries):
 
 - the first page of a canonical address is collected; its records get that
   address as `source_url` (and `record_id`), the loaded address as
@@ -840,9 +847,11 @@ With `when_site_busy: queue` the run is stored and waits as described next.
 
 A queued run of a site that has a run `running` or `stopping` waits until that
 run ends; queued runs of other sites may start before it. While queued, the
-summary (also the answer of `POST /v1/runs`) has `queued_reason`
+summary (also the answer of `POST /v1/runs`) may have `queued_reason`
 {`code`: `same_site_running` | `no_free_slot`, `run_id`, `message`}. A run in
-`waiting_for_credentials` does not hold its site. Politeness (delays, 429
+`waiting_for_credentials` does not hold its site. A queued run waiting only for
+the scheduler with free capacity has no `queued_reason`; `no_free_slot` requires
+all concurrent slots to be occupied by running or stopping jobs. Politeness (delays, 429
 back-off, crawl-delay) stays per run; with one run per site at a time a
 throttle shared across runs is not needed.
 
@@ -877,6 +886,10 @@ always the floor. The run summary states the result in `politeness`
 browser navigation of a run, and every fetch of `POST /v1/analyze` and
 `POST /v1/samples`. A page that takes longer fails like a network error (retried
 up to `max_retries`, then `fetch_failed`).
+
+Scripted listing pagination uses the selected timeout for its bounded link-observation
+window, with no separate 30-second ceiling. Action/page budgets and the run
+`max_duration_minutes` limit continue to apply.
 
 **Automatic slow-down.** Per host the service watches its last 20 pages. When at
 least 20 % of them were server errors, timeouts, network errors or unusable

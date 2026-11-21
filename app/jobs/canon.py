@@ -4,6 +4,10 @@ After a page loads, its ``<link rel="canonical">`` (or the HTTP ``Link: <…>; r
 header) names the page's real address. Only a canonical on the same site counts. The first
 page of a canonical address is collected and its records are keyed by that address; a later
 page with the same canonical is a duplicate: not extracted again, its links not followed.
+A canonical cannot erase or change the loaded URL's non-pagination query identity:
+those queries may select a resource, edition or fit, so the loaded address remains
+its identity. Tracking/session parameters were already removed during URL normalization.
+Query-free path aliases still adopt their declared canonical.
 
 A target page is compared with the first one before it is dropped: when the two products
 differ (SKU, else title), the canonical is wrong for that page, which is then collected under
@@ -82,14 +86,32 @@ class CanonRegistry:
         self.loaded = True
 
     def declared(self, page, link_header: str | None, site: str) -> str | None:
-        """The page's canonical on the same site, normalised; None without one."""
+        """Use a same-site canonical unless it would discard the loaded query identity."""
         for raw in (page.canonical_link(), link_header_canonical(link_header, page.base_url)):
             if not raw:
                 continue
             try:
                 if site_key(raw) != site:
                     continue
-                return canonical_url(raw)
+                declared = canonical_url(raw)
+                own = canonical_url(page.url)
+                own_query = [
+                    (n, v)
+                    for n, v in parse_qsl(urlsplit(own).query, keep_blank_values=True)
+                    if n.lower() not in PAGINATION
+                ]
+                declared_query = [
+                    (n, v)
+                    for n, v in parse_qsl(
+                        urlsplit(declared).query, keep_blank_values=True
+                    )
+                    if n.lower() not in PAGINATION
+                ]
+                # An SEO canonical may name the parent product while a query selects
+                # a distinct edition/fit/option. Tracking was already removed above.
+                if own_query and sorted(own_query) != sorted(declared_query):
+                    return own
+                return declared
             except ValueError:
                 continue
         return None

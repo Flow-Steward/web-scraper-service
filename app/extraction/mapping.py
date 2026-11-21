@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +9,7 @@ from lxml import etree
 
 from app.extraction.page import Page
 from app.extraction.transforms import apply_transform, coerce
+from app.core.url_patterns import compile_patterns, matches_any, url_policy
 
 _NO = object()
 
@@ -35,28 +35,25 @@ class Extraction:
 
 
 def _url_matches(patterns: list[str], url: str) -> bool:
-    for pattern in patterns:
-        try:
-            if re.search(pattern, url):
-                return True
-        except re.error:
-            continue
-    return False
+    return matches_any(compile_patterns(patterns, "match.url_patterns"), url)
 
 
+@url_policy
 def template_matches(mapping: dict, page: Page, canonical: str) -> bool:
     match = mapping.get("match") or {}
     patterns = match.get("url_patterns") or []
     selector = match.get("selector")
     if not patterns and not selector:
         return False
-    if patterns and not _url_matches(patterns, canonical):
+    field = f"mappings.{mapping.get('template_id', 'unknown')}.match.url_patterns"
+    if patterns and not matches_any(compile_patterns(patterns, field), canonical):
         return False
     if selector and not page.has_selector(selector):
         return False
     return True
 
 
+@url_policy
 def pick_template(mappings: list[dict], page: Page, canonical: str) -> dict | None:
     for mapping in sorted(mappings, key=lambda m: m["template_id"]):
         if template_matches(mapping, page, canonical):

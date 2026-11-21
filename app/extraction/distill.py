@@ -8,7 +8,7 @@ from typing import Any
 from lxml import etree, html as lxml_html
 
 KEEP_ATTRS = {"id", "class", "itemprop", "itemtype", "itemscope", "href", "src", "alt", "content", "name", "property",
-              "value", "for"}  # value/for since a variant select's option slugs and its label
+              "value", "for", "role"}  # value/for since a variant select's option slugs and its label
 DROP_TAGS = {"script", "style", "svg", "noscript", "template", "iframe", "link", "meta", "canvas"}
 
 
@@ -74,6 +74,61 @@ def _swap_out(el, note: str):
     return restore
 
 
+def _heading_regions(body) -> list:
+    """Prioritize local content when no known summary/main landmark exists."""
+    excluded_roles = {"banner", "navigation", "contentinfo", "dialog"}
+
+    def excluded(el) -> bool:
+        return (
+            el.tag in {"header", "nav", "footer"}
+            or el.get("role") in excluded_roles
+            or el.get("hidden") is not None
+            or (el.get("aria-hidden") or "").lower() == "true"
+            or bool(
+                re.search(
+                    r"(?:display\s*:\s*none|visibility\s*:\s*hidden)\b",
+                    el.get("style") or "",
+                    re.I,
+                )
+            )
+        )
+
+    def link_menu(el) -> bool:
+        if len(el.xpath(".//a[@href]")) <= 40:
+            return False
+        if el.tag in {"table", "dl"} or el.xpath(".//table | .//dl"):
+            return (
+                False  # Fitment/specification tables can legitimately have many links.
+            )
+        other_text = " ".join(el.xpath(".//text()[not(ancestor::a)]")).strip()
+        return len(other_text) < 500
+
+    for heading in body.xpath(".//h1"):
+        if not "".join(heading.itertext()).strip():
+            continue
+        if any(excluded(el) for el in [heading, *heading.iterancestors()]):
+            continue
+        if len(heading.xpath("preceding::a[@href]")) <= 40:
+            return []  # Keep ordinary small pages in their original presentation.
+        region = heading
+        for depth, parent in enumerate(heading.iterancestors()):
+            if depth >= 16 or parent is body or parent.tag == "html":
+                break
+            # Do not pull a large site menu into a plain-div product region.
+            outside_links = len(parent.xpath(".//a[@href]")) - len(
+                region.xpath(".//a[@href]")
+            )
+            if outside_links > 40:
+                break
+            region = parent
+        return [region] + [
+            el
+            for el in region.itersiblings()
+            if isinstance(el.tag, str) and not excluded(el) and not link_menu(el)
+        ]
+    return []
+
+
 def distill(html: str, max_bytes: int, pointers: dict[str, str] | None = None) -> tuple[str, bool]:
     """The page for the mapping agent within ``max_bytes`` (README 2, ``distilled_html``).
 
@@ -99,6 +154,9 @@ def distill(html: str, max_bytes: int, pointers: dict[str, str] | None = None) -
             continue
         if el.tag in DROP_TAGS or (el.tag == "input" and (el.get("type") or "").lower() == "hidden"):
             el.drop_tree()
+    summary = _first(body, SUMMARY_XPATH)
+    main = _first(body, MAIN_XPATH)
+    fallback = _heading_regions(body) if summary is None and main is None else []
     pointers = pointers or {}
     for el in body.iter():
         if not isinstance(el.tag, str):
@@ -110,8 +168,6 @@ def distill(html: str, max_bytes: int, pointers: dict[str, str] | None = None) -
                 value = el.attrib[attr]
                 where = f"; parsed in {pointers[attr]}" if attr in pointers else ""
                 el.set(attr, f"{value[:DATA_KEEP_CHARS]}… [{len(value)} characters cut{where}]")
-    summary = _first(body, SUMMARY_XPATH)
-    main = _first(body, MAIN_XPATH)
     if main is not None and summary is not None and (main is summary or summary in main.iterancestors()):
         main = None  # the "main" region lies inside the summary: the summary alone
     sections: list[str] = []
@@ -123,8 +179,13 @@ def distill(html: str, max_bytes: int, pointers: dict[str, str] | None = None) -
         sections.append(f"<!-- wss:section main-content at {_path_of(main)} -->" + _serialise(main))
         if restore:
             restore()
+    for el in fallback:
+        sections.append(
+            f"<!-- wss:section content-from-heading at {_path_of(el)} -->"
+            + etree.tostring(el, encoding="unicode", method="html", with_tail=True)
+        )
     if sections:
-        given = [el for el in (main, summary) if el is not None]
+        given = fallback or [el for el in (main, summary) if el is not None]
         if main is not None and summary is not None and main in summary.iterancestors():
             given = [main]
         restores = [_swap_out(el, "wss: section given above") for el in given]
@@ -172,7 +233,7 @@ def sample_doc(
 ) -> dict[str, Any]:
     from app.core.urls import canonical_url
     from app.extraction.pricing import page_signal, price_details
-    from app.extraction.variants import detect_sources
+    from app.extraction.variants import detect_candidates, detect_sources
 
     try:
         in_page = detect_sources(page)  # the in-page variant sources; shop JSON is added by the caller
@@ -202,6 +263,7 @@ def sample_doc(
         "meta": page.meta,
         "extracted": extracted,
         "variant_sources": in_page,
+        "variant_candidates": detect_candidates(page),
         "price_on_page": page_signal(page),
     }
     details = price_details(page)

@@ -386,7 +386,7 @@
         },
         "distilled_html": {
           "type": "string",
-          "description": "Scripts, styles, SVG, comments and hidden inputs removed; attributes reduced to id, class, itemprop, itemtype, href, src, alt, content, name, property, value, for (the last two since 2026-11-14) and data-*; whitespace collapsed. Since 2026-11-14 the page's own content comes first, each part after a comment `<!-- wss:section <name> at <path> -->`: `product-summary` (the product's summary block: title, price, variant form), `main-content` (the main region, the summary replaced by `<!-- wss: product summary, given above -->`), `rest-of-page` (header, menus, footer; the parts given above replaced by a comment). `<path>` is the element's place in the page (`div#content.site-content > div.summary.entry-summary`, the last six levels): write selectors against the page, not against the order of the sample. A page without a recognisable summary or main region is given in page order, as before. A `data-*` value longer than 400 characters keeps its first 160 and ends `… [N characters cut]`, or `… [N characters cut; parsed in variant_sources[i]]` when that attribute is a variant source of the sample."
+          "description": "Scripts, styles, SVG, comments and hidden inputs removed; attributes reduced to id, class, itemprop, itemtype, href, src, alt, content, name, property, value, for (the last two since 2026-11-14) and data-*; whitespace collapsed. Since 2026-11-14 the page's own content comes first, each part after a comment `<!-- wss:section <name> at <path> -->`: `product-summary` (the product's summary block: title, price, variant form), `main-content` (the main region, the summary replaced by `<!-- wss: product summary, given above -->`), `rest-of-page` (header, menus, footer; the parts given above replaced by a comment). `<path>` is the element's place in the page (`div#content.site-content > div.summary.entry-summary`, the last six levels): write selectors against the page, not against the order of the sample. A page without a recognisable summary or main region is given in page order, as before. A `data-*` value longer than 400 characters keeps its first 160 and ends `\u2026 [N characters cut]`, or `\u2026 [N characters cut; parsed in variant_sources[i]]` when that attribute is a variant source of the sample."
         },
         "distilled_html_truncated": {
           "type": "boolean"
@@ -403,7 +403,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "`<meta>` name/property → content."
+          "description": "`<meta>` name/property \u2192 content."
         },
         "extracted": {
           "anyOf": [
@@ -463,7 +463,7 @@
         },
         "price_on_page": {
           "$ref": "#/$defs/price_on_page",
-          "description": "Added 2026-11-14. What the page itself shows of its price, read from the product's own content (the summary block, else the main region — a header's mini cart does not count): `shown` (a schema.org offer price or a price element with an amount), `range` (a schema.org `lowPrice`/`highPrice` pair or a price element with two amounts joined by a range mark: `–`, ` - `, `through`, `to`, `bis` …), `on_request` (no amount, and an empty price element or a schema.org offer without a price together with request wording such as \"price on request\", \"contact us for a price\", \"to find out the price\", \"Preis auf Anfrage\", \"cena pēc pieprasījuma\"), `missing` (none of these). The mapping test fails with `price_not_extracted` when a sample's page shows a price the mapping did not read."
+          "description": "Added 2026-11-14. What the page itself shows of its price, read from the product's own content (the summary block, else the main region \u2014 a header's mini cart does not count): `shown` (a schema.org offer price or a price element with an amount), `range` (a schema.org `lowPrice`/`highPrice` pair or a price element with two amounts joined by a range mark: `\u2013`, ` - `, `through`, `to`, `bis` \u2026), `on_request` (no amount, and an empty price element or a schema.org offer without a price together with request wording such as \"price on request\", \"contact us for a price\", \"to find out the price\", \"Preis auf Anfrage\", \"cena p\u0113c piepras\u012bjuma\"), `missing` (none of these). The mapping test fails with `price_not_extracted` when a sample's page shows a price the mapping did not read."
         },
         "price_details": {
           "type": "object",
@@ -486,6 +486,69 @@
             },
             "sale_source": {
               "type": "string"
+            }
+          }
+        },
+        "variant_candidates": {
+          "type": "array",
+          "maxItems": 12,
+          "description": "Bounded optional application-state arrays for the mapping agent to inspect. These are evidence, not confirmed variants; ignoring them never causes variants_not_used. Source paths use the existing embedded_json contract.",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "count",
+              "raw_examples",
+              "raw_paths",
+              "evidence"
+            ],
+            "properties": {
+              "source": {
+                "$ref": "mapping.schema.json#/$defs/variant_source"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "raw_examples": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                  "type": "object"
+                }
+              },
+              "raw_paths": {
+                "type": "array",
+                "maxItems": 40,
+                "items": {
+                  "type": "string",
+                  "maxLength": 300
+                }
+              },
+              "parent_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              },
+              "parent_examples": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                  "type": "object"
+                }
+              },
+              "context_paths": {
+                "type": "array",
+                "maxItems": 40,
+                "items": {
+                  "type": "string",
+                  "maxLength": 300
+                }
+              },
+              "evidence": {
+                "type": "string",
+                "maxLength": 1000
+              }
             }
           }
         }

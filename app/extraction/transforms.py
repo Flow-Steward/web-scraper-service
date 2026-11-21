@@ -7,7 +7,13 @@ from datetime import date
 from typing import Any
 
 from app.extraction.htmlclean import clean_html
-from app.extraction.pricing import DefaultCurrency, PriceRange, decimal_hint, note, split_range
+from app.extraction.pricing import (
+    DefaultCurrency,
+    PriceRange,
+    decimal_hint,
+    note,
+    split_range,
+)
 
 WS_RE = re.compile(r"\s+", re.UNICODE)
 NUMBER_STRIP = str.maketrans("", "", "     '’")
@@ -144,6 +150,53 @@ def absolute_url(value: str, base_url: str | None) -> str | None:
     return absolute(base_url, value)
 
 
+_ENGLISH_MONTH_NAMES = (
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
+_ENGLISH_MONTHS = {
+    spelling: number
+    for number, name in enumerate(_ENGLISH_MONTH_NAMES, 1)
+    for spelling in (name, name[:3])
+}
+_ENGLISH_MONTHS["sept"] = 9
+_ENGLISH_DMY = re.compile(r"(?<![\w+-])(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})(?!\w)")
+_ENGLISH_MDY = re.compile(
+    r"(?<!\w)([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:,\s*|\s+)(\d{4})(?!\w)"
+)
+
+
+def _english_date(text: str) -> str | None:
+    """Parse a complete named date without process-wide locale state or guessing."""
+    if len(text) > 512:
+        return None
+    match = _ENGLISH_DMY.search(text)
+    if match:
+        day, name, year = match.groups()
+    else:
+        match = _ENGLISH_MDY.search(text)
+        if not match:
+            return None
+        name, day, year = match.groups()
+    month = _ENGLISH_MONTHS.get(name.lower())
+    if month is None:
+        return None
+    try:
+        return date(int(year), month, int(day)).isoformat()
+    except ValueError:
+        return None
+
+
 def to_date(value: str, day_first: bool = False) -> str | None:
     text = str(value).strip()
     m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", text)
@@ -152,7 +205,7 @@ def to_date(value: str, day_first: bool = False) -> str | None:
     else:
         m = re.search(r"(\d{1,4})([./-])(\d{1,2})\2(\d{2,4})", text)
         if not m:
-            return None
+            return _english_date(text)
         a, sep, b, c = m.group(1), m.group(2), m.group(3), m.group(4)
         if len(a) == 4:
             y, mo, d = int(a), int(b), int(c)

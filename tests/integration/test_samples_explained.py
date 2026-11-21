@@ -37,18 +37,27 @@ def test_selector_that_matches_nothing_is_explained_with_a_hint(guarded_service,
     body = check(guarded_service.post("/v1/samples", {"config": cfg, "profile": profile()}), "samples.schema.json", 200)
     assert body["samples"] == []
     ex = body["explanation"]
-    # one page per URL shape first, a shape dropped after 2 pages without the selector: 5 loads, not 20
-    assert ex["counts"]["not_target"] == ex["counts"]["tried"] == 5 and ex["counts"]["selector_found"] == 0, ex["counts"]
+    # Generic traversal may reveal new shapes through product/category links.
+    # It must remain within the sample plan's budget and account for every URL,
+    # including the fixture's linked missing pages rather than hiding their errors.
+    counts = ex["counts"]
+    assert 0 < counts["tried"] <= max(cfg["sample_count"] * 6, 20), counts
+    assert counts["tried"] == counts["not_target"] + counts["failed"] and counts["selector_found"] == 0, counts
     tried = [p for p in ex["pages"] if p["outcome"] != "start"]
-    assert {p["reason"] for p in tried} == {"target_page_selector absent"} and all(p["selector_found"] is False for p in tried)
-    assert all(p["status"] == 200 and "links" in p for p in tried), tried
+    assert len({p["url"] for p in tried}) == len(tried) and all(p["url"] != CATEGORY for p in tried), tried
+    rejected = [p for p in tried if p["outcome"] == "not_target"]
+    assert rejected and {p["reason"] for p in rejected} == {"target_page_selector absent"}
+    assert all(p["selector_found"] is False and p["status"] == 200 and "links" in p for p in rejected), rejected
+    failed = [p for p in tried if p["outcome"] == "failed"]
+    assert all(p["status"] == 404 and p["reason"] == "HTTP 404" for p in failed), failed
     kinds = [h["kind"] for h in ex["hints"]]
     assert kinds[0] == "target_page_selector" and ".product-page__content" in ex["hints"][0]["message"], ex["hints"]
     assert "url_include" in kinds  # product pages (price, gallery …) were seen: a pattern is offered
     warn = next(w for w in body["warnings"] if w["field"] == "sample_count")
-    assert warn["message"].startswith("found 0 of 1 target page: start page (browser, HTTP 200): 38 links, 37 on this site in 3 URL shapes")
-    assert "Next: none of the 5 pages loaded had the product page selector" in warn["message"], warn
-    assert "samples site=guard.test:8603 source=crawl start_links=38/37 shapes=3" in guarded_service.log()
+    assert warn["message"].startswith("found 0 of 1 target page: start page (browser, HTTP 200): 38 links, 37 on this site in ")
+    loaded = counts["tried"] - counts["not_loaded"]
+    assert f"Next: none of the {loaded} pages loaded had the product page selector" in warn["message"], warn
+    assert f"samples site=guard.test:8603 source=crawl start_links=38/37 shapes={ex['discovery']['shapes']}" in guarded_service.log()
     assert "/p/11 browser 200 sel=no links=" in guarded_service.log()
 
 

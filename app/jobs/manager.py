@@ -178,7 +178,7 @@ class JobManager:
                        details={"run_id": row["run_id"], "state": row["state"], "started_at": other.get("started_at"),
                                 "created_at": row["created_at"], "site": site})
 
-    def queued_reason(self, run_id: str, site: str) -> dict:
+    def queued_reason(self, run_id: str, site: str) -> dict | None:
         """Why a queued run has not started (README 4.13)."""
         other = self.svc.db.one("SELECT run_id FROM runs WHERE site=? AND state IN ('running','stopping') AND run_id != ? ORDER BY created_at LIMIT 1",
                                 (site, run_id))
@@ -186,6 +186,9 @@ class JobManager:
             return {"code": "same_site_running", "run_id": other["run_id"],
                     "message": f"another run of this site is running ({other['run_id']}); this run starts when it ends"}
         cap = self.svc.settings.limits["max_concurrent_jobs"]
+        active = sum(1 for r in self.runners.values() if r.state in ("running", "stopping"))
+        if active < cap:
+            return None  # waiting for the next scheduler tick, not blocked by capacity
         return {"code": "no_free_slot", "run_id": None,
                 "message": f"all {cap} run slots are busy (max_concurrent_jobs); this run starts when one is free"}
 
@@ -357,6 +360,7 @@ class JobManager:
         doc = copy.deepcopy(runner.doc) if runner is not None and runner.doc.get("state") == row["state"] else loads(row["doc"])
         rt = copy.deepcopy(runner.rt) if runner is not None else loads(row["runtime"])
         doc["state"] = row["state"]
+        doc.pop("queued_reason", None)  # recompute from the current state and capacity
         # the effective politeness and the hosts the automatic slow-down widened
         from app.core.config import politeness_text
 
@@ -434,8 +438,8 @@ class JobManager:
             secrets["proxy_and_solver"] = "missing"
         if self.svc.secrets.present(run_id, "webhook"):
             secrets["signing_secret"] = "kept" if self.svc.secrets.readable(run_id, "webhook") else "missing"
-        if doc["state"] == "queued":
-            doc["queued_reason"] = self.queued_reason(run_id, row["site"])
+        if doc["state"] == "queued" and (reason := self.queued_reason(run_id, row["site"])) is not None:
+            doc["queued_reason"] = reason
         children = db.all("SELECT run_id, state, created_at FROM runs WHERE parent_run_id=? ORDER BY created_at", (run_id,))
         if children:
             doc["recollected_by"] = [{"run_id": c["run_id"], "state": c["state"], "created_at": c["created_at"]} for c in children]
@@ -481,8 +485,8 @@ class JobManager:
         if row["state"] not in ("completed", "failed") and snap.get("progress"):
             comp["progress"] = snap["progress"]
         item["completeness"] = comp
-        if row["state"] == "queued":
-            item["queued_reason"] = self.queued_reason(row["run_id"], row["site"])
+        if row["state"] == "queued" and (reason := self.queued_reason(row["run_id"], row["site"])) is not None:
+            item["queued_reason"] = reason
         return item
 
     # ================================================================== control
@@ -627,7 +631,7 @@ class JobManager:
         templates_failed = any(t.get("status") == "failed" for t in (rt.get("templates") or {}).values())
         # outcome-neutral entries: not_found, and sitemap URLs refused by robots.txt or the private rule
         non_neutral = int(svc.db.scalar("SELECT COUNT(*) FROM unextracted WHERE run_id=? AND neutral=0", (run_id,)) or 0)
-        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0) else "partial"
+        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0 and not rt.get("navigation_partial")) else "partial"
         result = {
             "run_id": run_id,
             "format": "jsonl",

@@ -32,9 +32,9 @@ import json
 import copy
 import hashlib
 import logging
-import re
 import shutil
 import time
+from functools import wraps
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -47,6 +47,10 @@ from app.core.netguard import url_is_private
 from app.core.redaction import redact, secret_values
 from app.core.timeutil import iso, now, now_iso, parse, plus
 from app.core.urls import canonical_url, host_of, record_id, result_file_name, site_key
+from app.core.url_patterns import (
+    UrlPattern, UrlPatternBatch, UrlPatternError, compile_patterns, matches_any,
+    url_batch, url_pattern_batch, url_policy,
+)
 from app.extraction.pricing import annotate as annotate_price, plain as plain_prices, price_field, price_view
 from app.jobs import softerror
 from app.extraction.distill import sample_doc, suggest_template_id
@@ -57,6 +61,7 @@ from app.fetching.proxies import TierPlan
 from app.jobs.throttle import HostThrottle
 
 if TYPE_CHECKING:
+    from app.fetching.protection import RouteBudget
     from app.service import Service
 
 log = logging.getLogger("wss.job")
@@ -95,6 +100,19 @@ def page_key(canonical: str, source_key: str | None) -> str:
 
 def kvs_key(pkey: str) -> str:
     return "page-" + hashlib.sha256(pkey.encode("utf-8")).hexdigest()[:40]
+
+
+def fail_on_url_pattern_error(handler):
+    """Stop the run before Crawlee can retry a configuration policy failure."""
+    @wraps(handler)
+    async def bounded(self, ctx, *args, **kwargs):
+        try:
+            return await handler(self, ctx, *args, **kwargs)
+        except UrlPatternError as exc:
+            ctx.request.no_retry = True
+            await self._url_pattern_failed(exc)
+            raise
+    return bounded
 
 
 def write_unextracted(db, run_id: str, canonical: str, requested: str | None, source_key: str | None, site: str, reason: str,
@@ -152,15 +170,16 @@ class JobRunner:
         self._shutdown = False
         self._no_crawl = False
         self.job_dir = Path(self.settings.data_dir) / "jobs" / run_id
-        self.throttle = HostThrottle(self.config["delay_min_seconds"], self.config["delay_max_seconds"])
+        rate_floor = 60 / float(self.config.get("max_requests_per_minute") or 60000)
+        self.throttle = HostThrottle(max(rate_floor, self.config["delay_min_seconds"]), max(rate_floor, self.config["delay_max_seconds"]))
         self._shape_stats: dict[str, softerror.ShapeStats] = {}  # what normal pages of a URL shape look like
         self.tiers = TierPlan([], self.rt.get("host_level"))
         self.solver = None
         self.browser = self.doc["resolved"].get("browser")
         self.robots: dict[str, Any] = {}
         self.mappings: dict[str, dict[str, dict]] = {}  # site -> template_id -> {"version", "mapping"}
-        self.include = [re.compile(p) for p in self.config.get("url_include") or []]
-        self.exclude = [re.compile(p) for p in self.config.get("url_exclude") or []]
+        self.include = compile_patterns(self.config.get("url_include") or [], "url_include")
+        self.exclude = compile_patterns(self.config.get("url_exclude") or [], "url_exclude")
         self.pages_started = 0
         self.last_persist = 0.0
         self.secret_strings: list[str] = []
@@ -168,7 +187,7 @@ class JobRunner:
         self._attempt_token: dict[str, str] = {}
         self._admitted: set[str] = set()
         self._pending_records: dict[str, float] = {}  # unique_key -> when a record was pushed, not yet applied
-        self._target_patterns: dict[str, list[re.Pattern]] = {}
+        self._target_patterns: dict[str, list[UrlPattern]] = {}
         # URL shapes (sampling.url_shape) of pages that turned out to be target pages: their
         # sibling links go to the front of the queue (a category's 12 product links
         # behind 1028 menu links)
@@ -310,6 +329,8 @@ class JobRunner:
             await self._run_crawl()
         except asyncio.CancelledError:
             raise
+        except UrlPatternError as exc:
+            await self._url_pattern_failed(exc)
         except Exception as exc:  # unexpected: internal_error
             log.exception("job %s crashed", self.run_id)
             try:
@@ -710,21 +731,22 @@ class JobRunner:
         await self._supervise()
 
     # ================================================================== feeding
+    @url_policy
     def _passes_filters(self, canonical: str, source: str = "sitemap") -> bool:
         """``url_exclude`` keeps a URL out of the queue. ``url_include`` says what is *extracted*:
         it filters sitemap entries (a sitemap entry is a page to scrape) but not crawled links
         (a link is also a way to discover); a crawled page outside it is ``not_target``
         (README 4.4 as clarified)."""
-        if source != "link" and self.include and not any(p.search(canonical) for p in self.include):
+        if source != "link" and self.include and not matches_any(self.include, canonical):
             return False
-        if any(p.search(canonical) for p in self.exclude):
+        if matches_any(self.exclude, canonical):
             return False
         return True
 
     def _outside_include(self, canonical: str, ud) -> bool:
         if not self.include or self.config.get("single_page"):
             return False
-        return ud.get("src") in ("link", "start") and not any(p.search(canonical) for p in self.include)
+        return ud.get("src") in ("link", "start") and not matches_any(self.include, canonical)
 
     async def enqueue(self, entries: list[dict], *, forefront: bool = False, backlog_seqs: list[int] | None = None,
                       feed: tuple[str, int] | None = None) -> int:
@@ -739,32 +761,38 @@ class JobRunner:
         decisions: list[tuple] = []
         new_requests = []
         seen_now: set[str] = set()
+        batch = UrlPatternBatch()
         for entry in entries:
-            url = entry["url"]
-            source = entry["source"]
-            try:
-                canonical = canonical_url(url)
-                site = site_key(url)
-            except ValueError:
-                continue
-            listed = source == "list"
-            if source in ("link", "sitemap"):
-                if source == "link" and site != job_site:
+            with url_pattern_batch(batch):
+                url = entry["url"]
+                source = entry["source"]
+                try:
+                    canonical = canonical_url(url)
+                    site = site_key(url)
+                except ValueError:
                     continue
-                if not self._passes_filters(canonical, source):
-                    decisions.append(("filtered",))
-                    continue
-            if source == "link":
-                rule = self._link_state_rule(canonical)
-                if rule:
-                    decisions.append(("rule", rule))
-                    continue
-            ukey = entry["unique_key"] if source == "refetch" else self._ukey(canonical, entry.get("source_key"))
-            if source != "refetch":
-                if ukey in seen_now or self.svc.db.one("SELECT 1 FROM urls WHERE run_id=? AND unique_key=?", (self.run_id, ukey)):
-                    decisions.append(("duplicate",))
-                    continue
-            seen_now.add(ukey)
+                listed = source == "list"
+                if source in ("link", "sitemap"):
+                    if source == "link" and site != job_site:
+                        continue
+                    if not self._passes_filters(canonical, source):
+                        decisions.append(("filtered",))
+                        continue
+                if source == "link":
+                    rule = self._link_state_rule(canonical)
+                    if rule:
+                        decisions.append(("rule", rule))
+                        continue
+                ukey = entry["unique_key"] if source == "refetch" else self._ukey(canonical, entry.get("source_key"))
+                if source != "refetch":
+                    if ukey in seen_now or self.svc.db.one("SELECT 1 FROM urls WHERE run_id=? AND unique_key=?", (self.run_id, ukey)):
+                        decisions.append(("duplicate",))
+                        continue
+                seen_now.add(ukey)
+            # DNS may return from cache without suspending: yield explicitly before
+            # resetting the continuous synchronous allowance. No regex context spans it.
+            await asyncio.sleep(0)
+            batch = UrlPatternBatch()
             if await url_is_private(url):
                 decisions.append(("private", ukey, url, canonical, site, source, entry.get("source_key"), listed or source == "sitemap"))
                 continue
@@ -822,8 +850,10 @@ class JobRunner:
         return len(new_requests)
 
     def _ukey(self, canonical: str, source_key: str | None) -> str:
-        """The page key a URL is queued under: hash-like path segments and learned dynamic
-        parameters left out; the URL itself is fetched unchanged."""
+        """Queue canonical path identity, ignoring only learned dynamic query parameters.
+
+        URL shape heuristics group trap budgets; they never merge resource paths.
+        """
         from app.core.linkrules import key_url
 
         return page_key(key_url(canonical, self.dynamic.learned), source_key)
@@ -843,6 +873,7 @@ class JobRunner:
                 self.timeline("links", msg)
         return None
 
+    @url_batch
     def _filter_links(self, page, links: list[str]) -> tuple[list[str], dict[str, int]]:
         """Skip lists and rel=nofollow, before the links enter the queue; counts per rule."""
         from app.core.linkrules import offsite_rule, raw_skip, url_skip
@@ -871,6 +902,8 @@ class JobRunner:
             except ValueError:
                 continue
             r = "nofollow" if ("nofollow" in rules and cu in nofollow and cu not in follow) else url_skip(cu, rules)
+            if r == "facet_params" and self._looks_like_target_url(cu):
+                r = None  # an explicit target URL can use size/color/etc as identity
             if r:
                 skips[r] = skips.get(r, 0) + 1
                 continue
@@ -1034,6 +1067,8 @@ class JobRunner:
                 self._persist()
         except asyncio.CancelledError:
             raise
+        except UrlPatternError as exc:
+            await self._url_pattern_failed(exc)
         except Exception as exc:
             log.exception("feeder of %s failed", self.run_id)
             with self.svc.db.tx():
@@ -1090,8 +1125,9 @@ class JobRunner:
             # links that look like targets (an active mapping's url_patterns, url_include) go to the
             # front of the queue, listings behind: a trial run reaches its records first, a full
             # crawl still fetches every listing
-            front = [r for r in rows if r["forefront"] or (r["source"] == "link" and self._targetish(r["url"]))]
-            back = [r for r in rows if r not in front]
+            with url_pattern_batch():
+                front = [r for r in rows if r["forefront"] or (r["source"] == "link" and self._targetish(r["url"]))]
+                back = [r for r in rows if r not in front]
             for forefront, part in ((1, front), (0, back)):
                 if part:
                     await self.enqueue(
@@ -1118,12 +1154,12 @@ class JobRunner:
             self._target_patterns[site] = pats
         if not pats:
             return True  # no pattern known: every page may be a target
-        return any(p.search(canonical) for p in pats)
+        return matches_any(pats, canonical)
 
     def _variant_rows_static(self, tmpl: dict, data: dict, page) -> list:
         from app.extraction.variants import variant_rows
 
-        return variant_rows(tmpl, data, [], None, page.base_url)
+        return variant_rows(tmpl, data, [], None, page.base_url, page=page)
 
     def _variant_fetcher(self, ctx, browser_run: bool):
         """The shop's product JSON for a variant source: one light request through the
@@ -1182,6 +1218,7 @@ class JobRunner:
             self._target_patterns[site] = pats
         return bool(pats) or bool(self._target_shapes)
 
+    @url_batch
     def _ranked_links(self, page) -> list[str]:
         """The page's links in crawl order: links that look like targets
         (``url_include``, an active mapping's ``url_patterns``, URL shapes of pages that already
@@ -1227,7 +1264,7 @@ class JobRunner:
 
             pats = target_patterns(self.mappings_for(site), self.config.get("url_include") or [])
             self._target_patterns[site] = pats
-        if bool(pats) and any(p.search(canonical) for p in pats):
+        if bool(pats) and matches_any(pats, canonical):
             return True
         if self._target_shapes:
             from app.extraction.sampling import url_shape
@@ -1292,6 +1329,7 @@ class JobRunner:
         raise Deferred(reason)
 
     # ================================================================== crawling hooks
+    @fail_on_url_pattern_error
     async def _pre_nav(self, ctx) -> None:
         from crawlee.crawlers._adaptive_playwright._adaptive_playwright_crawling_context import AdaptiveContextError
 
@@ -1313,6 +1351,12 @@ class JobRunner:
             if req_tier is not None and cur is not None and req_tier < cur["tier"]:
                 self._defer(request, "stale proxy tier")
             if not ud.get("aux"):
+                if (
+                    self.pages_started + int(self.rt.get("navigation_actions", 0))
+                    >= self.config["max_pages"]
+                ):
+                    self._cut("max_pages")
+                    self._defer(request, "page budget reached")
                 await self._admit(request)
                 self.pages_started += 1
             if not self.tiers.enabled:
@@ -1383,6 +1427,7 @@ class JobRunner:
             self._retire(ctx)
             self._defer(ctx.request, "session belongs to another proxy tier")
 
+    @fail_on_url_pattern_error
     async def _handle(self, ctx) -> None:
         """Request handler. Writes only through the context (push_data, key-value store)."""
         request = ctx.request
@@ -1493,7 +1538,6 @@ class JobRunner:
 
     async def _push_failed_status(self, ctx, url: str, status: int, error: str) -> None:
         request = ctx.request
-        ud = request.user_data
         try:
             canonical = canonical_url(request.loaded_url or url)
             site = site_key(request.loaded_url or url)
@@ -1615,7 +1659,6 @@ class JobRunner:
         from app.fetching.oneoff import Fetched
 
         request = ctx.request
-        ud = request.user_data
         url = request.url
         if not browser_run:
             body = await ctx.http_response.read()
@@ -1848,7 +1891,94 @@ class JobRunner:
                 tier = None
         return {"fetch_mode": "browser" if browser_run else "http", "browser": (self.browser or "chromium") if browser_run else None, "proxy_tier": tier}
 
-    async def _classify(self, ctx, html: str, final_url: str, status: int, browser_run: bool, ud) -> dict | None:
+    async def _collect_navigation(self, ctx, page, canonical, browser_run, ud, out):
+        """Discover links across listing states without changing extraction input."""
+        if not browser_run:
+            return
+        from dataclasses import asdict
+        from app.core.scope import in_scope
+        from app.fetching.navigation import NavigationLimits, collect_listing_links
+
+        scope = self._crawl_scope()
+        if scope and ud.get("src") != "start" and not in_scope(scope, canonical):
+            return
+
+        def cancelled():
+            return (
+                bool(self.rt.get("stop_reason"))
+                or self.state in ("stopping", "completed", "failed")
+                or self.running_seconds() >= self.config["max_duration_minutes"] * 60
+            )
+
+        async def allowed(action):
+            from app.core.linkrules import url_skip
+
+            document = action.kind == "navigation"
+            if (
+                not document
+                and self.pages_started + int(self.rt.get("navigation_actions", 0))
+                >= self.config["max_pages"]
+            ):
+                return False
+            if cancelled() or await url_is_private(action.url):
+                return False
+            if getattr(action, "nofollow", False) and "nofollow" in self.link_rules:
+                return False
+            if site_key(action.url) != site_key(canonical) or url_skip(
+                action.url, self.link_rules
+            ):
+                return False
+            if scope and action.url != canonical and not in_scope(scope, action.url):
+                return False
+            if not await self.robots_allowed(action.url):
+                return False
+            while time.monotonic() < self.paused_until:
+                if cancelled():
+                    return False
+                await asyncio.sleep(0.2)
+            if document:
+                return not cancelled()
+            await self.throttle.wait(host_of(action.url))
+            if cancelled() or self.pages_started + int(self.rt.get("navigation_actions", 0)) >= self.config["max_pages"]:
+                return False
+            self.rt["navigation_actions"] = (
+                int(self.rt.get("navigation_actions", 0)) + 1
+            )
+            return True
+
+        result = await collect_listing_links(
+            ctx.page,
+            site_url=self.config["site_url"],
+            limits=NavigationLimits(
+                max_steps=min(100, int(self.config.get("max_pages") or 12)),
+                max_seconds=int(self.config.get("page_timeout_seconds") or 45),
+            ),
+            before_action=allowed,
+            cancelled=cancelled,
+        )
+        page.extra_links = result.links
+        page.extra_anchors = result.anchors
+        out["navigation"] = {
+            k: v for k, v in asdict(result).items() if k not in ("links", "anchors", "deferred_links")
+        }
+        if result.bounded:
+            self.rt["navigation_partial"] = True
+            self.add_error(
+                "navigation_partial",
+                result.coverage_notes[-1],
+                url=canonical,
+                severity="warning",
+            )
+
+    @url_policy
+    def _scope_allows_link(self, scope, url: str, known: bool) -> bool:
+        from app.core.scope import in_scope
+
+        return in_scope(scope, url) or (known and self._looks_like_target_url(url)) or not known
+
+    async def _classify(
+        self, ctx, html: str, final_url: str, status: int, browser_run: bool, ud
+    ) -> dict | None:
         url = ctx.request.url
         try:
             canonical = canonical_url(final_url)
@@ -1916,22 +2046,24 @@ class JobRunner:
         out = dict(base)
         follow_links = self.doc["resolved"].get("discovery_mode") in ("crawl", "sitemap_and_crawl") and not self.config.get("single_page")
         if follow_links:
-            links, link_skips = self._filter_links(page, self._ranked_links(page))
-            if link_skips:
-                out["link_skips"] = link_skips
-            scope = self._crawl_scope()
-            if scope:
-                from app.core.scope import in_scope
+            await self._collect_navigation(ctx, page, canonical, browser_run, ud, out)
+            with url_pattern_batch():
+                links, link_skips = self._filter_links(page, self._ranked_links(page))
+                if link_skips:
+                    out["link_skips"] = link_skips
+                scope = self._crawl_scope()
+                if scope:
+                    from app.core.scope import in_scope
 
-                walked = ud.get("src") == "start" or in_scope(scope, canonical)
-                if not walked:
-                    links = []  # a page outside the walk scope is fetched, its links are not followed
-                else:
-                    known = self._target_known(site)
-                    kept = [u for u in links if in_scope(scope, u) or (known and self._looks_like_target_url(u)) or not known]
-                    out["scope_skipped"] = len(links) - len(kept)
-                    links = kept
-            out["links"] = links
+                    walked = ud.get("src") == "start" or in_scope(scope, canonical)
+                    if not walked:
+                        links = []  # a page outside the walk scope is fetched, its links are not followed
+                    else:
+                        known = self._target_known(site)
+                        kept = [u for u in links if self._scope_allows_link(scope, u, known)]
+                        out["scope_skipped"] = len(links) - len(kept)
+                        links = kept
+                out["links"] = links
         if outside:
             out["page_class"] = "not_target"  # crawled only to discover links (outside url_include / without target_page_selector)
         elif tmpl is not None:
@@ -1941,23 +2073,63 @@ class JobRunner:
                 from app.extraction.variants import resolve, variant_rows
 
                 variants, vinfo = await resolve(page, tmpl["variants"], self._variant_fetcher(ctx, browser_run))
-                rows = variant_rows(tmpl, ext.data, variants, (vinfo or {}).get("kind"), page.base_url)
+                rows = variant_rows(
+                    tmpl,
+                    ext.data,
+                    variants,
+                    (vinfo or {}).get("kind"),
+                    page.base_url,
+                    page=page,
+                )
                 out["variants"] = {"count": len(variants), "source": (vinfo or {}).get("kind")}
             required = required_set(tmpl, self.config.get("required_fields") or [])
-            first = rows[0][0]
-            missing = sorted(n for n in required if first.get(n) is None or first.get(n) == [])
+            from app.extraction.record_filter import record_filter_missing, record_matches
+
+            selected = [
+                (index, row)
+                for index, row in enumerate(rows)
+                if record_matches(tmpl, row[0])
+            ]
+            missing = sorted(
+                {
+                    name
+                    for _index, (data, _meta, _filled) in selected
+                    for name in required
+                    if data.get(name) is None or data.get(name) == []
+                }
+            )
+            missing = sorted(
+                set(missing)
+                | {
+                    name
+                    for data, _meta, _filled in rows
+                    for name in record_filter_missing(tmpl, data)
+                }
+            )
+            out["records_filtered"] = len(rows) - len(selected)
             out["template_id"] = tmpl["template_id"]
             out["mapping_version"] = tmpl["__version"]
             out["filled"] = [name for name, ok in ext.filled.items() if ok]
             view = price_view(page, tmpl)  # price status, ranges, the default currency
-            gaps = [] if missing else self._mapping_gaps(tmpl, page, rows, view)
-            if not missing and not gaps:
+            gaps = (
+                []
+                if missing or not selected
+                else self._mapping_gaps(
+                    tmpl, page, [row for _index, row in selected], view
+                )
+            )
+            if not selected and not missing:
+                out["page_class"] = "not_target"
+                out["records"] = []
+            elif not missing and not gaps:
                 out["page_class"] = "extracted"
                 records = []
-                for index, (data, meta, _filled) in enumerate(rows):
+                for index, (data, meta, _filled) in selected:
                     price_keys = annotate_price(tmpl, data, view)
                     rec: dict[str, Any] = {
-                        "record_id": record_id(canonical, tmpl["template_id"], index, ud.get("source_key")),
+                        "record_id": record_id(
+                            canonical, tmpl["template_id"], index, ud.get("source_key")
+                        ),
                         "source_url": canonical,
                         "site": site,
                         "template_id": tmpl["template_id"],
@@ -1985,11 +2157,11 @@ class JobRunner:
         else:
             # a template matches by its own rules (url_patterns, match.selector); without one a page is a
             # target candidate by target_page_selector, JSON-LD type, url_list or a matching url_include
-            target = looks_like_target(page, self.config, from_list) or bool(self.include and any(p.search(canonical) for p in self.include))
+            target = looks_like_target(page, self.config, from_list) or bool(self.include and matches_any(self.include, canonical))
             out["page_class"] = "no_template" if target else "not_target"
         # a kind of page that was always a target page answered without its template's marks
         can_fall_through = not browser_run and self.config["fetch_mode"] == "auto" and self.browser
-        lost = None if can_fall_through or from_list else softerror.lost_template(stats, out["page_class"])
+        lost = None if can_fall_through or from_list or out.get("records_filtered") else softerror.lost_template(stats, out["page_class"])
         if lost is not None:
             return self._soft_retry(ctx, ud, url, host, elapsed, base, lost)
         self._observe(host, True, elapsed)
@@ -2005,13 +2177,22 @@ class JobRunner:
             and self.browser
             and not ctx.request.user_data.get("static_rejected")
         ):
-            weak = out["page_class"] in ("incomplete", "no_template") or (out["page_class"] == "not_target" and page.visible_text_chars < 300)
+            from app.fetching.navigation import needs_browser_navigation
+
+            interactive = follow_links and needs_browser_navigation(
+                page, is_target=out["page_class"] != "not_target"
+            )
+            weak = (
+                interactive
+                or out["page_class"] in ("incomplete", "no_template")
+                or (out["page_class"] == "not_target" and page.visible_text_chars < 300)
+            )
             host = host_of(url)
             stats = self.rt.setdefault("render_stats", {}).setdefault(host, [0, 0])
             if out["page_class"] == "extracted":
                 stats[0] += 1
             trusted = stats[0] >= 3 and stats[1] == 0
-            if weak and not trusted:
+            if weak and (not trusted or interactive):
                 ctx.request.user_data["static_rejected"] = True
                 return {"needs_browser": True}
         if browser_run and ctx.request.user_data.get("static_rejected") and out["page_class"] == "extracted":
@@ -2031,6 +2212,9 @@ class JobRunner:
 
     async def _failed(self, ctx, error: Exception) -> None:
         """Final failure after retries. Not a request-handler write: runs once per request."""
+        if isinstance(error, UrlPatternError):
+            await self._url_pattern_failed(error)
+            return
         request = ctx.request
         ud = request.user_data
         self._admitted.discard(request.unique_key)
@@ -2114,10 +2298,14 @@ class JobRunner:
                     await asyncio.sleep(0.25)
             except asyncio.CancelledError:
                 raise
+            except UrlPatternError as exc:
+                await self._url_pattern_failed(exc)
+                return
             except Exception:
                 log.exception("follower of %s failed; retrying", self.run_id)
                 await asyncio.sleep(1)
 
+    @url_batch
     def _apply_batch(self, items: list[dict], offset: int) -> None:
         """One synchronous transaction per batch: outcomes, counters and the offset commit
         together or not at all; on failure the in-memory job is restored."""
@@ -2158,6 +2346,8 @@ class JobRunner:
         skey = item.get("source_key")
         site = item.get("site") or (site_key(canonical) if canonical.startswith("http") else self.doc["site"])
         pkey = page_key(canonical, skey)
+        if cls == "not_target" and item.get("records_filtered", 0) > 0:
+            self._drop_unextracted(canonical, skey)
         requested_key = page_key(canonical_url(item["requested_url"]) if item.get("requested_url") else canonical, skey)
         self.svc.db.execute("UPDATE urls SET status='done' WHERE run_id=? AND unique_key=?", (self.run_id, requested_key))
         if item.get("ukey") and item["ukey"] != requested_key:
@@ -2347,6 +2537,8 @@ class JobRunner:
         }
         if item.get("gaps"):
             doc["gaps"] = item["gaps"]
+        if item.get("missing_fields"):
+            doc["missing_fields"] = item["missing_fields"]
         if not has_html:
             self.counters()["refetch_after_repair"] += 1
             if not self.rt.get("store_limit_problem"):
@@ -2698,7 +2890,7 @@ class JobRunner:
             d = loads(row["doc"])
             if d.get("gaps") and d.get("needs_reextract"):
                 continue
-            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], "template_failed", tid, d.get("status"), 1)
+            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], "template_failed", tid, d.get("status"), 1, missing=d.get("missing_fields"))
             self.svc.db.execute("DELETE FROM stored_pages WHERE run_id=? AND page_key=?", (self.run_id, row["page_key"]))
         self._refresh_store_counter()
         self.svc.events.create(
@@ -2801,7 +2993,7 @@ class JobRunner:
         crawl_open = self.doc["progress"]["discovery"] != "cut" and self.state == "running" and not self._shutdown
         snap = self._snapshot()
         try:
-            with self.svc.db.tx():
+            with url_pattern_batch(), self.svc.db.tx():
                 for row, d, html in work:
                     self._reextract_one(row, d, html, crawl_open)
                 self._refresh_store_counter()
@@ -2839,19 +3031,29 @@ class JobRunner:
 
         # stored pages: the in-page variant sources only (a shop-JSON source needs the live page)
         variants, vinfo = resolve_in_page(page, tmpl.get("variants"))
-        rows = variant_rows(tmpl, ext.data, variants, (vinfo or {}).get("kind"), page.base_url)
+        rows = variant_rows(tmpl, ext.data, variants, (vinfo or {}).get("kind"), page.base_url, page=page)
         required = required_set(tmpl, self.config.get("required_fields") or [])
-        missing = sorted(n for n in required if rows[0][0].get(n) is None or rows[0][0].get(n) == [])
+        from app.extraction.record_filter import record_filter_missing, record_matches
+
+        selected = [(index, row) for index, row in enumerate(rows) if record_matches(tmpl, row[0])]
+        missing = sorted({name for _index, (data, _meta, _filled) in selected for name in required if data.get(name) is None or data.get(name) == []})
+        missing = sorted(set(missing) | {name for data, _meta, _filled in rows for name in record_filter_missing(tmpl, data)})
         t = self.template(tmpl["template_id"])
         view = price_view(page, tmpl)
-        gaps = [] if missing else self._mapping_gaps(tmpl, page, rows, view)
+        gaps = (
+            []
+            if missing or not selected
+            else self._mapping_gaps(tmpl, page, [row for _index, row in selected], view)
+        )
         if not missing and not gaps:
             if tmpl["__version"] not in t["versions_used"]:
                 t["versions_used"].append(tmpl["__version"])
-            for index, (data, meta, _filled) in enumerate(rows):
+            for index, (data, meta, _filled) in selected:
                 price_keys = annotate_price(tmpl, data, view)
                 rec: dict[str, Any] = {
-                    "record_id": record_id(d["url"], tmpl["template_id"], index, d.get("source_key")),
+                    "record_id": record_id(
+                        d["url"], tmpl["template_id"], index, d.get("source_key")
+                    ),
                     "source_url": d["url"],
                     "requested_url": d.get("requested_url"),
                     "source_key": d.get("source_key"),
@@ -2872,9 +3074,13 @@ class JobRunner:
                 rec.update(price_keys)
                 if not self._write_record({k: rec[k] for k in RECORD_ORDER if k in rec}, None):
                     break
+            self._drop_unextracted(d["url"], d.get("source_key"))
             self.svc.db.execute("DELETE FROM stored_pages WHERE run_id=? AND page_key=?", (self.run_id, row["page_key"]))
         else:
             d["needs_reextract"] = False
+            d.pop("missing_fields", None)
+            if missing:
+                d["missing_fields"] = missing
             d.pop("gaps", None)
             if gaps:
                 d["gaps"] = gaps
@@ -2922,7 +3128,7 @@ class JobRunner:
         cfg = self.config
         if cfg.get("max_records") and c["records_extracted"] >= cfg["max_records"]:
             self._cut("max_records")
-        if c["pages_fetched"] >= cfg["max_pages"]:
+        if c["pages_fetched"] + int(self.rt.get("navigation_actions", 0)) >= cfg["max_pages"]:
             self._cut("max_pages")
 
     def _check_block_rule(self) -> None:
@@ -3205,6 +3411,12 @@ class JobRunner:
     async def _fail(self, code: str, message: str) -> None:
         await self.svc.jobs.fail_run(self, code, self.clean(message))
 
+    async def _url_pattern_failed(self, error: UrlPatternError) -> None:
+        if self.state not in ("failed", "completed"):
+            await self._fail(error.pattern_code, error.message)
+        if self.crawler is not None:
+            self.crawler.stop("URL pattern policy failed")
+
     def leftovers_for_result(self, stop_reason: str) -> None:
         """Every target URL ends as a record or in the unextracted list (README 4.5)."""
         if stop_reason in STOP_LISTED_REASONS:
@@ -3231,7 +3443,7 @@ class JobRunner:
         for row in rows:
             d = loads(row["doc"])
             reason = row["page_class"] if row["page_class"] in ("incomplete", "no_template") else "stopped"
-            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], reason, row["template_id"], d.get("status"), 1)
+            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], reason, row["template_id"], d.get("status"), 1, missing=d.get("missing_fields"), gaps=d.get("gaps"))
 
     def cleanup_crawlee_storage(self) -> None:
         shutil.rmtree(self.job_dir / "crawlee" / "request_queues", ignore_errors=True)

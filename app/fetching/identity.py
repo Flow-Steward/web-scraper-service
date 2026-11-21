@@ -86,6 +86,23 @@ def _endpoint(proxy_url: str) -> str:
     return f"{p.scheme}://{p.hostname}:{p.port}"
 
 
+def _coherent_chromium_geometry(fingerprint: dict | None) -> bool:
+    """Reject sampled windows larger than their sampled screen; zero is unknown.
+
+    Browserforge injects positive outer dimensions independently of the actual
+    viewport. Screen constraints alone do not exclude incoherent window samples.
+    """
+    try:
+        screen = fingerprint["screen"]
+        return all(
+            screen[size] > 0
+            and (not screen.get(outer) or screen[outer] <= screen[size])
+            for size, outer in (("width", "outerWidth"), ("height", "outerHeight"))
+        )
+    except (KeyError, TypeError):
+        return False
+
+
 class IdentityStore:
     def __init__(self, path: Path | None) -> None:
         self.path = path
@@ -104,7 +121,12 @@ class IdentityStore:
             data = json.loads(self.path.read_text())
             for key, raw in (data.get("identities") or {}).items():
                 try:
-                    self._mem[key] = Identity(**raw)
+                    ident = Identity(**raw)
+                    # Old persisted samples are replaced before creating a new
+                    # context. Existing contexts keep their original identity.
+                    if ident.browser == "chromium" and not _coherent_chromium_geometry(ident.fingerprint):
+                        continue
+                    self._mem[key] = ident
                 except TypeError:
                     continue
         except (OSError, ValueError) as exc:
@@ -288,7 +310,13 @@ def new_chromium_identity(exit_ip: str | None, os_name: str | None = None) -> Id
     from app.fetching.browsers import host_os_name
 
     os_name = os_name or host_os_name()
-    fp = asdict(chromium_generator(os_name).generate())
+    generator = chromium_generator(os_name)
+    for _ in range(32):
+        fp = asdict(generator.generate())
+        if _coherent_chromium_geometry(fp):
+            break
+    else:
+        raise ValueError("Could not generate a coherent Chromium fingerprint after 32 attempts")
     return Identity(preset_id="fp_" + _h(json.dumps(fp, sort_keys=True, default=str), 16), browser="chromium", os=os_name,
                     fingerprint=fp, exit_ip=exit_ip, created_at=_now())
 
@@ -359,6 +387,8 @@ async def camoufox_context_raw(browser, identity: Identity | None, *, proxy: dic
     Raises ValueError like ``AsyncNewContext`` on a browser that renders as the host."""
     from camoufox.async_api import AsyncNewContext
 
+    # Service workers bypass Playwright request routes, including safety guards.
+    kwargs["service_workers"] = "block"
     if identity is None or not identity.preset:
         return tag(await AsyncNewContext(browser, proxy=proxy, **kwargs), None)
     try:
@@ -389,6 +419,8 @@ def chromium_fingerprint(identity: Identity, locale: str | None):
 
     from browserforge.fingerprints import Fingerprint, NavigatorFingerprint, ScreenFingerprint, VideoCard
 
+    if not _coherent_chromium_geometry(identity.fingerprint):
+        raise ValueError("A coherent Chromium fingerprint is required before creating a context")
     raw = copy.deepcopy(identity.fingerprint or {})
     nav = dict(raw.pop("navigator"))
     if locale:
@@ -408,6 +440,8 @@ async def chromium_context(browser, identity: Identity, **options: Any):
     language follows ``options["locale"]`` (the exit's, geo.py) when given."""
     from browserforge.injectors.playwright import AsyncNewContext
 
+    # Keep private-address and listing-navigation guards on every request.
+    options["service_workers"] = "block"
     context = await AsyncNewContext(browser=browser, fingerprint=chromium_fingerprint(identity, options.get("locale")), **options)
     env = {"browser_os": identity.os, "canvas_noise": None}
     env.update(await readback(context, ("chromium", identity.preset_id, "")))

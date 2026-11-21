@@ -31,6 +31,7 @@ Service
 - FastAPI — MIT; Starlette — BSD-3-Clause; Uvicorn — BSD-3-Clause
 - httpx, httpcore — BSD-3-Clause
 - jsonschema, referencing — MIT
+- regex 2026.11.19 — Apache License 2.0 AND CNRI-Python — https://github.com/mrabarnett/mrab-regex
 - cryptography — Apache License 2.0 or BSD-3-Clause
 - python-ulid — MIT; idna — BSD-3-Clause; PyYAML — MIT
 - scikit-learn (required by Crawlee's adaptive crawler) — BSD-3-Clause

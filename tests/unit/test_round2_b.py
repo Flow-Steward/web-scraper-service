@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.core.schemas import validator
+from app.core.url_patterns import UrlPatternError
 
 
 # ---------------------------------------------------------------- crawl scope
@@ -18,9 +21,13 @@ def test_section_pattern_and_scope():
         assert not pat.search(url), url
     assert section_pattern("https://s.lt/") is None and section_pattern(None) is None
     assert section_pattern("http://scope.test:8602/lt/lamps-c100").startswith(r"^https?://(www\.)?scope\.test:8602/lt/lamps\-c100")
-    pats = crawl_patterns({"site_url": "https://s.lt/lt/a-c1", "stay_in_section": True, "crawl_include": ["/outlet/", "("]})
+    pats = crawl_patterns({"site_url": "https://s.lt/lt/a-c1", "stay_in_section": True, "crawl_include": ["/outlet/"]})
     assert len(pats) == 2 and in_scope(pats, "https://s.lt/outlet/x") and in_scope(pats, "https://s.lt/lt/a-c1/b") and not in_scope(pats, "https://s.lt/lt/b-c2")
     assert in_scope([], "https://anything.example/")
+    with pytest.raises(UrlPatternError) as caught:
+        crawl_patterns({"crawl_include": ["/outlet/", "("]})
+    assert caught.value.fields[0]["field"] == "crawl_include[1]"
+    assert caught.value.fields[0]["code"] == "pattern_invalid"
     ok = {"crawl_include": ["/lt/lamps-c1331"], "stay_in_section": True}
     assert not list(validator("job_config.schema.json#/$defs/job_settings").iter_errors(ok))
     assert list(validator("job_config.schema.json#/$defs/job_settings").iter_errors({"stay_in_section": "yes"}))

@@ -761,6 +761,8 @@
         "secrets_unavailable",
         "solver_error",
         "proxy_error",
+        "pattern_timeout",
+        "pattern_invalid",
         "internal_error",
         "debug",
         "page_fetch_failed",

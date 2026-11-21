@@ -6,6 +6,8 @@ least one variant wins:
 * ``embedded_json`` — JSON inside the page: an element's attribute (WooCommerce's
   ``form.variations_form[data-product_variations]``) or an element's text (a Shopify theme's
   ``<script type="application/json">`` product block), with ``path`` to the variant list;
+  optional ``children_path`` selects each parent's children, exposing its original
+  object at ``parent.raw`` without merging parent values into child values;
 * ``shop_json`` — the shop's own product JSON, one light request per product through the same
   session, tier, politeness and robots rules as a page: ``shopify`` = ``/products/<handle>.js``;
   ``woocommerce`` = Store API ``/wp-json/wc/store/v1/products/<id>`` (lists the variation
@@ -350,11 +352,46 @@ def _apply_woo_labels(page, variants: list[dict]) -> None:
 def from_embedded(page, src: dict) -> list[dict]:
     for doc in _element_json(page, src["selector"], src.get("attribute")):
         found = json_path(doc, src.get("path"))
-        items = found[0] if len(found) == 1 and isinstance(found[0], list) else found
-        root = doc if not src.get("path") or "." not in src["path"] else json_path(doc, src["path"].rsplit(".", 1)[0])[:1]
+        items = [
+            item
+            for value in found
+            for item in (value if isinstance(value, list) else [value])
+        ]
+        root = (
+            doc
+            if not src.get("path") or "." not in src["path"]
+            else json_path(doc, src["path"].rsplit(".", 1)[0])[:1]
+        )
         root = root[0] if isinstance(root, list) and root else root
-        variants = normalise(as_list(items), src.get("format") or "auto", root if isinstance(root, dict) else doc, src)
-        if variants and (src.get("format") == "woocommerce" or detect_format(as_list(items)) == "woocommerce"):
+        woo = src.get("format") == "woocommerce"
+        if src.get("children_path"):
+            variants = []
+            for parent in items:
+                if not isinstance(parent, dict):
+                    continue
+                children = [
+                    child
+                    for value in json_path(parent, src["children_path"])
+                    for child in as_list(value)
+                    if isinstance(child, dict)
+                ]
+                # Keep incomplete parents visible to required-field diagnostics.
+                group = normalise(
+                    children or [{}], src.get("format") or "auto", parent, src
+                )
+                for variant in group:
+                    variant["parent"] = {"raw": parent}
+                variants.extend(group)
+                woo = woo or detect_format(children) == "woocommerce"
+        else:
+            variants = normalise(
+                as_list(items),
+                src.get("format") or "auto",
+                root if isinstance(root, dict) else doc,
+                src,
+            )
+            woo = woo or detect_format(as_list(items)) == "woocommerce"
+        if variants and woo:
             _apply_woo_labels(page, variants)
         if variants:
             return variants
@@ -500,7 +537,37 @@ def resolve_in_page(page, block: dict | None) -> tuple[list[dict], dict | None]:
 
 
 # ---------------------------------------------------------------- records
-def _variant_value(variant: dict, spec: dict) -> Any:
+def _variant_value(variant: dict, spec: dict, page=None, *, multiple: bool = False) -> Any:
+    if spec.get("selector_template"):
+        from app.extraction.mapping import css_values
+
+        template = spec["selector_template"]
+        if page is None or not re.fullmatch(r"(?:[^{}]|\{(?:id|sku)\})+", template):
+            return None
+        missing = False
+
+        def substitute(match: re.Match) -> str:
+            nonlocal missing
+            value = variant.get(match[1])
+            if (
+                value is None
+                or isinstance(value, (dict, list, bool))
+                or str(value) == ""
+            ):
+                missing = True
+                return ""
+            # Hex escapes are valid in quoted attributes and identifier contexts.
+            return "".join(f"\\{ord(char):x} " for char in str(value))
+
+        selector = re.sub(r"\{(id|sku)\}", substitute, template)
+        if missing or len(selector) > 2000:
+            return None
+        values = css_values(
+            page, selector, spec.get("extract", "text"), spec.get("attribute"), multiple
+        )
+        if not values:
+            return None
+        return values if multiple else values[0]
     if spec.get("option"):
         want = spec["option"].lower()
         for k, v in (variant.get("options") or {}).items():
@@ -525,31 +592,60 @@ def variant_field_names(mapping: dict) -> list[str]:
     return [s["name"] for s in (mapping.get("variants") or {}).get("fields") or [] if s["name"] not in names]
 
 
-def apply_variant(mapping: dict, data: dict, variant: dict, base_url: str) -> tuple[dict, dict]:
+def apply_variant(
+    mapping: dict, data: dict, variant: dict, base_url: str, *, page=None
+) -> tuple[dict, dict]:
     """The record data of one variant (page fields, the variant's values over them) and the
     per-field fill of the variant fields."""
     from app.extraction.transforms import apply_transform, coerce
 
+    def coerce_item(value, spec, ftype):
+        if value is None or isinstance(value, (dict, list)):
+            return None
+        if spec.get("transforms"):
+            s = (
+                value
+                if isinstance(value, str)
+                else (
+                    str(int(value))
+                    if isinstance(value, float) and value.is_integer()
+                    else str(value)
+                )
+            )
+            for transform in spec["transforms"]:
+                if s is None:
+                    break
+                s = apply_transform(
+                    s if isinstance(s, str) else str(s), transform, base_url
+                )
+            value = s
+        return coerce(value, ftype, base_url)
+
     types = {f["name"]: f["type"] for f in mapping.get("fields") or []}
+    multiple = {f["name"] for f in mapping.get("fields") or [] if f.get("multiple")}
     out = dict(data)
     filled: dict[str, bool] = {}
     for spec in variant_field_specs(mapping):
-        value = _variant_value(variant, spec)
+        value = _variant_value(variant, spec, page, multiple=spec["name"] in multiple)
         ftype = spec.get("type") or types.get(spec["name"], "text")
-        if value is not None and not isinstance(value, (dict, list)):
-            if spec.get("transforms"):
-                s = value if isinstance(value, str) else (str(int(value)) if isinstance(value, float) and value.is_integer() else str(value))
-                for t in spec["transforms"]:
-                    if s is None:
-                        break
-                    s = apply_transform(s if isinstance(s, str) else str(s), t, base_url)
-                value = coerce(s, ftype, base_url)
-            else:
-                value = coerce(value, ftype, base_url)
-        elif isinstance(value, (dict, list)):
-            value = None
-        filled[spec["name"]] = value is not None
-        if value is not None or spec["name"] not in out:
+        if isinstance(value, list) and spec["name"] in multiple:
+            items = [coerce_item(item, spec, ftype) for item in value]
+            items = [item for item in items if item is not None]
+            value = items or (
+                [] if not value and spec.get("fallback_to_page") is False else None
+            )
+        else:
+            value = coerce_item(value, spec, ftype)
+            if value is not None and spec["name"] in multiple:
+                value = [value]
+        filled[spec["name"]] = (
+            bool(value) if isinstance(value, list) else value is not None
+        )
+        if (
+            value is not None
+            or spec["name"] not in out
+            or spec.get("fallback_to_page") is False
+        ):
             out[spec["name"]] = value
     regular, price = _num(variant.get("regular_price")), _num(variant.get("price"))
     if regular is not None and price is not None and regular > price:
@@ -568,6 +664,207 @@ def variant_meta(variant: dict, index: int, count: int, kind: str) -> dict:
 
 
 # ---------------------------------------------------------------- detection for samples
+def _script_selector(el) -> str:
+    """Address the actual script, including ordinary scripts before JSON blocks."""
+    ident = el.attrib.get("id")
+    if (
+        ident
+        and re.fullmatch(r"[A-Za-z][\w-]*", ident)
+        and len(el.root.getroottree().xpath("//*[@id=$ident]", ident=ident)) == 1
+    ):
+        return f'script[type="application/json"]#{ident}'
+    parts = []
+    node = el.root
+    while node is not None and isinstance(node.tag, str):
+        siblings = [s for s in node.itersiblings(preceding=True) if s.tag == node.tag]
+        parts.append(f"{node.tag}:nth-of-type({len(siblings) + 1})")
+        node = node.getparent()
+    return " > ".join(reversed(parts))
+
+
+def _raw_example(value: dict) -> tuple[dict, list[str]]:
+    """Small raw values and scalar paths for the agent, never executable rules."""
+    remaining = 30
+    paths: list[str] = []
+
+    def visit(obj: dict | list, prefix: str, depth: int) -> Any:
+        nonlocal remaining
+        mapping = isinstance(obj, dict)
+        out: Any = {} if mapping else []
+        # Preserve parent identity and flags before nested details spend the
+        # shared scalar budget. Sorting is stable within each priority.
+        items = (
+            sorted(obj.items(), key=lambda pair: isinstance(pair[1], (dict, list)))
+            if mapping
+            else enumerate(obj[:2])
+        )
+        for key, item in items:
+            if remaining <= 0:
+                break
+            if mapping and not re.fullmatch(r"[A-Za-z@_][A-Za-z0-9@_:-]*", key):
+                continue
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if len(path) > 300:
+                continue
+            if isinstance(item, (dict, list)):
+                if depth >= 3:
+                    if not mapping:
+                        break  # Never pack later items into a different source index.
+                    continue
+                preview = visit(item, path, depth + 1)
+                if mapping and not preview:
+                    continue
+            elif item is None or isinstance(item, (str, int, float, bool)):
+                preview = item[:180] if isinstance(item, str) else item
+                paths.append(path)
+                remaining -= 1
+            else:
+                if not mapping:
+                    break
+                continue
+            if mapping:
+                out[key] = preview
+            else:
+                out.append(preview)  # Empty containers retain the original array index.
+        return out
+
+    return visit(value, "", 0), paths
+
+
+def detect_candidates(page) -> list[dict]:
+    """Bounded JSON-array evidence; the agent decides whether it represents variants.
+
+    These arrays are deliberately separate from confirmed ``detect_sources`` results:
+    application state can also contain navigation, images and unrelated products.
+    """
+    candidates: list[dict] = []
+    visited = 0
+    used_chars = 0
+    output_chars = 0
+    try:
+        scripts = page.selector.css('script[type="application/json"]')[:20]
+    except Exception:
+        return candidates
+
+    def append(candidate: dict) -> None:
+        nonlocal output_chars
+        size = len(json.dumps(candidate, ensure_ascii=False))
+        if (
+            len(candidates) < 12
+            and output_chars + size + 2 + 2 * len(candidates) <= 32768
+        ):
+            candidates.append(candidate)
+            output_chars += size
+
+    def walk(value: Any, path: str, depth: int, selector: str) -> None:
+        nonlocal visited, output_chars
+        if visited >= 2000 or depth > 8 or len(candidates) >= 12:
+            return
+        visited += 1
+        if isinstance(value, list):
+            if (
+                value
+                and len(value) <= 10000
+                and all(isinstance(v, dict) for v in value)
+            ):
+                examples, paths, parent_paths = [], set(), []
+                for row in value[:2]:
+                    example, row_paths = _raw_example(row)
+                    examples.append(example)
+                    paths.update(row_paths)
+                    parent_paths.extend(row_paths)
+                source = {
+                    "kind": "embedded_json",
+                    "selector": selector,
+                    "format": "generic",
+                }
+                if path:
+                    source["path"] = path
+                if paths and path not in ("variants", "product.variants"):
+                    candidate = {
+                        "source": source,
+                        "count": len(value),
+                        "raw_examples": examples,
+                        "raw_paths": sorted(paths)[:40],
+                        "evidence": f"Array of {len(value)} objects at {path or '<root>'}; inspect raw examples to decide whether these are variants.",
+                    }
+                    append(candidate)
+                child_keys = dict.fromkeys(
+                    key
+                    for row in value[:5]
+                    for key, child in row.items()
+                    if re.fullmatch(r"[A-Za-z@_][A-Za-z0-9@_:-]*", key)
+                    and len(key) <= 300
+                    and isinstance(child, list)
+                    and any(isinstance(item, dict) for item in child)
+                )
+                for key in list(child_keys)[:3]:
+                    children, count = [], 0
+                    for row in value:
+                        selected = [
+                            v for v in as_list(row.get(key)) if isinstance(v, dict)
+                        ]
+                        count += max(1, len(selected))
+                        children.extend(selected[: max(0, 2 - len(children))])
+                    if not children or count > 10000:
+                        continue
+                    child_examples, child_paths = [], []
+                    for child in children:
+                        example, found_paths = _raw_example(child)
+                        child_examples.append(example)
+                        child_paths.extend(found_paths)
+                    append(
+                        {
+                            "source": {**source, "children_path": key},
+                            "count": count,
+                            "parent_count": len(value),
+                            "raw_examples": child_examples,
+                            "raw_paths": sorted(set(child_paths))[:40],
+                            "parent_examples": examples,
+                            "context_paths": [
+                                f"raw.{p}"
+                                for p in dict.fromkeys(child_paths)
+                                if len(p) <= 296
+                            ][:20]
+                            + [
+                                f"parent.raw.{p}"
+                                for p in sorted(
+                                    dict.fromkeys(parent_paths), key=lambda p: "." in p
+                                )
+                                if len(p) <= 289
+                            ][:20],
+                            "evidence": f"Child objects at {path or '<root>'} -> {key}; inspect parent and child examples before choosing variant granularity. Parent fields use parent.raw paths.",
+                        }
+                    )
+            for i, item in enumerate(value[:5]):
+                walk(item, f"{path}.{i}" if path else str(i), depth + 1, selector)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if visited >= 2000 or len(candidates) >= 12:
+                    break
+                if re.fullmatch(r"[A-Za-z@_][A-Za-z0-9@_:-]*", key):
+                    child = f"{path}.{key}" if path else key
+                    if len(child) <= 300:
+                        walk(item, child, depth + 1, selector)
+
+    for el in scripts:
+        raw = "".join(el.xpath(".//text()").getall())
+        if len(raw) > 524288 or used_chars + len(raw) > 1048576:
+            continue
+        used_chars += len(raw)
+        selector = _script_selector(el)
+        if len(selector) > 500:
+            continue
+        try:
+            doc = json.loads(raw)
+        except (ValueError, RecursionError):
+            continue
+        walk(doc, "", 0, selector)
+        if visited >= 2000 or len(candidates) >= 12:
+            break
+    return candidates
+
+
 def detect_sources(page) -> list[dict]:
     """Variant sources visible in the page itself (for samples: the AI chooses from these)."""
     found: list[dict] = []
@@ -590,9 +887,7 @@ def detect_sources(page) -> list[dict]:
             items = json_path(doc, path)
             items = items[0] if len(items) == 1 and isinstance(items[0], list) else []
             if items and isinstance(items[0], dict):
-                ident = el.attrib.get("id")
-                selector = f'script[type="application/json"]#{ident}' if ident and re.fullmatch(r"[A-Za-z][\w-]*", ident) else \
-                    f'script[type="application/json"]:nth-of-type({i + 1})'
+                selector = _script_selector(el)
                 src = {"kind": "embedded_json", "selector": selector, "path": path, "format": "auto"}
                 v = from_embedded(page, src)
                 if v:
@@ -634,17 +929,28 @@ def _described(src: dict, variants: list[dict]) -> dict:
             "raw_keys": sorted((first.get("raw") or {}).keys())[:40] if isinstance(first.get("raw"), dict) else []}
 
 
-def variant_rows(mapping: dict, page_data: dict, variants: list[dict], kind: str | None, base_url: str) -> list[tuple[dict, dict | None, dict]]:
+def variant_rows(
+    mapping: dict,
+    page_data: dict,
+    variants: list[dict],
+    kind: str | None,
+    base_url: str,
+    *,
+    page=None,
+) -> list[tuple[dict, dict | None, dict]]:
     """(data, variant meta or None, per-variant-field fill) per record of a page: one row per
     variant, or one row without variant meta when the page has no variants."""
     base = dict(page_data)
     for name in variant_field_names(mapping):
         base.setdefault(name, None)
     if not variants:
+        for spec in variant_field_specs(mapping):
+            if spec.get("fallback_to_page") is False:
+                base[spec["name"]] = None
         return [(base, None, {})]
     rows = []
     for i, v in enumerate(variants):
-        data, filled = apply_variant(mapping, base, v, base_url)
+        data, filled = apply_variant(mapping, base, v, base_url, page=page)
         meta = variant_meta(v, i, len(variants), kind or "") if len(variants) > 1 or v.get("options") else None
         rows.append((data, meta, filled))
     return rows
