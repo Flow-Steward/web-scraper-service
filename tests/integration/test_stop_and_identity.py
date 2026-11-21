@@ -75,7 +75,9 @@ def test_analysis_does_not_rerun_the_route_for_a_sitemap_of_a_failed_host(guarde
     assert "plain HTTP" in warn[0]["message"]
     # the sitemap was asked for once over plain HTTP (challenged): no browser request, no route
     assert hits.get("8603/robots.txt") == 1 and hits.get("8603/guarded-sitemap.xml") == 1, hits
-    assert body["sitemap"]["found"] is False
+    assert body["sitemap"]["found"] is None
+    assert body["sitemap"]["inspection"] == "limited"
+    assert body["sitemap"]["url_count"] is None
 
 
 def test_analysis_with_robots_behind_the_failed_challenge_runs_one_route(guarded_service, fixture_world):
