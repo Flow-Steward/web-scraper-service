@@ -168,3 +168,17 @@ async def test_camoufox_native_unregistered_page_fails_closed(native_browser, na
         await page.goto(origin + "/list", timeout=10000)
     assert hits == []
     await context.close()
+
+
+@pytest.mark.parametrize("target", ["data:text/html,blocked", "javascript:alert(1)", "http://["])
+async def test_camoufox_native_non_http_or_malformed_redirect_fails_closed(native_browser, native_documents, target):
+    origin, redirects, _, hits = native_documents
+    redirects["/list/scheme"] = target
+    page, guard = await guarded_page(native_browser, origin + "/list/scheme")
+    try:
+        with pytest.raises(Error):
+            await page.goto(origin + "/list/scheme", timeout=10000)
+        assert [path for path, _ in hits] == ["/list/scheme"]
+        assert not page.url.startswith(("data:", "javascript:"))
+    finally:
+        await guard.close()

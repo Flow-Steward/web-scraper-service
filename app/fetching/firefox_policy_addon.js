@@ -54,6 +54,18 @@ browser.webRequest.onBeforeRequest.addListener(async details => {
     return {cancel: !(result.allow === true && result.generation === binding.generation && tabs.get(details.tabId) === binding)};
   } catch (_) { return {cancel: true}; }
 }, {urls: ["<all_urls>"], types: ["main_frame", "sub_frame"]}, ["blocking"]);
+// Firefox may omit onBeforeRequest for non-network redirect targets. Check
+// Location while the native response is still blockable, before following it.
+browser.webRequest.onHeadersReceived.addListener(details => {
+  if (![301, 302, 303, 307, 308].includes(details.statusCode)) return {};
+  const locations = (details.responseHeaders || []).filter(header => header.name.toLowerCase() === "location");
+  if (!locations.length) return {};
+  if (locations.length !== 1 || typeof locations[0].value !== "string") return {cancel: true};
+  try {
+    const target = new URL(locations[0].value, details.url);
+    return {cancel: !["http:", "https:"].includes(target.protocol)};
+  } catch (_) { return {cancel: true}; }
+}, {urls: ["<all_urls>"], types: ["main_frame", "sub_frame"]}, ["blocking", "responseHeaders"]);
 browser.webRequest.onBeforeRedirect.addListener(details => {
   if (requests.has(details.requestId)) requests.set(details.requestId, requests.get(details.requestId) + 1);
 }, {urls: ["<all_urls>"], types: ["main_frame", "sub_frame"]});

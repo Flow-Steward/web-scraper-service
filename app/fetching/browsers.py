@@ -160,7 +160,15 @@ async def launch_camoufox(playwright, *, headless: Any, variant: Variant | None 
         def disconnected(*_):
             bridge.begin_close()
         browser.on("disconnected", disconnected)
-        await bridge.wait_ready()
+        # Pinned Camoufox initializes extension backgrounds only after its
+        # first window exists. A private blank page starts that window without
+        # issuing any document network request; discard it after readiness.
+        bootstrap = await browser.new_context(service_workers="block")
+        try:
+            await bootstrap.new_page()
+            await bridge.wait_ready()
+        finally:
+            await bootstrap.close()
         return browser
     except BaseException:
         try:

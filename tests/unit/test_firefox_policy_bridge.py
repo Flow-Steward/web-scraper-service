@@ -71,6 +71,11 @@ async def test_launch_waits_for_policy_addon_and_cleans_failure(monkeypatch):
         async def close(**kwargs):
             closed[0] = True
         browser.close = close
+        async def new_context(**kwargs):
+            async def noop():
+                pass
+            return SimpleNamespace(new_page=noop, close=noop)
+        browser.new_context = new_context
         return browser
     module.AsyncNewBrowser = launch
     monkeypatch.setitem(sys.modules, "camoufox", ModuleType("camoufox"))
@@ -254,3 +259,64 @@ async def test_original_admission_remains_caller_owned_but_redirect_return_check
     assert calls == []
     assert not await guard.decide(initial, "main_frame", 2)
     assert calls == [initial]
+
+
+async def test_launch_bootstraps_private_window_before_addon_readiness(monkeypatch):
+    import sys
+    from types import ModuleType
+    from app.fetching.browsers import launch_camoufox
+    events = []
+    module = ModuleType("camoufox.async_api")
+    async def launch(playwright, **options):
+        browser = SimpleNamespace(on=lambda *args: None)
+        async def new_context(**kwargs):
+            assert kwargs == {"service_workers": "block"}
+            events.append("context")
+            async def new_page():
+                events.append("page")
+            async def close_context():
+                events.append("context-close")
+            return SimpleNamespace(new_page=new_page, close=close_context)
+        async def close(**kwargs):
+            events.append("browser-close")
+        browser.new_context = new_context
+        browser.close = close
+        return browser
+    async def ready(self, timeout=10):
+        assert events == ["context", "page"]
+        events.append("ready")
+    module.AsyncNewBrowser = launch
+    monkeypatch.setitem(sys.modules, "camoufox", ModuleType("camoufox"))
+    monkeypatch.setitem(sys.modules, "camoufox.async_api", module)
+    monkeypatch.setattr(FirefoxPolicyBridge, "wait_ready", ready)
+    browser = await launch_camoufox(object(), headless=True)
+    try:
+        assert events == ["context", "page", "ready", "context-close"]
+    finally:
+        await browser.close()
+
+
+def test_addon_redirect_headers_deny_non_network_and_malformed_targets():
+    import json
+    from pathlib import Path
+    import subprocess
+    source = Path(__file__).parents[2].joinpath("app/fetching/firefox_policy_addon.js").read_text().replace("/*BRIDGE_CONFIG*/", "{}")
+    harness = r'''
+const callbacks = {};
+const event = name => ({addListener: callback => callbacks[name] = callback});
+globalThis.browser = {
+  tabs: {onUpdated: event("updated"), onRemoved: event("removed")},
+  webRequest: Object.fromEntries(["onBeforeRequest", "onBeforeRedirect", "onHeadersReceived", "onCompleted", "onErrorOccurred"].map(name => [name, event(name)])),
+  extension: {isAllowedIncognitoAccess: async () => true},
+};
+globalThis.fetch = async () => ({ok: true, json: async () => ({allow: true})});
+'''
+    cases = r'''
+const inspect = value => callbacks.onHeadersReceived({statusCode:302,url:"https://shop.test/list",responseHeaders:[{name:"Location",value}]}).cancel === true;
+process.stdout.write(JSON.stringify([inspect("data:text/html,blocked"),inspect("javascript:alert(1)"),inspect("http://["),inspect("/list/next"),inspect("https://challenge.test/frame")]));
+'''
+    import shutil
+    import playwright
+    node = shutil.which("node") or str(Path(playwright.__file__).parent / "driver" / "node")
+    result = subprocess.run([node, "-"], input=harness + source + cases, text=True, capture_output=True, check=True, timeout=10)
+    assert json.loads(result.stdout) == [True, True, True, False, False]
