@@ -14,7 +14,7 @@ async def test_native_policy_reuses_binding_and_closes_once(monkeypatch):
             self.page = page
         async def start(self):
             starts.append(self)
-        async def rebind(self, url, callback):
+        async def rebind(self, url, callback, **kwargs):
             bindings.append((url, callback))
         async def close(self):
             closes.append(self)

@@ -120,7 +120,8 @@ def raise_document_policy_error(ctx):
     """Surface native late navigation refusals before accepting page contents."""
     policy = getattr(ctx.page, "_wss_native_document_policy", None)
     if policy is not None and policy.errors:
-        ctx.request.no_retry = True
+        if not isinstance(policy.errors[0], ProxyAuthenticationRequired):
+            ctx.request.no_retry = True
         policy.raise_if_denied()
 
 
@@ -1545,6 +1546,8 @@ class JobRunner:
                     url, target, auxiliary=bool(ud.get("aux")),
                     robots_allowed=lambda target: self._browser_redirect_robots_allowed(page, target),
                 )
+            except ProxyAuthenticationRequired:
+                raise  # Resume retains ordinary retry eligibility.
             except Exception:
                 request.no_retry = True
                 raise
@@ -1552,8 +1555,15 @@ class JobRunner:
                 request.no_retry = True
             return allowed
 
+        proxy_info = getattr(ctx, "proxy_info", None)
+        proxy_auth = None if proxy_info is None else {
+            "server": f"{proxy_info.scheme}://{proxy_info.hostname}:{proxy_info.port}",
+            "username": proxy_info.username, "password": proxy_info.password,
+        }
         policy = await bind_document_policy(
             page, self.browser or "chromium", url, destination_policy=destination_allowed,
+            proxy_auth=proxy_auth,
+            on_proxy_auth_required=lambda: request.user_data.__setitem__("_wss_proxy_auth_failed", True),
             timeout_s=min(3.0, float(self.config.get("page_timeout_seconds") or 45)),
         )
 

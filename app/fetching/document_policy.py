@@ -20,10 +20,10 @@ class NativeDocumentPolicy:
     async def request(self, route):
         await self.guard.request(route)
 
-    async def rebind(self, initial_url, destination_policy=None):
+    async def rebind(self, initial_url, destination_policy=None, **kwargs):
         if self._close_task is not None:
             raise RuntimeError("native document policy is closed")
-        await self.guard.rebind(initial_url, destination_policy)
+        await self.guard.rebind(initial_url, destination_policy, **kwargs)
 
     def begin_close(self, *_):
         if self._close_task is None:
@@ -39,10 +39,12 @@ class NativeDocumentPolicy:
             raise
 
 
-async def bind_document_policy(page, browser, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10):
+async def bind_document_policy(page, browser, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10,
+                               proxy_auth=None, on_proxy_auth_required=None):
+    auth_options = {"proxy_auth": proxy_auth, "on_proxy_auth_required": on_proxy_auth_required} if browser == "chromium" else {}
     existing = getattr(page, "_wss_native_document_policy", None)
     if existing is not None:
-        await existing.rebind(initial_url, destination_policy)
+        await existing.rebind(initial_url, destination_policy, **auth_options)
         return existing
     if browser == "camoufox":
         from app.fetching.firefox_policy import FirefoxDocumentGuard as Guard
@@ -51,7 +53,7 @@ async def bind_document_policy(page, browser, initial_url, *, destination_policy
     else:
         raise RuntimeError("unsupported native document policy browser")
     guard = Guard(page, initial_url, destination_policy=destination_policy,
-                  timeout_s=timeout_s, max_redirects=max_redirects)
+                  timeout_s=timeout_s, max_redirects=max_redirects, **auth_options)
     try:
         await guard.start()
     except BaseException:

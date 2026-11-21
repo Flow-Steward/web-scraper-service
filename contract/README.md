@@ -1484,7 +1484,12 @@ pause; page attempts, navigation actions, record limits, clicks and solves retai
 their existing budget usage, including across a service restart. A replacement
 proxy/solver profile updates both its public summary and whether the next runner
 requires decrypted secrets, so approved endpoint and authentication-mode changes
-apply on Resume. A webhook-only Resume keeps the current proxy/solver profile.
+apply on Resume. A webhook-only Resume keeps the current proxy/solver profile. Chromium's native
+browser guard answers only browser-reported proxy authentication challenges, with
+the current proxy session's already formatted credentials. Origin authentication
+never receives those credentials. Proxy rejection uses explicit 407/challenge
+evidence; Chromium's generic invalid-credentials or response-failure errors alone
+do not identify a proxy failure.
 
 ### 8.2 Event states
 

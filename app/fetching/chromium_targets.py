@@ -12,7 +12,12 @@ import json
 
 _AUTO_ATTACH = {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": False,
                 "filter": [{"type": "iframe", "exclude": False}, {"exclude": True}]}
-_FETCH = {"patterns": [{"resourceType": "Document", "requestStage": "Response"}]}
+# Response-only interception suppresses Chromium's native proxy credential retry.
+# Request interception enables authRequired while response interception still gates redirects.
+FETCH_OPTIONS = {"handleAuthRequests": True, "patterns": [
+    {"resourceType": "Document", "requestStage": "Request"},
+    {"resourceType": "Document", "requestStage": "Response"},
+]}
 
 
 class _ChildChannel:
@@ -66,11 +71,12 @@ class _ChildChannel:
 
 class ChildTargets:
     def __init__(self, root, *, on_paused, on_failure, spawn, is_closed,
-                 timeout_s=3, max_children=64, max_commands=128, on_detached=None):
+                 timeout_s=3, max_children=64, max_commands=128, on_detached=None, on_auth_required=None):
         self.root, self.on_paused, self.on_failure = root, on_paused, on_failure
         self.spawn, self.is_closed, self.timeout_s = spawn, is_closed, timeout_s
         self.max_children, self.max_commands = max_children, max_commands
         self.on_detached = on_detached
+        self.on_auth_required = on_auth_required
         self.channels, self.pending_commands = {}, 0
         self.closed, self.failed = False, False
         self.initializers, self.listeners = set(), []
@@ -122,7 +128,7 @@ class ChildTargets:
     async def _initialize(self, child):
         try:
             async with asyncio.timeout(self.timeout_s):
-                await child.send("Fetch.enable", _FETCH)
+                await child.send("Fetch.enable", FETCH_OPTIONS)
                 await child.send("Target.setAutoAttach", _AUTO_ATTACH)
                 if not self.closed and not child.closed and not self.is_closed():
                     await child.send("Runtime.runIfWaitingForDebugger")
@@ -153,6 +159,11 @@ class ChildTargets:
                 method, params = message.get("method"), message.get("params", {})
                 if method == "Fetch.requestPaused":
                     self.on_paused(params, child)
+                elif method == "Fetch.authRequired":
+                    if self.on_auth_required is None:
+                        self.fail("child_target_auth_unhandled")
+                    else:
+                        self.on_auth_required(params, child)
                 elif method == "Target.attachedToTarget":
                     self._attached(child, params)
                 elif method == "Target.detachedFromTarget":

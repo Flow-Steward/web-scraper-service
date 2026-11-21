@@ -389,6 +389,7 @@ class BrowserSession:
 
         self._native_document_policy = await bind_document_policy(
             self.page, self.browser_name, url, destination_policy=allowed,
+            proxy_auth=_proxy_cfg(self.proxy),
             timeout_s=min(3.0, float(self.timeout_s)),
         )
         page = self.page

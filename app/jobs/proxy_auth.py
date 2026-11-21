@@ -11,11 +11,18 @@ from app.fetching.proxy_auth import is_proxy_auth_failure
 
 
 def guard_proxy_auth(crawler, runner, *, adaptive: bool) -> None:
+    def rejected(context, error):
+        # Chromium may report only ERR_HTTP_RESPONSE_CODE_FAILURE after a 407.
+        # The native guard marks this shared request only on an explicit proxy
+        # challenge rejection/407; ambiguous error text alone never qualifies.
+        corroborated = context.request.user_data.pop("_wss_proxy_auth_failed", False)
+        return (runner.tiers.enabled and corroborated) or is_proxy_auth_failure(error, proxy_used=runner.tiers.enabled)
+
     async def guarded(context, operation):
         try:
             return await operation
         except Exception as error:
-            if not is_proxy_auth_failure(error, proxy_used=runner.tiers.enabled):
+            if not rejected(context, error):
                 raise
             await runner._pause_for_proxy_auth()
             from app.jobs.runner import Deferred
@@ -31,7 +38,7 @@ def guard_proxy_auth(crawler, runner, *, adaptive: bool) -> None:
     original_error_handler = crawler._handle_request_error
 
     async def handle_error(context, error):
-        if is_proxy_auth_failure(error, proxy_used=runner.tiers.enabled):
+        if rejected(context, error):
             await runner._pause_for_proxy_auth()
             from app.jobs.runner import Deferred
 
