@@ -219,10 +219,18 @@ Everything the service keeps is on the one volume (`WSS_DATA_DIR`, `/data`):
 | Run records (runs, records, events …) | `service.sqlite3` | `WSS_RETENTION_JOB_RECORD_DAYS` (30) after the run finished |
 | Samples and protection screenshots | `samples/`, `samples/shots/` | `WSS_RETENTION_SAMPLES_HOURS` (24) |
 | Database and its write-ahead log | `service.sqlite3`, `-wal`, `-shm` | Always; shrinks only by compaction |
-| Browser identities per host | `identities.json` | Always; never removed |
+| Browser identity cache | `identities.json` | Up to 1,000 entries; least recently used entries are replaced |
 
 The sweeper runs every `WSS_RETENTION_INTERVAL_SECONDS` (60) and never touches a run that
 is not finished. Each pass is recorded (`last_cleanup` below).
+
+Identity cache format 2 derives proxy identifiers from public routing fields,
+including session-bearing usernames, excluding URL passwords, paths, query strings
+and fragments. This also applies to `custom_list` tiers. On the first upgrade,
+legacy session keys and ambiguous tier-scoped format-1 entries are removed and
+recreated as needed. A site may require another protection challenge after that
+one-time fingerprint change. Direct/endpoint-only entries and format-2 public
+identities retain their cache entries.
 
 Two routes (same bearer token; contract README 16):
 

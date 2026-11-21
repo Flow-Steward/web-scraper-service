@@ -1,6 +1,7 @@
 """Native Firefox bridge rejects unbound or stale document authorizations."""
 import asyncio
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -164,7 +165,7 @@ async def test_bridge_schema_failure_does_not_invoke_policy(change):
 async def test_guard_only_applies_caller_policy_to_main_frame(monkeypatch):
     from app.fetching import firefox_policy
     async def public(url):
-        return url.startswith("http://private.test")
+        return urlsplit(url).hostname == "private.test"
     monkeypatch.setattr(firefox_policy, "url_is_private", public)
     seen = []
     async def caller(url):

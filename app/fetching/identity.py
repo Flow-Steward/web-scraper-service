@@ -20,6 +20,11 @@ The "proxy account and tier" part is a hash of the tier's definition (provider, 
 user name, geo fields, tier number; never the password), registered by
 ``proxies.tier_url`` for every URL it builds. The environment of the exit (timezone,
 locale, geolocation, WebRTC IP: ``geo.py``) is applied on top of the identity as before.
+Unknown-exit session keys also use only the endpoint and session-bearing username.
+Legacy keys derived from credential-bearing URLs are discarded on cache load.
+The first cache upgrade also redraws legacy tier-scoped identities: their old
+hashes cannot distinguish safe account scopes from secret-bearing custom lists.
+Direct and endpoint-only identities survive; subsequent upgrades retain public keys.
 
 Identities live in memory and in ``<data dir>/identities.json`` (rewritten atomically when a
 new identity is drawn; at most ``MAX_ENTRIES``, least recently used dropped), so they
@@ -34,6 +39,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 from dataclasses import asdict, dataclass, field
@@ -71,19 +77,24 @@ def key_for(browser: str, os_name: str, proxy_url: str | None, geo) -> str:
 
     ip = getattr(geo, "ip", None) if geo is not None else None
     if proxy_url:
-        scope = scope_of(proxy_url) or ("proxy-" + _h(_endpoint(proxy_url)))
-        where = f"ip:{ip}" if ip else "session:" + _h(proxy_url, 16)
+        scope = scope_of(proxy_url) or ("proxy-" + _public_proxy_id(proxy_url))
+        where = f"ip:{ip}" if ip else "session-public-v1:" + _public_proxy_id(proxy_url, session=True, n=16)
     else:
         scope = "direct"
         where = f"ip:{ip}" if ip else "host"
     return f"{browser}|{os_name}|{scope}|{where}"
 
 
-def _endpoint(proxy_url: str) -> str:
-    from urllib.parse import urlsplit
+def _public_proxy_id(proxy_url: str, *, session: bool = False, n: int = 12) -> str:
+    """Digest public routing identity; never include password, path or query."""
+    from app.fetching.proxies import identity_metadata
 
-    p = urlsplit(proxy_url)
-    return f"{p.scheme}://{p.hostname}:{p.port}"
+    metadata = identity_metadata(proxy_url)
+    endpoint = metadata["endpoint"]
+    # Endpoint-only keys preserve existing known-IP identities. A formatted
+    # username distinguishes sticky sessions while a password rotation does not.
+    public = json.dumps([endpoint, metadata["username"]], separators=(",", ":")) if session else endpoint
+    return hashlib.sha256(public.encode("utf-8"), usedforsecurity=False).hexdigest()[:n]
 
 
 def _coherent_chromium_geometry(fingerprint: dict | None) -> bool:
@@ -119,7 +130,14 @@ class IdentityStore:
             return
         try:
             data = json.loads(self.path.read_text())
+            legacy_format = data.get("version", 1) == 1
+            removed_legacy = legacy_format
             for key, raw in (data.get("identities") or {}).items():
+                parts = key.split("|")
+                legacy_scope = legacy_format and len(parts) == 4 and re.fullmatch(r"t\d+-[0-9a-f]{12}", parts[2])
+                if parts[-1].startswith("session:") or legacy_scope:
+                    removed_legacy = True
+                    continue
                 try:
                     ident = Identity(**raw)
                     # Old persisted samples are replaced before creating a new
@@ -129,6 +147,8 @@ class IdentityStore:
                     self._mem[key] = ident
                 except TypeError:
                     continue
+            if removed_legacy:
+                self._save()
         except (OSError, ValueError) as exc:
             log.warning("identities file unreadable (%s); new identities are drawn", type(exc).__name__)
 
@@ -141,7 +161,7 @@ class IdentityStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(self.path.name + f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps({"version": 1, "identities": {k: asdict(v) for k, v in self._mem.items()}}))
+            tmp.write_text(json.dumps({"version": 2, "identities": {k: asdict(v) for k, v in self._mem.items()}}))
             os.replace(tmp, self.path)
         except OSError as exc:
             log.warning("identities file not written (%s); identities stay in memory", type(exc).__name__)
