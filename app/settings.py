@@ -130,6 +130,7 @@ class Settings:
     compare_drop_share: float = 0.2
     challenge_click_wait_seconds: float = 15.0  # polling after the one click on a widget
     navigation_timeout_seconds: int = 60
+    setup_timeout_seconds: int = 180
     headless: bool = False  # the browser runs on the image's virtual display (Xvfb)
     browser_proxy_server_override: str | None = None
     build: str | None = None
@@ -211,6 +212,7 @@ def load_settings() -> Settings:
         challenge_wait_seconds=_float("WSS_CHALLENGE_WAIT_SECONDS", 30.0, 0.0, 120.0),
         challenge_click_wait_seconds=_float("WSS_CHALLENGE_CLICK_WAIT_SECONDS", 15.0, 1.0, 120.0),
         navigation_timeout_seconds=_int("WSS_NAVIGATION_TIMEOUT_SECONDS", 60, 5, 600),
+        setup_timeout_seconds=_int("WSS_SETUP_TIMEOUT_SECONDS", 180, 5, 1800),
         headless=_bool("WSS_BROWSER_HEADLESS", False),
         build=_env("WSS_BUILD"),
         log_level=_env("WSS_LOG_LEVEL", "INFO") or "INFO",

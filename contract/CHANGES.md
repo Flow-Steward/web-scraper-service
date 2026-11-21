@@ -1,9 +1,24 @@
 # Contract changes after the first publication
 
-All changes are additive within v1 (new optional fields, new optional
-header, new warning code, clarified text). Newest first. "Extension" says what
+Changes within v1 include new optional fields, optional headers, warning codes
+and clarified text. Nullable fields introduced below require consumers to handle unknown values. Newest first. "Extension" says what
 the extension (`flowsteward.web-scraper`, which keeps a copy of this
 directory) must do.
+
+## 2026-11-21 (bounded setup sitemap preview)
+
+`analysis.sitemap` adds optional `inspection: complete | limited | skipped`.
+`found`, `url_count` and `matching_url_count` now also allow `null`: explicit
+`crawl`/`url_list` skips enumeration, and an interrupted preview may not establish
+whether any sitemap URLs exist. Unknown values must not be displayed as zero/false.
+`url_count_capped` also covers the setup file/time budgets; numeric counts with it
+are lower bounds. The preview caps are 1,000 URLs, 20 files and 10 seconds.
+
+Extension: synchronize `schemas/analysis.schema.json`; accept nullable found/counts,
+show skipped/unknown metadata, and qualify limited counts. Existing complete previews
+retain boolean/integer values. Setup work has the documented service overall timeout
+and caller lifetime; timeout is `503 service_unavailable` with reason
+`setup_deadline_exceeded`.
 
 ## 2026-11-14 (unusable answers, page timeout, slow-down, politeness presets, busy sites)
 

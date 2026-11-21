@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -39,10 +40,54 @@ from app.jobs.discovery import (  # noqa: E402
     filter_urls,
     find_sitemaps,
     http_fetcher,
+    iter_sitemaps,
     robots_from,
     target_patterns,
     target_share,
 )
+
+
+# Analysis is a preview, not the job's full sitemap inventory. These limits include
+# sitemap discovery and nested fetches; counts from a limited preview are lower bounds.
+SITEMAP_METADATA_URL_CAP = 1_000
+SITEMAP_METADATA_FILE_CAP = 20
+SITEMAP_METADATA_SECONDS = 10.0
+
+
+class _SitemapMetadataLimit(Exception):
+    pass
+
+
+async def _sitemap_metadata(site_url, config, robots, fetch):
+    from contextlib import aclosing
+
+    sitemaps, urls, latest = [], [], None
+    limited = False
+    cache = {}
+
+    async def bounded_fetch(url):
+        if url not in cache:
+            if len(cache) >= SITEMAP_METADATA_FILE_CAP:
+                raise _SitemapMetadataLimit
+            cache[url] = await fetch(url)
+        return cache[url]
+
+    try:
+        async with asyncio.timeout(SITEMAP_METADATA_SECONDS):
+            sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, bounded_fetch)
+            async with aclosing(iter_sitemaps(sitemaps, bounded_fetch, max_files=SITEMAP_METADATA_FILE_CAP)) as entries:
+                async for loc, lastmod in entries:
+                    urls.append(loc)
+                    if lastmod is not None and (latest is None or lastmod > latest):
+                        latest = lastmod
+                    if len(urls) >= SITEMAP_METADATA_URL_CAP:
+                        limited = True
+                        break
+            # Reaching the file cap cannot establish that the index was exhausted.
+            limited = limited or len(cache) >= SITEMAP_METADATA_FILE_CAP
+    except (TimeoutError, _SitemapMetadataLimit):
+        limited = True
+    return sitemaps, urls, limited, latest
 
 
 def _first_tier_proxy(config: dict, profile: dict) -> tuple[str | None, int | None]:
@@ -563,15 +608,21 @@ async def _analyze(svc, config: dict, site_url: str, sf: SetupFetch) -> dict:
             warnings.append(field_error("browser", "invalid_value", f"the browser fetch failed ({type(exc).__name__})"))
     http_chars = Page(html, final_url, status).visible_text_chars if html else 0
     js_required = browser_chars is not None and browser_chars > max(500, http_chars * 2)
-    sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, fetch)
-    urls, capped, latest = await collect_sitemap_urls(sitemaps, fetch=fetch) if sitemaps else ([], False, None)
+    requested_mode = config.get("discovery_mode", "auto")
+    skipped = requested_mode in ("crawl", "url_list")
+    sitemaps, urls, capped, latest = ([], [], False, None) if skipped else await _sitemap_metadata(site_url, config, robots, fetch)
     matching = filter_urls(urls, config.get("url_include") or [], config.get("url_exclude") or [])
     site = site_key(site_url)
     share = None
-    if matching:
+    if matching and not capped:
         links = page.links()
         share = target_share(links, set(matching), target_patterns(svc.mappings.active_mappings(site) and [m["mapping"] for m in svc.mappings.active_mappings(site)], config.get("url_include") or []), site)
-    mode, reasons = decide(bool(urls), len(matching), share)
+    if skipped:
+        mode, reasons = requested_mode, [f"explicit {requested_mode} discovery; sitemap inspection skipped"]
+    elif capped:
+        mode, reasons = ("sitemap_and_crawl" if matching else "crawl"), ["sitemap preview limited; full coverage is unknown"]
+    else:
+        mode, reasons = decide(bool(urls), len(matching), share)
     types = page.jsonld_types()
     wanted = config.get("structured_data_types") or ["Product", "Offer", "AggregateOffer"]
     needs_proxy = kind in ("hard_block", "rate_limited")
@@ -595,11 +646,12 @@ async def _analyze(svc, config: dict, site_url: str, sf: SetupFetch) -> dict:
         "http_status": status,
         "robots": robots_part,
         "sitemap": {
-            "found": bool(urls),
+            "found": None if skipped or (capped and not urls) else bool(urls),
             "url": sitemaps[0] if sitemaps and re.match(r"^https?://\S+$", sitemaps[0]) else None,
-            "url_count": len(urls),
+            "url_count": None if skipped or (capped and not urls) else len(urls),
             "url_count_capped": capped,
-            "matching_url_count": len(matching),
+            "matching_url_count": None if skipped or (capped and not urls) else len(matching),
+            "inspection": "skipped" if skipped else "limited" if capped else "complete",
             "target_share": share,
             "latest_lastmod": iso(latest) if latest else None,
         },

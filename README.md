@@ -193,6 +193,7 @@ Environment variables, all optional except the first:
 | `WSS_CHALLENGE_WAIT_SECONDS` | 30 | Route step `wait`: up to this long for the challenge to clear by itself (stops as soon as it does), then the click |
 | `WSS_CHALLENGE_CLICK_WAIT_SECONDS` | 15 | After the one click on a widget: how long the page is polled (every second) before the click counts as failed |
 | `WSS_NAVIGATION_TIMEOUT_SECONDS` | 60 | Page timeout of a run whose configuration has no `page_timeout_seconds` (the politeness preset normally sets it) |
+| `WSS_SETUP_TIMEOUT_SECONDS` | 180 | Overall analysis/samples work budget, 5–1800 s; separate from the per-page timeout. Caller disconnect/cancellation stops work sooner and closes request resources |
 | `WSS_BROWSER_HEADLESS` | `0` | Run the browsers headless. By default they run headed on the image's virtual display (Xvfb), which the protection route relies on; set `1` only where no display can run |
 | `WSS_BREAKER_FAILURES` | 5 | Circuit breaker per host: this many server errors, timeouts or network errors (or unusable answers) in a row pause the host (1–1000) |
 | `WSS_BREAKER_PAUSE_SECONDS` | 30 | Length of the first pause; it doubles with every further pause (0–3600) |
@@ -371,6 +372,21 @@ that takes longer fails like a network error (retried up to `max_retries`, then
 Scripted listing pagination uses the selected timeout for its bounded link-observation
 window, with no separate 30-second ceiling. Action/page budgets and the run
 `max_duration_minutes` limit continue to apply.
+
+**Setup previews and caller lifetime.** Analysis preserves explicit `crawl` or `url_list`
+intent and skips sitemap enumeration. Its `sitemap.inspection` is `skipped`, with
+`found`, `url_count` and `matching_url_count` set to `null` (unknown, not zero).
+`auto`, `sitemap` and `sitemap_and_crawl` inspect at most 1,000 observed page URLs,
+20 sitemap files and 10 seconds including sitemap discovery. A limited preview reports
+`inspection: limited` and `url_count_capped: true`; known counts are lower bounds, and
+counts remain `null` when no count was established. `target_share` remains unknown
+for a limited preview. Full sitemap inventory belongs to a run.
+
+Analysis and samples work also ends at `WSS_SETUP_TIMEOUT_SECONDS` or when the caller
+disconnects/cancels. The overall budget can end a request before its per-page timeout.
+The service cancels and awaits request work, closing its active HTTP streams and browser
+session (including partial browser startup). Budget exhaustion returns a sanitized
+`503 service_unavailable` with `error.details.reason: setup_deadline_exceeded`.
 
 **Automatic slow-down.** Per host the service watches the last 20 pages. When at least
 20 % of them were server errors, timeouts, network errors or unusable answers, or the

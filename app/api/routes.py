@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from app.api.http import json_response, make_cursor, read_cursor, read_json, read_limit
+from app.api.lifetime import run_setup
 from app.core.config import apply_rules, dedupe_url_list, merge_layers, split_secret_requirements
 from app.core.db import dumps, loads
 from app.core.errors import ApiError, field_error, validation_failed
@@ -164,7 +165,8 @@ async def analyze(request: Request):
     from app.setup_ops import analyze as run
 
     body = await read_json(request, "analysis.schema.json#/$defs/analyze_request")
-    return json_response(await run(get_service(), body))
+    svc = get_service()
+    return json_response(await run_setup(request, run(svc, body), timeout=svc.settings.setup_timeout_seconds))
 
 
 @router.post("/v1/proxies/test")
@@ -192,7 +194,8 @@ async def samples(request: Request):
     from app.setup_ops import samples as run
 
     body = await read_json(request, "samples.schema.json#/$defs/samples_request")
-    return json_response(await run(get_service(), body))
+    svc = get_service()
+    return json_response(await run_setup(request, run(svc, body), timeout=svc.settings.setup_timeout_seconds))
 
 
 @router.post("/v1/mappings/test")
