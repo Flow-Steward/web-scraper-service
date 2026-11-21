@@ -18,6 +18,7 @@ import httpx
 
 from app.core.netguard import PrivateAddressError, guarded_transport, url_is_private
 from app.core.urls import absolute
+from app.fetching.proxy_auth import is_proxy_auth_failure
 
 if TYPE_CHECKING:
     from app.fetching.navigation import (
@@ -166,7 +167,8 @@ async def http_get(
     except PrivateAddressError as exc:
         raise PrivateAddress(current) from exc
     except (httpx.HTTPError, OSError, ValueError) as exc:
-        return Fetched(url, current, None, b"", {}, type(exc).__name__, hops)
+        error = "proxy_auth_failed" if is_proxy_auth_failure(exc, proxy_used=bool(proxy)) else type(exc).__name__
+        return Fetched(url, current, None, b"", {}, error, hops)
 
 
 

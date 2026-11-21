@@ -53,6 +53,7 @@ async def test_runtime_listing_navigation_honors_selected_page_timeout(
 
     monkeypatch.setattr("app.fetching.navigation.collect_listing_links", collect)
     runner = SimpleNamespace(
+        state="running",
         config={"site_url": URL, "page_timeout_seconds": seconds, "max_pages": 200},
         _crawl_scope=lambda: [],
     )

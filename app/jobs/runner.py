@@ -58,6 +58,7 @@ from app.extraction.mapping import apply_mapping, looks_like_target, passes_targ
 from app.extraction.page import Page
 from app.fetching.challenge import detect_html, detect_page, page_html
 from app.fetching.proxies import TierPlan
+from app.fetching.proxy_auth import ProxyAuthenticationRequired, is_proxy_auth_failure
 from app.jobs.throttle import HostThrottle
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("wss.job")
 
 # statuses our handler sees instead of Crawlee raising (challenges, blocks, 429, every 5xx)
-IGNORED_STATUSES = sorted({401, 403, 404, 410, 429, 451} | set(range(500, 600)))
+IGNORED_STATUSES = sorted({401, 403, 404, 407, 410, 429, 451} | set(range(500, 600)))
 STOP_LISTED_REASONS = {"stopped", "max_duration", "max_result_size", "blocked", "stalled"}
 ADMISSION_WAIT_SECONDS = 20.0
 REQUEST_CACHE_SIZE = 2000  # pending requests Crawlee keeps in memory per run
@@ -180,7 +181,7 @@ class JobRunner:
         self.mappings: dict[str, dict[str, dict]] = {}  # site -> template_id -> {"version", "mapping"}
         self.include = compile_patterns(self.config.get("url_include") or [], "url_include")
         self.exclude = compile_patterns(self.config.get("url_exclude") or [], "url_exclude")
-        self.pages_started = 0
+        self.pages_started = int(self.rt.get("pages_started", self.doc["counters"].get("pages_fetched", 0)))
         self.last_persist = 0.0
         self.secret_strings: list[str] = []
         # admission control (max_records) and per-attempt bookkeeping, in memory only
@@ -329,6 +330,8 @@ class JobRunner:
             await self._run_crawl()
         except asyncio.CancelledError:
             raise
+        except ProxyAuthenticationRequired:
+            pass  # the queue and source traversal remain resumable
         except UrlPatternError as exc:
             await self._url_pattern_failed(exc)
         except Exception as exc:  # unexpected: internal_error
@@ -397,6 +400,10 @@ class JobRunner:
         if self.doc["progress"]["discovery"] == "pending":
             self.doc["progress"]["discovery"] = "running"
         await self._open_storages()
+        # A resumed auxiliary request can finish before its source feeder starts.
+        # Register its waiter before starting the crawler and reuse the queue key.
+        for key in (self.rt.get("aux_pending") or {}).values():
+            self._aux[key] = asyncio.get_running_loop().create_future()
         self._reconcile_requests()
         self._persist()
 
@@ -481,6 +488,8 @@ class JobRunner:
 
         from app.fetching.oneoff import http_get
 
+        if self.state == "waiting_for_credentials":
+            raise ProxyAuthenticationRequired()
         if self._shutdown or await url_is_private(url):
             return None
         if self.crawler is None or self.crawler_task is None or self.crawler_task.done() or self._cut_or_stopping():
@@ -490,24 +499,74 @@ class JobRunner:
             except ValueError:
                 proxy = None
             try:
-                return await http_get(url, proxy=proxy, headers=self.config.get("headers") or None, timeout=30)
+                fetched = await http_get(url, proxy=proxy, headers=self.config.get("headers") or None, timeout=30)
+                if fetched is not None and is_proxy_auth_failure(fetched.error, status=fetched.status, proxy_used=bool(proxy)):
+                    await self._pause_for_proxy_auth()
+                    raise ProxyAuthenticationRequired()
+                return fetched
+            except ProxyAuthenticationRequired:
+                raise
             except Exception:
                 return None
-        key = f"aux\x1f{url}\x1f{new_id('aux')}"
-        fut = asyncio.get_running_loop().create_future()
+        pending = self.rt.setdefault("aux_pending", {})
+        key = pending.get(url)
+        fut = self._aux.get(key) if key else None
+        if key and (fut is None or not fut.done()):
+            previous = await self.rq.get_request(key)
+            if previous is not None and previous.handled_at is not None:
+                # A crash after queue commit but before source consumption cannot
+                # reconstruct an in-memory body; refetch only that source file.
+                self._aux.pop(key, None)
+                key, fut = None, None
+        key = key or f"aux\x1f{url}\x1f{new_id('aux')}"
+        fut = fut or asyncio.get_running_loop().create_future()
         self._aux[key] = fut
+        pending[url] = key
+        self._persist()
         headers = dict(self.config.get("headers") or {})
+        consumed = False
         try:
-            req = Request.from_url(url, unique_key=key, user_data={"aux": True, "src": "aux"}, headers=headers or None)
-            await self.rq.add_requests([req], forefront=True, wait_for_all_requests_to_be_added=True)
-            return await asyncio.wait_for(fut, timeout)
+            if not fut.done():
+                req = Request.from_url(url, unique_key=key, user_data={"aux": True, "src": "aux"}, headers=headers or None)
+                await self.rq.add_requests([req], forefront=True, wait_for_all_requests_to_be_added=True)
+            fetched = await asyncio.wait_for(asyncio.shield(fut), timeout)
+            if fetched is not None and is_proxy_auth_failure(fetched.error, status=fetched.status, proxy_used=self.tiers.enabled):
+                await self._pause_for_proxy_auth()
+                raise ProxyAuthenticationRequired()
+            consumed = True
+            return fetched
         except asyncio.TimeoutError:
             return None
+        except ProxyAuthenticationRequired:
+            raise
         except Exception:
             log.exception("job %s: auxiliary fetch failed", self.run_id)
             return None
         finally:
-            self._aux.pop(key, None)
+            if consumed:
+                self._aux.pop(key, None)
+                pending.pop(url, None)
+                self._persist()
+
+    async def _pause_for_proxy_auth(self) -> None:
+        """Pause without consuming page/source queues or resetting protection budgets."""
+        # This transition is synchronous until the manager call; auxiliary fetches
+        # can also reach it while the supervisor already owns self.lock.
+        self.doc = self._reload_state_fields()
+        if self.state != "running":
+            return
+        self.doc["state"] = "waiting_for_credentials"
+        self.rt["credentials_wait_reason"] = "proxy_auth_failed"
+        self.rt["proxy_auth_pauses"] = int(self.rt.get("proxy_auth_pauses", 0)) + 1
+        self._accumulate_running_time()
+        self._persist()
+        await self.svc.jobs.to_waiting_for_credentials(self.run_id, reason="proxy_auth_failed")
+        if self.crawler is not None:
+            self.crawler.stop("upstream proxy authentication requires Resume")
+        for fut in list(self._aux.values()):
+            if not fut.done():
+                fut.set_exception(ProxyAuthenticationRequired())
+                fut.exception()  # a pre-registered waiter may not have a consumer yet
 
     def _aux_done(self, request, fetched) -> None:
         self.last_progress = time.monotonic()
@@ -669,6 +728,9 @@ class JobRunner:
         crawler.router.default_handler(self._handle)
         crawler.failed_request_handler(self._failed)
         crawler.pre_navigation_hook(self._pre_nav)
+        from app.jobs.proxy_auth import guard_proxy_auth
+
+        guard_proxy_auth(crawler, self, adaptive=self._adaptive)
         return crawler
 
     def _proxy_url(self, session_id: str | None, request) -> str | None:
@@ -757,6 +819,8 @@ class JobRunner:
         the counters, the consumed backlog rows and the feeder position."""
         from crawlee import Request
 
+        if self.state == "waiting_for_credentials":
+            raise ProxyAuthenticationRequired()
         job_site = self.doc["site"]
         decisions: list[tuple] = []
         new_requests = []
@@ -812,6 +876,8 @@ class JobRunner:
                 log.warning("job %s: a URL Crawlee refuses was skipped", self.run_id)
                 continue
             decisions.append(("queued", ukey, url, source, entry.get("source_key")))
+        if self.state == "waiting_for_credentials":
+            raise ProxyAuthenticationRequired()
         if new_requests:
             await self.rq.add_requests(new_requests, forefront=forefront, wait_for_all_requests_to_be_added=True)
         with self.svc.db.tx():
@@ -1145,7 +1211,7 @@ class JobRunner:
         checkpoint()
 
     def _cut_or_stopping(self) -> bool:
-        return self.doc["progress"]["discovery"] == "cut" or self.state == "stopping" or self._shutdown
+        return self.doc["progress"]["discovery"] == "cut" or self.state in ("stopping", "waiting_for_credentials") or self._shutdown
 
     async def _drain_backlog(self) -> None:
         """Enqueues links and refetches recorded by the follower (after its transaction committed)."""
@@ -1156,6 +1222,8 @@ class JobRunner:
                                    "ORDER BY forefront DESC, seq LIMIT 500", (self.run_id,))
             if not rows:
                 return
+            if self.state == "waiting_for_credentials":
+                return  # pause preserves the backlog for Resume
             if self._cut_or_stopping() or self.state != "running" or self.crawler_task is None or self.crawler_task.done():
                 with self.svc.db.tx():
                     self.svc.db.execute("DELETE FROM link_backlog WHERE run_id=? AND source != 'refetch'", (self.run_id,))
@@ -1212,6 +1280,8 @@ class JobRunner:
         are tried instead and a debug entry says so."""
 
         async def fetch(u: str):
+            if self.state == "waiting_for_credentials":
+                raise ProxyAuthenticationRequired()
             try:
                 host = host_of(u)
             except ValueError:
@@ -1222,13 +1292,19 @@ class JobRunner:
                 self.add_error("debug", f"variants: shop JSON not fetched over HTTP for a host that needs the browser ({u})", url=u, severity="debug")
                 return None
             await self.throttle.wait(host)
+            if self.state == "waiting_for_credentials":
+                raise ProxyAuthenticationRequired()
             try:
                 if browser_run and getattr(ctx, "page", None) is not None:
                     resp = await ctx.page.context.request.get(u, timeout=30000, headers={"Accept": "application/json"})
+                    if is_proxy_auth_failure(status=resp.status, proxy_used=self.tiers.enabled):
+                        raise ProxyAuthenticationRequired()
                     if resp.status >= 400:
                         return None
                     return json.loads(await resp.text())
                 resp = await ctx.send_request(u, headers={"Accept": "application/json"})
+                if is_proxy_auth_failure(status=getattr(resp, "status_code", None), proxy_used=self.tiers.enabled):
+                    raise ProxyAuthenticationRequired()
                 if getattr(resp, "status_code", 200) >= 400:
                     return None
                 body = resp.read()
@@ -1236,6 +1312,9 @@ class JobRunner:
                     body = await body
                 return json.loads(body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body)
             except Exception as exc:
+                if is_proxy_auth_failure(exc, proxy_used=self.tiers.enabled):
+                    await self._pause_for_proxy_auth()
+                    raise ProxyAuthenticationRequired() from None
                 self.add_error("debug", f"variants: shop JSON {u} failed ({type(exc).__name__})", url=u, severity="debug")
                 return None
 
@@ -1376,6 +1455,8 @@ class JobRunner:
         from crawlee.crawlers._adaptive_playwright._adaptive_playwright_crawling_context import AdaptiveContextError
 
         request = ctx.request
+        if self.state == "waiting_for_credentials":
+            self._defer(request, "upstream proxy authentication requires Resume")
         ud = request.user_data
         url = request.url
         try:
@@ -1401,11 +1482,14 @@ class JobRunner:
                     self._defer(request, "page budget reached")
                 await self._admit(request)
                 self.pages_started += 1
+                self.rt["pages_started"] = self.pages_started
             if not self.tiers.enabled:
                 by = self.counters()["proxy_requests_by_tier"]
                 by["none"] = by.get("none", 0) + 1
             await self.throttle.wait(host)
             ud["t0"] = time.monotonic()  # the host's response time
+        if self.state == "waiting_for_credentials":
+            self._defer(request, "upstream proxy authentication requires Resume")
         try:
             page = getattr(ctx, "page", None)
         except AdaptiveContextError:
@@ -1478,6 +1562,9 @@ class JobRunner:
         host = host_of(url)
         browser_run = self._is_browser(ctx)
         status = ctx.http_response.status_code
+        if is_proxy_auth_failure(status=status, proxy_used=self.tiers.enabled):
+            await self._pause_for_proxy_auth()
+            self._defer(request, "upstream proxy authentication requires Resume")
         fetch_mode = self.config["fetch_mode"]
         self._check_session_tier(ctx)
         if ud.get("aux"):
@@ -1754,8 +1841,12 @@ class JobRunner:
             if session is not None:
                 session.user_data["cleared_usage"] = session.usage_count
         # the raw bytes through the page's context: its cookies (clearance) and its proxy
+        if self.state == "waiting_for_credentials":
+            self._defer(request, "upstream proxy authentication requires Resume")
         try:
             resp = await ctx.page.context.request.get(url, headers=self.config.get("headers") or None, timeout=60000, max_redirects=10)
+            if is_proxy_auth_failure(status=resp.status, proxy_used=self.tiers.enabled):
+                raise ProxyAuthenticationRequired()
             body = await resp.body()
             final = resp.url
             if final != url and await url_is_private(final):
@@ -1763,6 +1854,9 @@ class JobRunner:
                 return
             self._aux_done(request, Fetched(url, final, resp.status, body[: 64 * 1024 * 1024], {k.lower(): v for k, v in resp.headers.items()}, None))
         except Exception as exc:
+            if is_proxy_auth_failure(exc, proxy_used=self.tiers.enabled):
+                await self._pause_for_proxy_auth()
+                self._defer(request, "upstream proxy authentication requires Resume")
             self._aux_done(request, Fetched(url, url, None, b"", {}, type(exc).__name__))
 
     async def _browser_waits(self, page) -> None:
@@ -1948,7 +2042,7 @@ class JobRunner:
         def cancelled():
             return (
                 bool(self.rt.get("stop_reason"))
-                or self.state in ("stopping", "completed", "failed")
+                or self.state in ("stopping", "completed", "failed", "waiting_for_credentials")
                 or self.running_seconds() >= self.config["max_duration_minutes"] * 60
             )
 
@@ -1998,6 +2092,8 @@ class JobRunner:
             before_action=allowed,
             cancelled=cancelled,
         )
+        if self.state == "waiting_for_credentials":
+            self._defer(ctx.request, "upstream proxy authentication requires Resume")
         page.extra_links = result.links
         page.extra_anchors = result.anchors
         out["navigation"] = {

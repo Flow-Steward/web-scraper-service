@@ -631,7 +631,7 @@ paths:
       tags:
         - "runs"
       summary: "Send the job's secrets again"
-      description: "Replaces the stored secrets still kept for the run's state. `waiting_for_credentials` → `running`; in any other state the secrets are replaced (signing secret always, proxy/solver secrets only before a final state) and the state is unchanged. Pending deliveries are retried at once."
+      description: "Replaces the stored secrets still kept for the run's state. `waiting_for_credentials` → `running` after credential refresh or proxy IP allow-list approval, retaining pending work and existing budgets; in any other state the secrets are replaced (signing secret always, proxy/solver secrets only before a final state) and the state is unchanged. Pending deliveries are retried at once."
       parameters:
         - "$ref": "#/components/parameters/run_id"
       requestBody:

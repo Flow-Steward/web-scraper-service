@@ -214,6 +214,11 @@ class JobManager:
 
     def runner_done(self, run_id: str) -> None:
         self.runners.pop(run_id, None)
+        # Stop can arrive after a paused runner left its supervisor but while it
+        # still owns the queue. Finish stopping only after that owner exits.
+        row = self.svc.db.one("SELECT state FROM runs WHERE run_id=?", (run_id,))
+        if row is not None and row["state"] == "stopping":
+            self._start_runner(run_id)
         self.wake()
 
     # ================================================================== creation
@@ -570,8 +575,18 @@ class JobManager:
             doc["secrets"]["signing_secret"] = "kept"
         self.svc.db.execute("UPDATE runs SET doc=? WHERE run_id=?", (dumps(doc), run_id))
         if state == "waiting_for_credentials" and self._covers(run_id, doc["config"], rt):
-            self._set_state(run_id, "running")
-            self._start_runner(run_id)
+            # The paused crawler must finish reclaiming in-flight requests before
+            # a new runner opens the same persistent queue.
+            old_runner = self.runners.get(run_id)
+            if old_runner is not None and old_runner.task is not None and not old_runner.task.done():
+                await asyncio.shield(old_runner.task)
+            fresh = self._row(run_id)
+            if fresh["state"] == "waiting_for_credentials":
+                rt = loads(fresh["runtime"])
+                rt.pop("credentials_wait_reason", None)
+                self.svc.db.execute("UPDATE runs SET runtime=? WHERE run_id=?", (dumps(rt), run_id))
+                self._set_state(run_id, "running")
+                self._start_runner(run_id)
         elif state in ("running", "stopping") and (profile.get("proxy_tiers") or profile.get("solver")):
             # rotate a running job's secrets in memory too (README 15.26)
             runner = self.runners.get(run_id)
@@ -605,16 +620,26 @@ class JobManager:
                 return False
         return True
 
-    async def to_waiting_for_credentials(self, run_id: str) -> None:
+    async def to_waiting_for_credentials(self, run_id: str, *, reason: str = "secrets_unavailable") -> None:
         self._set_state(run_id, "waiting_for_credentials")
-        row = self.svc.db.one("SELECT doc FROM runs WHERE run_id=?", (run_id,))
+        row = self.svc.db.one("SELECT doc, runtime FROM runs WHERE run_id=?", (run_id,))
         doc = loads(row["doc"])
-        doc["secrets"]["proxy_and_solver"] = "missing"
+        if reason == "secrets_unavailable":
+            doc["secrets"]["proxy_and_solver"] = "missing"
         self.svc.db.execute("UPDATE runs SET doc=? WHERE run_id=?", (dumps(doc), run_id))
+        from app.fetching.proxy_auth import PROXY_AUTH_MESSAGE
+
+        if reason == "proxy_auth_failed":
+            code, message = "proxy_auth_failed", PROXY_AUTH_MESSAGE
+            problem_key = f"{code}:{loads(row['runtime']).get('proxy_auth_pauses', 0)}"
+        else:
+            code = "waiting_for_credentials"
+            message = "the job's proxy or solver secrets cannot be decrypted; send them again with Resume"
+            problem_key = f"{code}:"
         self.svc.events.create(
             run_id, "problem", run_id,
-            {"problem_code": "waiting_for_credentials", "message": "the job's proxy or solver secrets cannot be decrypted; send them again with Resume"},
-            problem_key="waiting_for_credentials:",
+            {"problem_code": code, "message": message},
+            problem_key=problem_key,
         )
 
     # ================================================================== completion

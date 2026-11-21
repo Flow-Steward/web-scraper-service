@@ -395,7 +395,7 @@ the escalation for that host for the rest of the job.
 |---|---|
 | `queued` | Accepted; waiting for a slot (`limits.max_concurrent_jobs`) |
 | `running` | Discovering, fetching, extracting, waiting for mapping requests, re-extracting, writing the result |
-| `waiting_for_credentials` | After a restart the job's proxy or solver secrets cannot be decrypted (key missing or changed). Nothing is fetched. A job that uses no proxy credentials and no solver never enters this state |
+| `waiting_for_credentials` | The job's proxy/solver secrets cannot be decrypted, or an upstream proxy explicitly refused authentication (HTTP/CONNECT 407 or a browser proxy-authentication error). Nothing further is fetched until Resume. Proxy IP allow-list refusal can enter this state without stored credentials |
 | `stopping` | An operator stop was received; pages in progress are finished, then the result is written |
 | `completed` | Final. The result file is written and `run_completed` was emitted |
 | `failed` | Final. Unrecoverable error; no result; `run_failed` was emitted; `error` says why |
@@ -408,10 +408,10 @@ Allowed transitions (anything else never happens):
 | `queued` | `running` | A slot is free (FIFO by `created_at`) |
 | `queued` | `completed` | `stop`: an empty result is written, `stop_reason: stopped` |
 | `running` | `stopping` | `stop` |
-| `running` | `waiting_for_credentials` | Service start finds the job's proxy/solver secrets undecryptable; a `problem` event `waiting_for_credentials` is created |
+| `running` | `waiting_for_credentials` | Secrets cannot be decrypted (`problem_code: waiting_for_credentials`), or the upstream proxy explicitly rejects authentication (`problem_code: proxy_auth_failed`) |
 | `running` | `completed` | The completion condition (4.3) holds |
 | `running` | `failed` | `crash_loop` (the service restarted 3 times within 10 minutes while the job was running), `storage_error`, `start_url_unreachable` (`site_url` failed every retry and no other discovery source exists), `robots_disallowed` (`site_url` disallowed and `respect_robots`), `internal_error` |
-| `waiting_for_credentials` | `running` | `resume` with secrets that decrypt-and-cover the job |
+| `waiting_for_credentials` | `running` | `resume` with secrets that decrypt-and-cover the job, after credentials or the provider IP allow-list are approved |
 | `waiting_for_credentials` | `stopping` | `stop` |
 | `stopping` | `completed` | The completion condition holds (`stop_reason: stopped`) |
 | `stopping` | `failed` | Unrecoverable error as above |
@@ -1458,7 +1458,7 @@ The webhook body (`event.schema.json`) is small: no HTML, no records.
 | `event_type` | `resource_id` | Extra fields | Emitted when |
 |---|---|---|---|
 | `mapping_required` | `mrq_…` | `template_id` (repair only), `message` | A mapping request opens |
-| `problem` | `run_…` | `problem_code`, `template_id` (if any), `message` | `template_failed`, `block_rate_high`, `challenge_limit_reached`, `store_limit_reached`, `waiting_for_credentials`. Not terminal |
+| `problem` | `run_…` | `problem_code`, `template_id` (if any), `message` | `template_failed`, `block_rate_high`, `challenge_limit_reached`, `store_limit_reached`, `waiting_for_credentials`, `proxy_auth_failed`. Not terminal |
 | `run_completed` | `run_…` | `outcome`, `stop_reason` | The job completed (4.3) |
 | `run_failed` | `run_…` | `message` | The job failed |
 
@@ -1467,6 +1467,18 @@ Always present: `event_id`, `event_type`, `run_id`, `resource_id`,
 fixed when the generation starts and are identical on every attempt. There
 is no ordering guarantee between deliveries; handlers read current state
 through the API.
+
+A `proxy_auth_failed` problem is emitted once per authentication pause. Its fixed,
+secret-free message asks to check credentials, the service IP allow-list, and provider
+account balance or traffic limits, then Resume after provider access is approved. A 403, Cloudflare challenge, target downtime, proxy timeout or ordinary
+tunnel connection error does not qualify. This pause does not escalate a proxy tier,
+try a paid fallback, open the target site's breaker, mark a document failed, or seal
+source traversal complete. Completed records, pending requests, source checkpoints,
+links and runtime budgets remain. Proxy secrets that still decrypt remain `kept`;
+only unavailable encryption secrets are `missing`. Resume waits for the old crawler
+to release its queue before starting its replacement. Running time excludes the
+pause; page attempts, navigation actions, record limits, clicks and solves retain
+their existing budget usage, including across a service restart.
 
 ### 8.2 Event states
 

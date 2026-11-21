@@ -757,11 +757,12 @@
         "challenge_limit_reached",
         "store_limit_reached",
         "waiting_for_credentials",
+        "proxy_auth_failed",
         "site_unavailable",
         "sitemap_outdated",
         "stalled"
       ],
-      "description": "Added 2026-11-14: `site_unavailable` (the run stopped, see `stop_reason`), `sitemap_outdated` (a high share of the sitemap's URLs answered 404; in `auto` discovery the link crawl was added). `stalled` (added 2026-11-14): no progress for `stall_seconds`; the message says what is stuck."
+      "description": "`proxy_auth_failed`: an upstream proxy explicitly refused authentication; the run is waiting for Resume and retains pending work. Added 2026-11-14: `site_unavailable` (the run stopped, see `stop_reason`), `sitemap_outdated` (a high share of the sitemap's URLs answered 404; in `auto` discovery the link crawl was added). `stalled` (added 2026-11-14): no progress for `stall_seconds`; the message says what is stuck."
     },
     "run_error_code": {
       "type": "string",

@@ -177,7 +177,7 @@ Environment variables, all optional except the first:
 | Variable | Default | Meaning |
 |---|---|---|
 | `WSS_API_TOKEN` | — (required) | Bearer token of the API |
-| `WSS_SECRETS_KEY` | unset | Key that encrypts job secrets at rest (AES-256-GCM): 32 bytes URL-safe base64, or a passphrase ≥ 16 chars. Without it `POST /v1/runs` and resume answer `503 secrets_key_unavailable`. A changed key puts running jobs into `waiting_for_credentials` until Resume |
+| `WSS_SECRETS_KEY` | unset | Key that encrypts job secrets at rest (AES-256-GCM): 32 bytes URL-safe base64, or a passphrase ≥ 16 chars. Without it `POST /v1/runs` and resume answer `503 secrets_key_unavailable`. A changed key puts running jobs into `waiting_for_credentials` until Resume. Explicit upstream proxy authentication rejection also pauses for Resume after credentials or IP allow-list approval, preserving pending work and budgets |
 | `WSS_DATA_DIR` | `/data` | The one volume: `service.sqlite3`, `jobs/<run_id>/crawlee` (Crawlee storage per job), `results/`, `samples/`, `identities.json` |
 | `WSS_PORT`, `WSS_HOST` | `8080`, `0.0.0.0` | Listen address |
 | `WSS_ALLOW_CHALLENGE_CLICK` | `0` | Allow the model-free checkbox click (route step `click`) |

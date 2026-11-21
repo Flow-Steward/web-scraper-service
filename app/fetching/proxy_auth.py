@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 
 PROXY_AUTH_MESSAGE = (
-    "The upstream proxy refused authentication. Refresh its credentials or approve "
-    "the service IP with the provider, then send Resume with the approved profile. "
-    "Completed records and pending work are kept; existing job budgets still apply."
+    "The upstream proxy refused authentication. Check its credentials, the service IP "
+    "allow-list, and provider account balance or traffic limits. Once provider access "
+    "is approved, send Resume with the approved profile. Completed records and pending "
+    "work are kept; existing job budgets still apply."
 )
 
 
