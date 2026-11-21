@@ -11,6 +11,7 @@ before it is fetched.
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -212,6 +213,8 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
     and the caller may commit it only after enqueue succeeds. Restart can replay a
     batch through queue deduplication, but never skip an uncommitted batch. Failed
     sources retain their own offsets, independent of successful sibling sources.
+    Changed bodies (or legacy cursors without a body hash) replay through dedup
+    from the start, without refunding the current run's enumeration budget.
     """
     from app.fetching.proxy_auth import ProxyAuthenticationRequired
 
@@ -270,6 +273,14 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
         except Exception:
             entry.update(status="failed", reason="invalid_sitemap")
             continue
+        fingerprint = hashlib.sha256(fetched.body).hexdigest()
+        if entry.get("body_sha256") != fingerprint:
+            # An incomplete file may change while paused or failed. Ordinal
+            # cursors then cannot prove which locations were already emitted;
+            # legacy cursors without a fingerprint are equally uncertain.
+            # Replay through caller dedup, spending the same run's entry budget.
+            entry.update(page_offset=0, nested_offset=0)
+        entry["body_sha256"] = fingerprint
         for offset in range(int(entry["page_offset"]), len(pages)):
             if max_entries is not None and state["entries_seen"] >= max_entries:
                 entry["reason"] = "entry_limit"

@@ -784,9 +784,12 @@ sitemaps and completely filtered inventories can be complete. `capped` and
 `cap_reason` distinguish `entry_limit` from `source_file_limit`; the entry budget
 counts all locations before filtering. Failed and pending source URLs omit user
 information, queries and fragments and include fixed failure reasons. Private
-address refusals are listed separately and remain outcome-neutral. A changed or
-reordered source can alter the meaning of saved offsets; start a fresh full run
-when a new inventory is required. Finished parent results are never rewritten.
+address refusals are listed separately and remain outcome-neutral. Incomplete
+source cursors retain a private body fingerprint. A changed body, or a legacy
+cursor without a fingerprint, replays that source through queue/ancestor dedup;
+replay spends the current run's remaining location budget. Completed sources are
+not re-polled: start a fresh full run when a new inventory is required. Finished
+parent results are never rewritten.
 
 The same key with the same parent and reasons → `200` with the run created
 first (section 5).

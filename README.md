@@ -551,6 +551,8 @@ children. It does not rewrite the finished parent's result. Completed source
 entries are skipped and previously completed ancestor document URLs are not fetched
 again if a retried source repeats them. Cursors are committed only after their
 queue batch commits, so a crash can safely replay a batch through queue deduplication.
-As with offset-based sitemap traversal generally, changing or reordering the source
-file between retries can change which positions its saved cursor refers to; use a
-fresh full run when a complete new inventory of a changing sitemap is required.
+Each incomplete source cursor retains a private body fingerprint. If its body changes
+or an older cursor has no fingerprint, that source replays from the start through
+queue/ancestor deduplication; replay spends the current run's remaining location
+budget and stays partial when exhausted. Completed sources are not re-polled; use
+a fresh full run when a complete new inventory is required.

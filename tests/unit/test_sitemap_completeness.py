@@ -379,3 +379,62 @@ async def test_linked_retry_shared_source_and_cycle_skip_completed_grandparent_d
     assert accepted == [new]
     assert runner.doc['sitemap_discovery']['complete'] is True
     assert set(runner.rt['sitemap_traversal']['sources']) == {A, B, c, d}
+
+
+@pytest.mark.parametrize('changed', [
+    ['https://supplier.example/new', 'https://supplier.example/a', 'https://supplier.example/b'],
+    ['https://supplier.example/b', 'https://supplier.example/a'],
+])
+async def test_changed_incomplete_source_replays_new_front_and_reordered_entries(changed):
+    state = {}
+    iterator = discovery.iter_sitemaps([ROOT], fetcher({ROOT: urlset('https://supplier.example/a', 'https://supplier.example/b')}), state=state)
+    assert (await anext(iterator))[0] == 'https://supplier.example/a'
+    await iterator.aclose()
+    old_fingerprint = state['sources'][ROOT].get('body_sha256')
+    urls, state = await collect({ROOT: urlset(*changed)}, state)
+    assert urls == changed
+    assert state['entries_seen'] == 1 + len(changed)
+    assert state['sources'][ROOT]['body_sha256'] != old_fingerprint
+    assert discovery.sitemap_report(state)['complete'] is True
+
+
+async def test_legacy_incomplete_cursor_without_fingerprint_replays_instead_of_skipping():
+    state = {'sources': {ROOT: {'status': 'pending', 'page_offset': 2, 'nested_offset': 0}}, 'root_offset': 1, 'entries_seen': 2}
+    urls, state = await collect({ROOT: urlset('https://supplier.example/new', 'https://supplier.example/a')}, state)
+    assert urls == ['https://supplier.example/new', 'https://supplier.example/a']
+    assert state['entries_seen'] == 4
+    assert len(state['sources'][ROOT]['body_sha256']) == 64
+
+
+async def test_changed_source_replay_spends_existing_budget_and_remains_partial():
+    a, b, new = 'https://supplier.example/a', 'https://supplier.example/b', 'https://supplier.example/new'
+    state = {}
+    iterator = discovery.iter_sitemaps([ROOT], fetcher({ROOT: urlset(a, b)}), state=state, max_entries=3)
+    await anext(iterator)
+    await anext(iterator)
+    await iterator.aclose()
+    urls, state = await collect({ROOT: urlset(new, a, b)}, state, max_entries=3)
+    assert urls == [new]
+    assert state['entries_seen'] == 3
+    assert discovery.sitemap_report(state)['complete'] is False
+    assert discovery.sitemap_report(state)['cap_reason'] == 'entry_limit'
+    retry = discovery.sitemap_retry_state(state)
+    urls, retry = await collect({ROOT: urlset(new, a, b)}, retry, max_entries=3)
+    assert urls == [a, b]
+    assert discovery.sitemap_report(retry)['complete'] is True
+
+
+async def test_changed_pending_index_replays_new_front_child():
+    new_child = 'https://supplier.example/new.xml'
+    _, original = await collect({ROOT: index(A, B), A: urlset()}, max_files=2)
+    retry = discovery.sitemap_retry_state(original)
+    urls, retry = await collect({ROOT: index(new_child, A, B), new_child: urlset('https://supplier.example/new'), A: urlset(), B: urlset()}, retry, max_files=4)
+    assert urls == ['https://supplier.example/new']
+    assert discovery.sitemap_report(retry)['complete'] is True
+
+
+async def test_completed_sources_are_not_repolled_for_body_changes():
+    _, state = await collect({ROOT: urlset('https://supplier.example/a')})
+    urls, state = await collect({ROOT: RuntimeError('completed source must not be fetched again')}, state)
+    assert urls == []
+    assert discovery.sitemap_report(state)['complete'] is True
