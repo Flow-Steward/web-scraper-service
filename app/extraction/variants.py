@@ -537,7 +537,7 @@ def resolve_in_page(page, block: dict | None) -> tuple[list[dict], dict | None]:
 
 
 # ---------------------------------------------------------------- records
-def _variant_value(variant: dict, spec: dict, page=None) -> Any:
+def _variant_value(variant: dict, spec: dict, page=None, *, multiple: bool = False) -> Any:
     if spec.get("selector_template"):
         from app.extraction.mapping import css_values
 
@@ -563,9 +563,11 @@ def _variant_value(variant: dict, spec: dict, page=None) -> Any:
         if missing or len(selector) > 2000:
             return None
         values = css_values(
-            page, selector, spec.get("extract", "text"), spec.get("attribute"), False
+            page, selector, spec.get("extract", "text"), spec.get("attribute"), multiple
         )
-        return values[0] if values else None
+        if not values:
+            return None
+        return values if multiple else values[0]
     if spec.get("option"):
         want = spec["option"].lower()
         for k, v in (variant.get("options") or {}).items():
@@ -624,7 +626,7 @@ def apply_variant(
     out = dict(data)
     filled: dict[str, bool] = {}
     for spec in variant_field_specs(mapping):
-        value = _variant_value(variant, spec, page)
+        value = _variant_value(variant, spec, page, multiple=spec["name"] in multiple)
         ftype = spec.get("type") or types.get(spec["name"], "text")
         if isinstance(value, list) and spec["name"] in multiple:
             items = [coerce_item(item, spec, ftype) for item in value]
