@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 from app.core.netguard import url_is_private
 from app.core.urls import absolute, canonical_url, site_key
+from app.core.url_patterns import UrlPattern, compile_patterns, matches_any, url_batch, url_pattern_budget
 from app.fetching.oneoff import Fetched, PrivateAddress, gunzip_capped, http_get
 
 SITEMAP_CAP = 100_000
@@ -188,40 +189,36 @@ async def collect_sitemap_urls(sitemaps: list[str], cap: int = SITEMAP_CAP, fetc
     return urls, capped, latest
 
 
+@url_batch
 def filter_urls(urls: list[str], include: list[str], exclude: list[str]) -> list[str]:
-    inc = [re.compile(p) for p in include]
-    exc = [re.compile(p) for p in exclude]
+    inc = compile_patterns(include, "url_include")
+    exc = compile_patterns(exclude, "url_exclude")
     out = []
     for url in urls:
         try:
             canonical = canonical_url(url)
         except ValueError:
             continue
-        if inc and not any(p.search(canonical) for p in inc):
-            continue
-        if any(p.search(canonical) for p in exc):
-            continue
+        with url_pattern_budget():
+            if inc and not matches_any(inc, canonical):
+                continue
+            if matches_any(exc, canonical):
+                continue
         out.append(canonical)
     return out
 
 
-def target_patterns(mappings: list[dict], include: list[str]) -> list[re.Pattern]:
+def target_patterns(mappings: list[dict], include: list[str]) -> list[UrlPattern]:
     pats = []
     for m in mappings:
-        for p in (m.get("match") or {}).get("url_patterns") or []:
-            try:
-                pats.append(re.compile(p))
-            except re.error:
-                continue
-    for p in include:
-        try:
-            pats.append(re.compile(p))
-        except re.error:
-            continue
+        field = f"mappings.{m.get('template_id', 'unknown')}.match.url_patterns"
+        pats.extend(compile_patterns((m.get("match") or {}).get("url_patterns") or [], field))
+    pats.extend(compile_patterns(include, "url_include"))
     return pats
 
 
-def target_share(start_links: list[str], sitemap_set: set[str], patterns: list[re.Pattern], site: str) -> float | None:
+@url_batch
+def target_share(start_links: list[str], sitemap_set: set[str], patterns: list[UrlPattern], site: str) -> float | None:
     if not patterns:
         return None
     targets = set()
@@ -232,7 +229,7 @@ def target_share(start_links: list[str], sitemap_set: set[str], patterns: list[r
                 continue
         except ValueError:
             continue
-        if any(p.search(canonical) for p in patterns):
+        if matches_any(patterns, canonical):
             targets.add(canonical)
     if not targets:
         return None

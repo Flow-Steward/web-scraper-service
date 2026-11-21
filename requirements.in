@@ -9,6 +9,7 @@ fastapi==0.162.5
 uvicorn[standard]==0.54.0
 jsonschema[format-nocolor]==4.26.0
 referencing==0.37.0
+regex==2026.11.19
 cryptography==50.0.2
 httpx[socks]==0.28.1
 python-ulid==4.1.0

@@ -297,6 +297,12 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
   target-looking links (an active mapping's `url_patterns`, `url_include`) at the front
   of the queue; `url_include` decides what is extracted, not what is followed; `url_list`
   with keys; robots.txt honoured by our own check (counts `urls_skipped.robots`).
+  Configured URL patterns retain Python regular-expression syntax, including lookaround
+  and backreferences. Matching is limited to 20 ms per pattern, 50 ms per URL-policy
+  evaluation and 2 seconds of matching work per synchronous bulk operation. Parsing
+  and network time do not consume the regex budget. A limit raises `pattern_timeout`
+  with the configuration field and pattern identifier; a running job fails explicitly
+  instead of silently omitting URLs. These limits do not cover extraction transforms.
 * **Job record and SQLite:** the follower applies page outcomes in one synchronous
   transaction per batch (no `await` inside a transaction, enforced by `Database.tx()`);
   links and refetches go through a backlog table and are enqueued after the commit.

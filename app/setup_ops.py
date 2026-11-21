@@ -20,6 +20,7 @@ from app.core.netguard import url_is_private
 from app.core.redaction import redact
 from app.core.timeutil import iso, now, now_iso, plus
 from app.core.urls import canonical_url, site_key
+from app.core.url_patterns import compile_patterns, matches_any, url_batch, url_pattern_batch
 from app.core.words import count as plural
 from app.extraction.distill import sample_doc, suggest_template_id
 from app.extraction.mapping import apply_mapping, looks_like_target, passes_target_selector, pick_template, required_set
@@ -673,13 +674,14 @@ async def samples(svc, body: dict) -> dict:
         await sf.close()
 
 
+@url_batch
 def _sample_link_groups(page, site, config, mappings):
     """Navigation scope applies to intermediate links, not extraction admission."""
     from app.core.scope import crawl_patterns, in_scope
 
     pats = target_patterns(mappings, config.get("url_include") or [])
     groups, _ = link_groups(
-        page, site, [re.compile(p) for p in config.get("url_exclude") or []], pats
+        page, site, compile_patterns(config.get("url_exclude") or [], "url_exclude"), pats
     )
     scope = crawl_patterns(config)
     if scope:
@@ -689,7 +691,7 @@ def _sample_link_groups(page, site, config, mappings):
                 urls=[
                     u
                     for u in g["urls"]
-                    if in_scope(scope, u) or any(p.search(u) for p in pats)
+                    if matches_any([*scope, *pats], u)
                 ],
             )
             for g in groups
@@ -827,7 +829,7 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
             not explicit
             and not listed
             and config.get("url_include")
-            and not any(re.search(p, canonical) for p in config["url_include"])
+            and not matches_any(compile_patterns(config["url_include"], "url_include"), canonical)
         ):
             ex.page(
                 shown,
@@ -989,7 +991,7 @@ async def _guessed_samples(svc, config: dict, sf: SetupFetch, count: int, taken:
         fetched[url] = (page, info, err)
         return page
 
-    exclude = [re.compile(p) for p in config.get("url_exclude") or []]
+    exclude = compile_patterns(config.get("url_exclude") or [], "url_exclude")
     guess = await guess_targets(config["site_url"], fetch, exclude)
     if guess is None:
         if ex is not None:
@@ -1038,7 +1040,7 @@ async def _guessed_samples(svc, config: dict, sf: SetupFetch, count: int, taken:
 
 def _url_looks_target(canonical: str, config: dict, mappings: list[dict]) -> bool:
     pats = target_patterns(mappings, config.get("url_include") or [])
-    return any(p.search(canonical) for p in pats)
+    return matches_any(pats, canonical)
 
 
 async def _discover_candidates(config: dict, mappings: list[dict], count: int, fetch=None, ex: Explain | None = None) -> ProbePlan:
@@ -1055,7 +1057,7 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
     site_url = config["site_url"]
     mode = config.get("discovery_mode") or "auto"
     include, exclude = config.get("url_include") or [], config.get("url_exclude") or []
-    inc = [re.compile(p) for p in include]
+    inc = compile_patterns(include, "url_include")
     pats = target_patterns(mappings, include)
     deep = urlsplit(site_url).path.strip("/") != ""
     ex.discovery["start_is_deep"] = deep
@@ -1069,40 +1071,42 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         if sitemaps:
             urls, capped, _ = await collect_sitemap_urls(sitemaps, cap=5000, fetch=fetch)
             ex.discovery.update(sitemap_urls=len(urls), sitemap_capped=capped)
-            matching = filter_urls(urls, include, exclude)
-            ex.discovery["sitemap_matching"] = len(matching)
-            preferred = [u for u in matching if any(p.search(u) for p in pats)] if pats else []
-            sitemap_groups = url_groups(matching, include=inc)
+            with url_pattern_batch():
+                matching = filter_urls(urls, include, exclude)
+                ex.discovery["sitemap_matching"] = len(matching)
+                preferred = [u for u in matching if matches_any(pats, u)] if pats else []
+                sitemap_groups = url_groups(matching, include=inc)
     groups: list[dict] = []
     if mode == "crawl" or not (sitemap_groups or preferred) or (deep and mode == "auto" and not pats):
         groups = await _start_link_groups(site_url, fetch, exclude, ex, config)
         # Include patterns select extracted pages, not intermediate navigation.
         from app.core.scope import crawl_patterns, in_scope
 
-        scope = crawl_patterns(config)
-        if scope and pats:  # inside the walk scope, or a target by URL
-            groups = [dict(g, urls=[u for u in g["urls"] if in_scope(scope, u) or any(p.search(u) for p in pats)]) for g in groups]
-            groups = [g for g in groups if g["urls"]]
-        if pats:  # a known target pattern (url_include, an active mapping): matching shapes first
-            groups.sort(key=lambda g: 0 if any(p.search(u) for u in g["urls"] for p in pats) else 1)
-        ex.discovery["links"] = sum(len(g["urls"]) for g in groups)
-        # A loaded start page can itself be the requested record. Intermediate
-        # links must not displace it merely because they now remain traversable.
-        if _url_looks_target(canonical_url(site_url), config, mappings) and filter_urls(
-            [canonical_url(site_url)], [], config.get("url_exclude") or []
-        ):
-            from app.extraction.sampling import url_shape
+        with url_pattern_batch():
+            scope = crawl_patterns(config)
+            if scope and pats:  # inside the walk scope, or a target by URL
+                groups = [dict(g, urls=[u for u in g["urls"] if matches_any([*scope, *pats], u)]) for g in groups]
+                groups = [g for g in groups if g["urls"]]
+            if pats:  # a known target pattern (url_include, an active mapping): matching shapes first
+                groups.sort(key=lambda g: 0 if any(matches_any(pats, u) for u in g["urls"]) else 1)
+            ex.discovery["links"] = sum(len(g["urls"]) for g in groups)
+            # A loaded start page can itself be the requested record. Intermediate
+            # links must not displace it merely because they now remain traversable.
+            if _url_looks_target(canonical_url(site_url), config, mappings) and filter_urls(
+                [canonical_url(site_url)], [], config.get("url_exclude") or []
+            ):
+                from app.extraction.sampling import url_shape
 
-            shape = url_shape(site_url)
-            own = next((g for g in groups if g["shape"] == shape), None)
-            if own is None:
-                own = {"shape": shape, "urls": [], "links": 0, "in_menus": 0.0}
-            else:
-                groups.remove(own)
-            if site_url not in own["urls"]:
-                own["urls"].insert(0, site_url)
-                own["links"] += 1
-            groups.insert(0, own)
+                shape = url_shape(site_url)
+                own = next((g for g in groups if g["shape"] == shape), None)
+                if own is None:
+                    own = {"shape": shape, "urls": [], "links": 0, "in_menus": 0.0}
+                else:
+                    groups.remove(own)
+                if site_url not in own["urls"]:
+                    own["urls"].insert(0, site_url)
+                    own["links"] += 1
+                groups.insert(0, own)
     if groups and (sitemap_groups or preferred):
         ex.discovery["source"] = "start_page+sitemap"
         plan = ProbePlan(groups, limit=links_limit + limit, tail=preferred[:limit] or spread_by_shape(
@@ -1139,7 +1143,7 @@ async def _start_link_groups(site_url: str, fetch, exclude: list[str], ex: Expla
         extra_links=fetched.extra_links, extra_anchors=fetched.extra_anchors,
         deferred_links=(fetched.navigation or {}).get("deferred_links", []),
     )
-    groups, stats = link_groups(page, site_key(site_url), [re.compile(p) for p in exclude], [re.compile(p) for p in config.get("url_include") or []])
+    groups, stats = link_groups(page, site_key(site_url), compile_patterns(exclude, "url_exclude"), compile_patterns(config.get("url_include") or [], "url_include"))
     selector = config.get("target_page_selector")
     ex.page(redact(site_url), loaded, "start", None, status=fetched.status, links=stats["in_site"],
             selector_found=page.has_selector(selector) if selector else None)

@@ -21,6 +21,8 @@ import time
 from collections import OrderedDict
 from typing import Any
 
+from app.core.url_patterns import UrlPattern, matches_any, url_batch, url_pattern_budget
+
 VARIANT_RE = re.compile(
     r"[?&](page|p|pg|paged|sort|sorting|order|orderby|dir|filter|filters|limit|per_page|perpage|view|mode|price|color|colour|size|brand)"
     r"(\[[^\]]*\])?=|/page/\d+/?$|/(filter|filters|sort)/", re.I)
@@ -115,6 +117,7 @@ def anchor_flags(page) -> list[tuple[str, bool, bool]]:
     return out
 
 
+@url_batch
 def link_groups(page, site: str, exclude: list | None = None, include: list | None = None) -> tuple[list[dict], dict]:
     """The page's same-site links grouped by URL shape, for probing one link per shape first.
     Each group: ``shape``, ``urls`` (links inside product cards / around an image first, menu
@@ -164,11 +167,12 @@ def link_groups(page, site: str, exclude: list | None = None, include: list | No
             c = canonical_url(resolved.split("#", 1)[0])
         except ValueError:
             continue
-        if c == start or any(p.search(c) for p in exclude or []):
-            continue
-        if is_variant(c) and c not in deferred and not any(p.search(c) for p in include or []):
-            stats["variants_skipped"] += 1
-            continue
+        with url_pattern_budget():
+            if c == start or matches_any(exclude or [], c):
+                continue
+            if is_variant(c) and c not in deferred and not matches_any(include or [], c):
+                stats["variants_skipped"] += 1
+                continue
         cur = info.get(c)
         if cur is None:
             info[c] = {"chrome": chrome, "card": card}
@@ -191,12 +195,13 @@ def link_groups(page, site: str, exclude: list | None = None, include: list | No
     return out, stats
 
 
+@url_batch
 def url_groups(urls: list[str], include: list | None = None) -> list[dict]:
     """Sitemap URLs grouped by URL shape, largest group first (no page context to judge
     menus by); query variants left out."""
     groups: "OrderedDict[str, list[str]]" = OrderedDict()
     for u in urls:
-        if not is_variant(u) or any(p.search(u) for p in include or []):
+        if not is_variant(u) or matches_any(include or [], u):
             groups.setdefault(url_shape(u), []).append(u)
     return sorted(({"shape": k, "urls": v, "links": len(v), "in_menus": 0.0} for k, v in groups.items()), key=lambda g: -g["links"])
 
@@ -240,13 +245,14 @@ class ProbePlan:
         """Whether this observation contributes any new traversal candidate."""
         return any(u not in self._known for group in groups for u in group["urls"])
 
+    @url_batch
     def extend(
         self,
         groups: list[dict],
         parent: str,
         *,
         max_depth: int = 4,
-        preferred: list[re.Pattern] | None = None,
+        preferred: list[UrlPattern] | None = None,
     ) -> None:
         """Add another level, placing known targets ahead of pending intermediates."""
         depth = self.depths.get(parent, 1) + 1
@@ -275,7 +281,7 @@ class ProbePlan:
                     return
                 self._known.add(url)
                 self.depths[url] = depth
-                if preferred and any(pattern.search(url) for pattern in preferred):
+                if preferred and matches_any(preferred, url):
                     g["queue"].insert(preferred_count, url)
                     preferred_count += 1
                 else:

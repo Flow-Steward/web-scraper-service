@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
+from app.core.url_patterns import UrlPattern, compile_patterns, matches_any
+
 
 def section_pattern(site_url: str | None) -> str | None:
     """``^https?://(www.)?host[:port]/path(/|?|#|$)`` for the start URL's section; None for a site root."""
@@ -29,19 +31,14 @@ def section_pattern(site_url: str | None) -> str | None:
     return rf"^https?://(www\.)?{re.escape(host)}{re.escape(port)}{re.escape(path)}(?:[/?#]|$)"
 
 
-def crawl_patterns(config: dict) -> list[re.Pattern]:
-    pats = []
-    for raw in config.get("crawl_include") or []:
-        try:
-            pats.append(re.compile(raw))
-        except re.error:
-            continue
+def crawl_patterns(config: dict) -> list[UrlPattern]:
+    pats = compile_patterns(config.get("crawl_include") or [], "crawl_include")
     if config.get("stay_in_section"):
         sec = section_pattern(config.get("site_url"))
         if sec:
-            pats.append(re.compile(sec))
+            pats.extend(compile_patterns([sec], "stay_in_section"))
     return pats
 
 
-def in_scope(patterns: list[re.Pattern], canonical: str) -> bool:
-    return not patterns or any(p.search(canonical) for p in patterns)
+def in_scope(patterns: list[UrlPattern], canonical: str) -> bool:
+    return not patterns or matches_any(patterns, canonical)
