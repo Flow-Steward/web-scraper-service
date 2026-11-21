@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -39,10 +40,65 @@ from app.jobs.discovery import (  # noqa: E402
     filter_urls,
     find_sitemaps,
     http_fetcher,
+    iter_sitemaps,
     robots_from,
+    sitemap_report,
     target_patterns,
     target_share,
 )
+
+
+# Analysis is a preview, not the job's full sitemap inventory. These limits include
+# sitemap discovery and nested fetches; counts from a limited preview are lower bounds.
+SITEMAP_METADATA_URL_CAP = 1_000
+SITEMAP_METADATA_FILE_CAP = 20
+SITEMAP_METADATA_SECONDS = 10.0
+
+
+class _SitemapMetadataLimit(Exception):
+    pass
+
+
+async def _sitemap_metadata(site_url, config, robots, fetch):
+    from contextlib import aclosing
+
+    sitemaps, urls, latest = [], [], None
+    limited = False
+    traversal = {}
+    cache = {}
+
+    async def bounded_fetch(url):
+        if url not in cache:
+            if len(cache) >= SITEMAP_METADATA_FILE_CAP:
+                raise _SitemapMetadataLimit
+            cache[url] = await fetch(url)
+        return cache[url]
+
+    try:
+        async with asyncio.timeout(SITEMAP_METADATA_SECONDS):
+            sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, bounded_fetch)
+            async with aclosing(iter_sitemaps(
+                sitemaps, bounded_fetch, max_files=SITEMAP_METADATA_FILE_CAP,
+                max_entries=SITEMAP_METADATA_URL_CAP, state=traversal,
+            )) as entries:
+                async for loc, lastmod in entries:
+                    urls.append(loc)
+                    if lastmod is not None and (latest is None or lastmod > latest):
+                        latest = lastmod
+    except (TimeoutError, _SitemapMetadataLimit):
+        limited = True
+    if sitemaps:
+        coverage = sitemap_report(traversal)
+        limited = limited or not coverage["complete"] or bool(coverage["refused_sources"])
+    elif any(
+        probe is None or probe.status not in (404, 410) or probe.error
+        for probe in cache.values()
+    ):
+        # find_sitemaps returns no roots for both absence and an unreadable default
+        # probe. Only ordinary 404/410 establishes absence; all other unsuccessful
+        # probe outcomes leave inventory unknown, including unusable 200 replies.
+        limited = True
+    return sitemaps, urls, limited, latest
 
 
 def _first_tier_proxy(config: dict, profile: dict) -> tuple[str | None, int | None]:
@@ -86,6 +142,9 @@ class SetupFetch:
 
         self.svc = svc
         self.config = config
+        self._destination_site_url = config.get("site_url") or next(
+            (entry["url"] for entry in config.get("urls") or [] if entry.get("url")), None
+        )
         # the job's page timeout for every fetch of the call (HTTP and browser navigation)
         self.page_timeout = int(config.get("page_timeout_seconds") or 45)
         self.proxy, self.tier = _first_tier_proxy(config, profile)
@@ -139,10 +198,65 @@ class SetupFetch:
             max(floor, config.get("delay_max_seconds", 0)),
         )
 
+    async def _aux_destination_allowed(self, url: str, *, site_url: str | None = None) -> bool:
+        """Auxiliary files keep their scope/file exemptions, with safe redirects."""
+        from app.core.linkrules import enabled_rules
+        from app.fetching.destinations import document_destination_allowed
+
+        return await document_destination_allowed(
+            url,
+            site_url=site_url or self._destination_site_url or url,
+            rules=enabled_rules(self.config) & {"sensitive_path", "action_params"},
+            cancelled=lambda: bool(asyncio.current_task().cancelling()),
+        )
+
+    async def _destination_allowed(self, url: str, *, site_url: str | None = None, admitted_url: str | None = None) -> bool:
+        """The same document destination rules for listing actions and redirects."""
+        from app.core.linkrules import enabled_rules
+        from app.core.scope import crawl_patterns
+        from app.core.url_patterns import url_pattern_budget
+        from app.core.urls import host_of
+        from app.fetching.destinations import document_destination_allowed
+        from app.jobs.discovery import _origin
+
+        async def robots_allowed(destination):
+            if not self.config.get("respect_robots", True):
+                return True
+            origin = _origin(destination)
+            if origin not in self._navigation_robots:
+                self._navigation_robots[origin] = await _robots(destination, self.http)
+            robots = self._navigation_robots[origin]
+            if robots is None:
+                return True
+            self._navigation_throttle.set_crawl_delay(host_of(destination), robots.get_crawl_delay())
+            return robots.is_allowed(destination)
+
+        with url_pattern_budget():
+            if matches_any(compile_patterns(self.config.get("url_exclude") or [], "url_exclude"), _url_key(url)):
+                return False
+            store = getattr(self.svc, "mappings", None)
+            mappings = [entry["mapping"] for entry in store.active_mappings(site_key(site_url or self._destination_site_url or url))] if store else []
+            targets = target_patterns(mappings, self.config.get("url_include") or [])
+            scope = crawl_patterns(self.config)
+            if scope and self.config.get("discovery_mode") != "url_list" and (admitted_url is None or _url_key(url) != _url_key(admitted_url)):
+                scope = [*scope, *targets]
+            else:
+                scope = []
+            rules = enabled_rules(self.config)
+            if matches_any(targets, _url_key(url)):
+                rules = rules - {"facet_params"}  # target variants may use color/size as identity
+            return await document_destination_allowed(
+                url,
+                site_url=site_url or self._destination_site_url or url,
+                rules=rules,
+                scope=scope,
+                robots_allowed=robots_allowed,
+                cancelled=lambda: bool(asyncio.current_task().cancelling()),
+            )
+
     async def discover_links(self, url: str, page: Page | None = None):
         """Observe listing states while retaining the originally fetched document."""
         from app.fetching.navigation import NavigationLimits
-        from app.jobs.discovery import _origin
         from app.core.urls import host_of
 
         key = _url_key(url)
@@ -164,34 +278,13 @@ class SetupFetch:
                     100, int(self.config.get("max_pages") or 12)
                 ):
                     return False
-                from app.core.linkrules import enabled_rules, url_skip
-                from app.core.scope import crawl_patterns, in_scope
+                from app.core.linkrules import enabled_rules
 
                 if (
                     getattr(action, "nofollow", False)
                     and "nofollow" in enabled_rules(self.config)
-                ) or url_skip(action.url, enabled_rules(self.config)):
+                ) or not await self._destination_allowed(action.url, site_url=url, admitted_url=url):
                     return False
-                scope = crawl_patterns(self.config)
-                if (
-                    scope
-                    and not in_scope(scope, action.url)
-                    and _url_key(action.url) != key
-                ):
-                    return False
-                if self.config.get("respect_robots", True):
-                    origin = _origin(action.url)
-                    if origin not in self._navigation_robots:
-                        self._navigation_robots[origin] = await _robots(
-                            action.url, self.http
-                        )
-                    robots = self._navigation_robots[origin]
-                    if robots is not None:
-                        throttle.set_crawl_delay(
-                            host_of(action.url), robots.get_crawl_delay()
-                        )
-                        if not robots.is_allowed(action.url):
-                            return False
                 if not document:
                     await throttle.wait(host_of(action.url))
                     self._navigation_actions += 1
@@ -230,14 +323,15 @@ class SetupFetch:
         Cloudflare host), else one plain HTTP request through the profile's first tier."""
         if await url_is_private(url):
             return None
+        self._destination_site_url = self._destination_site_url or url
         try:
             if self.needs_browser(url) and self._session is not None:
-                resp = await self._session.context.request.get(url, timeout=30000, headers={"Accept": "application/json"})
-                return json.loads(await resp.text()) if resp.status < 400 else None
+                fetched = await self._session.raw(url, destination_policy=lambda destination: self._aux_destination_allowed(destination, site_url=url), headers={"Accept": "application/json"})
+                return json.loads(fetched.text) if fetched is not None and fetched.status and fetched.status < 400 and not fetched.error else None
             if self.needs_browser(url):
                 return None
             fetched = await http_get(url, proxy=self.proxy, headers={**(self.headers or {}), "Accept": "application/json"},
-                                     timeout=float(self.page_timeout))
+                                     timeout=float(self.page_timeout), destination_policy=lambda destination: self._aux_destination_allowed(destination, site_url=url))
             return json.loads(fetched.text) if fetched.status and fetched.status < 400 else None
         except (ValueError, PrivateAddress):
             return None
@@ -328,12 +422,20 @@ class SetupFetch:
 
     async def http(self, url: str) -> Fetched:
         """One HTTP load per URL and request (never load a URL twice in one call)."""
+        self._destination_site_url = self._destination_site_url or url
         key = _url_key(url)
         hit = self._http.get(key)
         if hit is None:
             from app.core.urls import host_of
             await self._navigation_throttle.wait(host_of(url))
-            hit = await http_get(url, proxy=self.proxy, headers=self.headers, timeout=float(self.page_timeout))
+            hit = await http_get(
+                url, proxy=self.proxy, headers=self.headers, timeout=float(self.page_timeout),
+                destination_policy=(
+                    (lambda destination: self._destination_allowed(destination, site_url=url))
+                    if _is_document(url)
+                    else (lambda destination: self._aux_destination_allowed(destination, site_url=url))
+                ),
+            )
             self._http[key] = hit
         return hit
 
@@ -343,6 +445,7 @@ class SetupFetch:
     async def browser_get(self, url: str, *, wait_ms: int = 0, settle: bool = False):
         """One browser load per URL and request, in the request's single tab: the start page
         loaded (and cleared) for discovery is the same page a sample takes, never loaded again."""
+        self._destination_site_url = self._destination_site_url or url
         key = _url_key(url)
         hit = self._browser.get(key)
         if hit is not None:
@@ -353,7 +456,10 @@ class SetupFetch:
         from app.core.urls import host_of
         await self._navigation_throttle.wait(host_of(url))
         try:
-            got = await session.get(url, wait_ms=wait_ms, settle=settle)
+            got = await session.get(
+                url, wait_ms=wait_ms, settle=settle,
+                destination_policy=lambda destination: self._destination_allowed(destination, site_url=url),
+            )
         except (PrivateAddress, HostStopped):
             raise
         except Exception as exc:
@@ -449,7 +555,7 @@ class SetupFetch:
                         ),
                     )
                 session = await self.session()
-                result = await session.raw(url) if session else fetched
+                result = await session.raw(url, destination_policy=lambda destination: self._aux_destination_allowed(destination, site_url=url)) if session else fetched
                 if session is not None and session.is_closed:
                     await self._abort_browser(RuntimeError("browser closed during auxiliary fetch"))
                 return result
@@ -563,15 +669,21 @@ async def _analyze(svc, config: dict, site_url: str, sf: SetupFetch) -> dict:
             warnings.append(field_error("browser", "invalid_value", f"the browser fetch failed ({type(exc).__name__})"))
     http_chars = Page(html, final_url, status).visible_text_chars if html else 0
     js_required = browser_chars is not None and browser_chars > max(500, http_chars * 2)
-    sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, fetch)
-    urls, capped, latest = await collect_sitemap_urls(sitemaps, fetch=fetch) if sitemaps else ([], False, None)
+    requested_mode = config.get("discovery_mode", "auto")
+    skipped = requested_mode in ("crawl", "url_list")
+    sitemaps, urls, capped, latest = ([], [], False, None) if skipped else await _sitemap_metadata(site_url, config, robots, fetch)
     matching = filter_urls(urls, config.get("url_include") or [], config.get("url_exclude") or [])
     site = site_key(site_url)
     share = None
-    if matching:
+    if matching and not capped:
         links = page.links()
         share = target_share(links, set(matching), target_patterns(svc.mappings.active_mappings(site) and [m["mapping"] for m in svc.mappings.active_mappings(site)], config.get("url_include") or []), site)
-    mode, reasons = decide(bool(urls), len(matching), share)
+    if skipped:
+        mode, reasons = requested_mode, [f"explicit {requested_mode} discovery; sitemap inspection skipped"]
+    elif capped:
+        mode, reasons = ("sitemap_and_crawl" if matching else "crawl"), ["sitemap preview limited; full coverage is unknown"]
+    else:
+        mode, reasons = decide(bool(urls), len(matching), share)
     types = page.jsonld_types()
     wanted = config.get("structured_data_types") or ["Product", "Offer", "AggregateOffer"]
     needs_proxy = kind in ("hard_block", "rate_limited")
@@ -595,11 +707,12 @@ async def _analyze(svc, config: dict, site_url: str, sf: SetupFetch) -> dict:
         "http_status": status,
         "robots": robots_part,
         "sitemap": {
-            "found": bool(urls),
+            "found": None if skipped or (capped and not urls) else bool(urls),
             "url": sitemaps[0] if sitemaps and re.match(r"^https?://\S+$", sitemaps[0]) else None,
-            "url_count": len(urls),
+            "url_count": None if skipped or (capped and not urls) else len(urls),
             "url_count_capped": capped,
-            "matching_url_count": len(matching),
+            "matching_url_count": None if skipped or (capped and not urls) else len(matching),
+            "inspection": "skipped" if skipped else "limited" if capped else "complete",
             "target_share": share,
             "latest_lastmod": iso(latest) if latest else None,
         },

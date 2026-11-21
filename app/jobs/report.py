@@ -66,12 +66,26 @@ def completeness(db, run_id: str, doc: dict) -> dict:
     sentence = (f"found {found} target page{'s' if found != 1 else ''}, collected {pages}"
                 + (f" ({records} records)" if records != pages else "")
                 + (f", {not_collected} not collected: {reasons}" if not_collected else ", none missing"))
+    source_report = doc.get("sitemap_discovery")
+    probe_report = doc.get("sitemap_probe")
+    incomplete = next((r for r in (source_report, probe_report) if r and not r["complete"]), None)
+    if incomplete:
+        sentence = sentence.replace(", none missing", "")
+        sentence += "; sitemap discovery is incomplete; additional target pages may be missing"
+        if incomplete.get("capped"):
+            sentence += " (" + (incomplete.get("cap_reason") or "limit").replace("_", " ") + ")"
     dups = int(((doc.get("counters") or {}).get("pages_by_class") or {}).get("duplicate", 0))
     if dups:
         sentence += f"; {dups} duplicate address{'es' if dups != 1 else ''} of pages already collected skipped"
     out: dict[str, Any] = {"target_pages_found": found, "pages_collected": pages, "records": records, "not_collected": not_collected,
                            "not_collected_by_reason": by_reason, "sentence": sentence}
+    if source_report:
+        out["sitemap_discovery"] = source_report
+    if probe_report:
+        out["sitemap_probe"] = probe_report
     if not finished:
+        if incomplete:
+            estimate = True
         out["progress"] = {"collected": pages, "expected": expected, "estimate": estimate,
                            "text": f"{pages} of {expected}" + (" (estimate)" if estimate else "")}
     return out
@@ -117,6 +131,8 @@ def explanation(doc: dict, current: dict, problems: list[dict]) -> dict:
     head = STOP_WORDS.get(stop, stop.replace("_", " "))
     sentence = head[0].upper() + head[1:] + "; " + current["sentence"] + "."
     advice = ADVICE.get(stop)
+    if not advice and any(current.get(k) and not current[k]["complete"] for k in ("sitemap_discovery", "sitemap_probe")):
+        advice = "Check the failed or pending sitemap sources, then use recollect to retry them and failed pages in a linked run. Completed source entries are retained; each linked run receives a fresh discovery budget."
     if not advice and current["not_collected"]:
         top = max(current["not_collected_by_reason"].items(), key=lambda kv: kv[1])[0]
         advice = {

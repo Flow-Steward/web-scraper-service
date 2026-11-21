@@ -395,7 +395,7 @@ the escalation for that host for the rest of the job.
 |---|---|
 | `queued` | Accepted; waiting for a slot (`limits.max_concurrent_jobs`) |
 | `running` | Discovering, fetching, extracting, waiting for mapping requests, re-extracting, writing the result |
-| `waiting_for_credentials` | After a restart the job's proxy or solver secrets cannot be decrypted (key missing or changed). Nothing is fetched. A job that uses no proxy credentials and no solver never enters this state |
+| `waiting_for_credentials` | The job's proxy/solver secrets cannot be decrypted, or an upstream proxy explicitly refused authentication (HTTP/CONNECT 407 or a browser proxy-authentication error). Nothing further is fetched until Resume. Proxy IP allow-list refusal can enter this state without stored credentials |
 | `stopping` | An operator stop was received; pages in progress are finished, then the result is written |
 | `completed` | Final. The result file is written and `run_completed` was emitted |
 | `failed` | Final. Unrecoverable error; no result; `run_failed` was emitted; `error` says why |
@@ -408,10 +408,10 @@ Allowed transitions (anything else never happens):
 | `queued` | `running` | A slot is free (FIFO by `created_at`) |
 | `queued` | `completed` | `stop`: an empty result is written, `stop_reason: stopped` |
 | `running` | `stopping` | `stop` |
-| `running` | `waiting_for_credentials` | Service start finds the job's proxy/solver secrets undecryptable; a `problem` event `waiting_for_credentials` is created |
+| `running` | `waiting_for_credentials` | Secrets cannot be decrypted (`problem_code: waiting_for_credentials`), or the upstream proxy explicitly rejects authentication (`problem_code: proxy_auth_failed`) |
 | `running` | `completed` | The completion condition (4.3) holds |
 | `running` | `failed` | `crash_loop` (the service restarted 3 times within 10 minutes while the job was running), `storage_error`, `start_url_unreachable` (`site_url` failed every retry and no other discovery source exists), `robots_disallowed` (`site_url` disallowed and `respect_robots`), `internal_error` |
-| `waiting_for_credentials` | `running` | `resume` with secrets that decrypt-and-cover the job |
+| `waiting_for_credentials` | `running` | `resume` with secrets that decrypt-and-cover the job, after credentials or the provider IP allow-list are approved |
 | `waiting_for_credentials` | `stopping` | `stop` |
 | `stopping` | `completed` | The completion condition holds (`stop_reason: stopped`) |
 | `stopping` | `failed` | Unrecoverable error as above |
@@ -748,28 +748,48 @@ products") or found but not collected ("the scraper missed them").
 ### 4.10 Re-collect the missed pages (added 2026-11-14)
 
 `POST /v1/runs/{run_id}/recollect` with `{profile, platform, reasons?}` and an
-`Idempotency-Key` starts a **new run** over only the parent's unextracted URLs:
+`Idempotency-Key` starts a **new run** over the parent's unextracted URLs and unfinished sitemap sources:
 
 - the parent must be `completed` or `failed` (else `409 run_not_finished`);
 - URLs: the parent's unextracted entries whose `reason` is in `reasons`
   (default `fetch_failed`, `blocked`, `incomplete`, `no_template`,
   `template_failed`, `stopped`; `not_found` and the refusals only when asked),
   each once, as requested (`requested_url` when it differs), with its
-  `source_key` kept as the entry's `key`; none → `409 nothing_to_recollect`;
+  `source_key` kept as the entry's `key`; none and no unfinished sitemap source → `409 nothing_to_recollect`;
 - config: the parent's `config` with `discovery_mode: url_list`, those `urls`,
   `rebuild_mapping: false`, `sitemap_url: null`; everything else (limits,
   fetch mode, browser, protection flags) as the parent's. It is validated
   again like `POST /v1/runs` (e.g. more URLs than `max_url_list_entries` →
   `422`);
+- unfinished sources: when `sitemap_discovery.complete` is false, the linked
+  run retries failed/pending source files with retained per-source page and child
+  offsets. It uses sitemap mode, also queues the selected failed document URLs,
+  and gets a fresh 100,000-location / 500-source-file budget. Completed source
+  entries and completed ancestor documents are skipped; a restart retains the
+  same run's spent budget. A source-only retry is valid with `url_count: 0`;
 - mappings: the site's active mappings when the new run starts (a repair
   made during the parent counts);
 - secrets: the parent's are gone, so `profile` is sent again;
 - the new run has its own result file. Its summary carries `recollect_of`
-  (`run_id`, `reasons`, `url_count`, `by_reason`); the parent's summary lists
+  (`run_id`, `reasons`, `url_count`, `by_reason`, optional `source_count`); the parent's summary lists
   its re-collect runs in `recollected_by` (`run_id`, `state`, `created_at`).
   Its `run_completed` event carries `parent_run_id`;
 - a re-collect run has no `comparison` (4.9) and is never the "previous run"
   of a later run's `comparison`.
+
+Sitemap source coverage is exposed as `sitemap_discovery` on the run and its
+completeness report. Missing, inaccessible, empty-body and invalid sources yield
+`complete: false` and `outcome: partial`, even with zero records. Valid empty XML
+sitemaps and completely filtered inventories can be complete. `capped` and
+`cap_reason` distinguish `entry_limit` from `source_file_limit`; the entry budget
+counts all locations before filtering. Failed and pending source URLs omit user
+information, queries and fragments and include fixed failure reasons. Private
+address refusals are listed separately and remain outcome-neutral. Incomplete
+source cursors retain a private body fingerprint. A changed body, or a legacy
+cursor without a fingerprint, replays that source through queue/ancestor dedup;
+replay spends the current run's remaining location budget. Completed sources are
+not re-polled: start a fresh full run when a new inventory is required. Finished
+parent results are never rewritten.
 
 The same key with the same parent and reasons → `200` with the run created
 first (section 5).
@@ -1441,7 +1461,7 @@ The webhook body (`event.schema.json`) is small: no HTML, no records.
 | `event_type` | `resource_id` | Extra fields | Emitted when |
 |---|---|---|---|
 | `mapping_required` | `mrq_…` | `template_id` (repair only), `message` | A mapping request opens |
-| `problem` | `run_…` | `problem_code`, `template_id` (if any), `message` | `template_failed`, `block_rate_high`, `challenge_limit_reached`, `store_limit_reached`, `waiting_for_credentials`. Not terminal |
+| `problem` | `run_…` | `problem_code`, `template_id` (if any), `message` | `template_failed`, `block_rate_high`, `challenge_limit_reached`, `store_limit_reached`, `waiting_for_credentials`, `proxy_auth_failed`. Not terminal |
 | `run_completed` | `run_…` | `outcome`, `stop_reason` | The job completed (4.3) |
 | `run_failed` | `run_…` | `message` | The job failed |
 
@@ -1450,6 +1470,26 @@ Always present: `event_id`, `event_type`, `run_id`, `resource_id`,
 fixed when the generation starts and are identical on every attempt. There
 is no ordering guarantee between deliveries; handlers read current state
 through the API.
+
+A `proxy_auth_failed` problem is emitted once per authentication pause. Its fixed,
+secret-free message asks to check credentials, the service IP allow-list, and provider
+account balance or traffic limits, then Resume after provider access is approved. A 403, Cloudflare challenge, target downtime, proxy timeout or ordinary
+tunnel connection error does not qualify. This pause does not escalate a proxy tier,
+try a paid fallback, open the target site's breaker, mark a document failed, or seal
+source traversal complete. Completed records, pending requests, source checkpoints,
+links and runtime budgets remain. Proxy secrets that still decrypt remain `kept`;
+only unavailable encryption secrets are `missing`. Resume waits for the old crawler
+to release its queue before starting its replacement. Running time excludes the
+pause; page attempts, navigation actions, record limits, clicks and solves retain
+their existing budget usage, including across a service restart. A replacement
+proxy/solver profile updates both its public summary and whether the next runner
+requires decrypted secrets, so approved endpoint and authentication-mode changes
+apply on Resume. A webhook-only Resume keeps the current proxy/solver profile. Chromium's native
+browser guard answers only browser-reported proxy authentication challenges, with
+the current proxy session's already formatted credentials. Origin authentication
+never receives those credentials. Proxy rejection uses explicit 407/challenge
+evidence; Chromium's generic invalid-credentials or response-failure errors alone
+do not identify a proxy failure.
 
 ### 8.2 Event states
 
@@ -2080,3 +2120,12 @@ removes result files after `retention.result_days` as before.
   service answers nothing else.
 - `database_bytes_before` / `_after` are main + WAL + SHM; `bytes_freed` is
   their difference (`null` in a dry run).
+
+Auto discovery source provenance: `sitemap_probe` has the same coverage shape as
+`sitemap_discovery` and is retained on summaries and completeness reports. Failed
+sources and caps in this initial inspection keep the run partial even when auto
+chooses a healthy crawl or a later source body changes. The inspection's source
+offsets are reset before actual feeding; they never advance queue checkpoints.
+Source-only recollection remains available after a crawl fallback. An optional
+default `/sitemap.xml` 404/410 means absent; an unavailable or invalid default
+means incomplete source coverage.

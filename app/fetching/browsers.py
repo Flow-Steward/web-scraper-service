@@ -138,7 +138,45 @@ async def launch_camoufox(playwright, *, headless: Any, variant: Variant | None 
     options: dict[str, Any] = dict(headless=headless, humanize=2.0, disable_coop=True, i_know_what_im_doing=True,
                                    canvas_noise=variant.noise_arg(), os=variant.os_name(), window=WINDOW, enable_cache=True)
     options.update(overrides)
-    return await AsyncNewBrowser(playwright, **options)
+    from app.fetching.firefox_policy import FirefoxPolicyBridge
+
+    bridge = await FirefoxPolicyBridge().start()
+    browser = None
+    try:
+        options["addons"] = [*(options.get("addons") or []), bridge.addon_path]
+        browser = await AsyncNewBrowser(playwright, **options)
+        browser._wss_firefox_policy_bridge = bridge
+        native_close = browser.close
+
+        async def close_with_policy(**kwargs):
+            # Revoke every binding before native contexts/browser begin cleanup.
+            bridge.revoke_all()
+            try:
+                await native_close(**kwargs)
+            finally:
+                await bridge.close()
+
+        browser.close = close_with_policy
+        def disconnected(*_):
+            bridge.begin_close()
+        browser.on("disconnected", disconnected)
+        # Pinned Camoufox initializes extension backgrounds only after its
+        # first window exists. A private blank page starts that window without
+        # issuing any document network request; discard it after readiness.
+        bootstrap = await browser.new_context(service_workers="block")
+        try:
+            await bootstrap.new_page()
+            await bridge.wait_ready()
+        finally:
+            await bootstrap.close()
+        return browser
+    except BaseException:
+        try:
+            if browser is not None:
+                await browser.close()
+        finally:
+            await bridge.close()
+        raise
 
 
 def consistent_preset(os_name: str = "windows", ff_version: str | None = None):

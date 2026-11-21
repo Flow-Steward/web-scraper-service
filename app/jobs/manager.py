@@ -214,10 +214,16 @@ class JobManager:
 
     def runner_done(self, run_id: str) -> None:
         self.runners.pop(run_id, None)
+        # Stop can arrive after a paused runner left its supervisor but while it
+        # still owns the queue. Finish stopping only after that owner exits.
+        row = self.svc.db.one("SELECT state FROM runs WHERE run_id=?", (run_id,))
+        if row is not None and row["state"] == "stopping":
+            self._start_runner(run_id)
         self.wake()
 
     # ================================================================== creation
-    async def create(self, body: dict, idem_key: str, recollect_of: dict | None = None) -> tuple[int, dict]:
+    async def create(self, body: dict, idem_key: str, recollect_of: dict | None = None,
+                     sitemap_retry: dict | None = None) -> tuple[int, dict]:
         svc = self.svc
         config, profile, platform = body["config"], body["profile"], body["platform"]
         fp = fingerprint(config, platform)
@@ -289,6 +295,9 @@ class JobManager:
             if recollect_of:
                 doc["recollect_of"] = recollect_of
             runtime = {"needs_secrets": needs_proxy_or_solver_secrets(fixed, profile), "templates": {}, "restarts": [], "running_seconds": 0.0}
+            if sitemap_retry is not None:
+                runtime.update(sitemap_traversal=sitemap_retry["traversal"],
+                               sitemap_retry_urls=sitemap_retry["urls"], sitemap_retry_roots=sitemap_retry["roots"])
             # templates active at the start
             for s in sites:
                 for m in svc.mappings.active_mappings(s):
@@ -311,8 +320,10 @@ class JobManager:
 
     # ================================================================== re-collect (README 4.10)
     async def recollect(self, parent_id: str, body: dict, idem_key: str) -> tuple[int, dict]:
-        """A new run over the parent's unextracted URLs only: the parent's config (url_list mode,
-        no mapping rebuild), the site's active mappings, the caller's profile and platform."""
+        """A linked run retries failed documents and unfinished sitemap source cursors.
+
+        The finished parent stays immutable; active mappings and a fresh profile apply.
+        """
         row = self._row(parent_id)
         if row["state"] not in ("completed", "failed"):
             raise ApiError("run_not_finished", "only a finished run can be re-collected", details={"state": row["state"]})
@@ -335,7 +346,12 @@ class JobManager:
             if d.get("source_key"):
                 entry["key"] = d["source_key"]
             urls.append(entry)
-        if not urls and existing is None:
+        from app.jobs.discovery import sitemap_coverage, sitemap_retry_state
+
+        parent_runtime = loads(row["runtime"]) or {}
+        traversal = parent_runtime.get("sitemap_traversal") or {}
+        retry_sources = bool(traversal) and not sitemap_coverage(parent_runtime)["complete"]
+        if not urls and not retry_sources and existing is None:
             counts = {r["reason"]: int(r["n"]) for r in self.svc.db.all("SELECT reason, COUNT(*) AS n FROM unextracted WHERE run_id=? GROUP BY reason", (parent_id,))}
             raise ApiError("nothing_to_recollect", "the run has no unextracted URLs with these reasons",
                            details={"reasons": reasons, "unextracted_by_reason": counts})
@@ -345,7 +361,17 @@ class JobManager:
         config["rebuild_mapping"] = False
         config["sitemap_url"] = None
         link = {"run_id": parent_id, "reasons": reasons, "url_count": len(urls), "by_reason": by_reason}
-        return await self.create({"config": config, "profile": body["profile"], "platform": body["platform"]}, idem_key, recollect_of=link)
+        retry = None
+        if retry_sources:
+            # Seed atomically in create(), before the manager can start the new run.
+            config["discovery_mode"] = "sitemap"
+            config["urls"] = []
+            config["sitemap_url"] = next(iter(traversal["sources"]), None)
+            link["source_count"] = sum(e.get("status") in ("pending", "failed") for e in traversal["sources"].values()) + int(bool(traversal.get("pending_root")))
+            retry = {"traversal": sitemap_retry_state(traversal), "urls": urls,
+                     "roots": parent_runtime.get("sitemap_retry_roots") or parent_runtime.get("sitemaps") or list(traversal["sources"])}
+        return await self.create({"config": config, "profile": body["profile"], "platform": body["platform"]}, idem_key,
+                                 recollect_of=link, sitemap_retry=retry)
 
     # ================================================================== reading
     def _row(self, run_id: str):
@@ -417,6 +443,12 @@ class JobManager:
         # completeness, the previous comparable run, a plain sentence
         from app.jobs.report import comparison, completeness, explanation
 
+        if rt.get("sitemap_traversal"):
+            from app.jobs.discovery import sitemap_coverage
+
+            doc["sitemap_discovery"] = sitemap_coverage(rt)
+            if rt.get("sitemap_probe"):
+                doc["sitemap_probe"] = copy.deepcopy(rt["sitemap_probe"])
         cur = completeness(db, run_id, doc)
         doc["completeness"] = cur
         cmp = comparison(db, run_id, doc, cur, self.svc.settings.compare_drop_share)
@@ -482,6 +514,10 @@ class JobManager:
 
             snap = completeness(self.svc.db, row["run_id"], dict(doc, state=row["state"]))
         comp = {k: snap[k] for k in keys}
+        if snap.get("sitemap_discovery"):
+            comp["sitemap_discovery"] = snap["sitemap_discovery"]
+        if snap.get("sitemap_probe"):
+            comp["sitemap_probe"] = snap["sitemap_probe"]
         if row["state"] not in ("completed", "failed") and snap.get("progress"):
             comp["progress"] = snap["progress"]
         item["completeness"] = comp
@@ -531,21 +567,50 @@ class JobManager:
         row = self._row(run_id)
         if not self.svc.secrets.configured:
             raise ApiError("secrets_key_unavailable", "the service has no job-secret encryption key configured", headers={"Retry-After": "300"})
-        doc = loads(row["doc"])
-        rt = loads(row["runtime"])
         state = row["state"]
-        if state not in ("completed", "failed"):
-            if profile.get("proxy_tiers") or profile.get("solver"):
+        active = self.runners.get(run_id)
+        owns_state = active is not None and active.state == state
+        # A paused runner may still be draining its queue. Preserve its latest
+        # budgets and synchronize replacement metadata before it persists again.
+        doc = copy.deepcopy(active.doc) if owns_state else loads(row["doc"])
+        rt = copy.deepcopy(active.rt) if owns_state else loads(row["runtime"])
+        replace_credentials = state not in ("completed", "failed") and bool(profile.get("proxy_tiers") or profile.get("solver"))
+        with self.svc.db.tx():
+            if replace_credentials:
                 self.svc.secrets.put(run_id, "proxy_solver", secret_part(profile))
+                summary = profile_summary(profile)
+                doc["profile"].update({key: summary[key] for key in ("proxy_tiers", "solver")})
+                if "profile_name" in summary:
+                    doc["profile"]["profile_name"] = summary["profile_name"]
+                rt["needs_secrets"] = bool(doc["config"].get("use_solver")) or needs_proxy_or_solver_secrets(doc["config"], profile)
                 if doc["secrets"].get("proxy_and_solver") in ("not_configured", "missing"):
                     doc["secrets"]["proxy_and_solver"] = "kept"
-        if profile.get("webhook"):
-            self.svc.secrets.put(run_id, "webhook", profile["webhook"])
-            doc["secrets"]["signing_secret"] = "kept"
-        self.svc.db.execute("UPDATE runs SET doc=? WHERE run_id=?", (dumps(doc), run_id))
+            if profile.get("webhook"):
+                self.svc.secrets.put(run_id, "webhook", profile["webhook"])
+                doc["secrets"]["signing_secret"] = "kept"
+                doc["profile"]["webhook_url"] = profile["webhook"]["url"]
+            self.svc.db.execute("UPDATE runs SET doc=?, runtime=? WHERE run_id=?", (dumps(doc), dumps(rt), run_id))
+        if owns_state:
+            active.doc["profile"] = copy.deepcopy(doc["profile"])
+            active.doc["secrets"] = copy.deepcopy(doc["secrets"])
+            if replace_credentials:
+                active.rt["needs_secrets"] = rt["needs_secrets"]
         if state == "waiting_for_credentials" and self._covers(run_id, doc["config"], rt):
-            self._set_state(run_id, "running")
-            self._start_runner(run_id)
+            # The paused crawler must finish reclaiming in-flight requests before
+            # a new runner opens the same persistent queue.
+            old_runner = self.runners.get(run_id)
+            if old_runner is not None and old_runner.task is not None and not old_runner.task.done():
+                await asyncio.shield(old_runner.task)
+            fresh = self._row(run_id)
+            if fresh["state"] == "waiting_for_credentials":
+                rt = loads(fresh["runtime"])
+                # Another Resume can replace the profile while we wait for the
+                # old owner. Validate the latest committed replacement again.
+                if self._covers(run_id, loads(fresh["doc"])["config"], rt):
+                    rt.pop("credentials_wait_reason", None)
+                    self.svc.db.execute("UPDATE runs SET runtime=? WHERE run_id=?", (dumps(rt), run_id))
+                    self._set_state(run_id, "running")
+                    self._start_runner(run_id)
         elif state in ("running", "stopping") and (profile.get("proxy_tiers") or profile.get("solver")):
             # rotate a running job's secrets in memory too (README 15.26)
             runner = self.runners.get(run_id)
@@ -557,15 +622,18 @@ class JobManager:
         return self.summary(run_id)
 
     def _covers(self, run_id: str, config: dict, rt: dict) -> bool:
-        """The stored secrets decrypt and cover the job's tiers and solver."""
+        """The approved profile covers the job and decrypts when credentials are needed."""
         from app.core.secrets import SecretsUnavailable
 
-        if not rt.get("needs_secrets"):
-            return True
-        try:
-            secret = self.svc.secrets.get(run_id, "proxy_solver")
-        except SecretsUnavailable:
-            return False
+        if rt.get("needs_secrets"):
+            try:
+                secret = self.svc.secrets.get(run_id, "proxy_solver")
+            except SecretsUnavailable:
+                return False
+        else:
+            # IP allow-list profiles need no decrypted credentials, but must
+            # still cover the job's selected tiers after a replacement.
+            secret = loads(self._row(run_id)["doc"])["profile"]
         wanted = config.get("use_proxy_tiers") or []
         have = {t["tier"] for t in secret.get("proxy_tiers") or []}
         if wanted and not set(wanted) <= have:
@@ -579,16 +647,26 @@ class JobManager:
                 return False
         return True
 
-    async def to_waiting_for_credentials(self, run_id: str) -> None:
+    async def to_waiting_for_credentials(self, run_id: str, *, reason: str = "secrets_unavailable") -> None:
         self._set_state(run_id, "waiting_for_credentials")
-        row = self.svc.db.one("SELECT doc FROM runs WHERE run_id=?", (run_id,))
+        row = self.svc.db.one("SELECT doc, runtime FROM runs WHERE run_id=?", (run_id,))
         doc = loads(row["doc"])
-        doc["secrets"]["proxy_and_solver"] = "missing"
+        if reason == "secrets_unavailable":
+            doc["secrets"]["proxy_and_solver"] = "missing"
         self.svc.db.execute("UPDATE runs SET doc=? WHERE run_id=?", (dumps(doc), run_id))
+        from app.fetching.proxy_auth import PROXY_AUTH_MESSAGE
+
+        if reason == "proxy_auth_failed":
+            code, message = "proxy_auth_failed", PROXY_AUTH_MESSAGE
+            problem_key = f"{code}:{loads(row['runtime']).get('proxy_auth_pauses', 0)}"
+        else:
+            code = "waiting_for_credentials"
+            message = "the job's proxy or solver secrets cannot be decrypted; send them again with Resume"
+            problem_key = f"{code}:"
         self.svc.events.create(
             run_id, "problem", run_id,
-            {"problem_code": "waiting_for_credentials", "message": "the job's proxy or solver secrets cannot be decrypted; send them again with Resume"},
-            problem_key="waiting_for_credentials:",
+            {"problem_code": code, "message": message},
+            problem_key=problem_key,
         )
 
     # ================================================================== completion
@@ -628,10 +706,17 @@ class JobManager:
         names = run_file_names(site, run_id)
         csv_info = self._write_result_csv(run_id, results_dir / names["result_csv"])
         ts = now()
+        if rt.get("sitemap_traversal"):
+            from app.jobs.discovery import sitemap_coverage
+
+            doc["sitemap_discovery"] = sitemap_coverage(rt)
+            if rt.get("sitemap_probe"):
+                doc["sitemap_probe"] = copy.deepcopy(rt["sitemap_probe"])
+            rt["sitemap_partial"] = not doc["sitemap_discovery"]["complete"] or bool(rt.get("sitemap_probe_partial"))
         templates_failed = any(t.get("status") == "failed" for t in (rt.get("templates") or {}).values())
         # outcome-neutral entries: not_found, and sitemap URLs refused by robots.txt or the private rule
         non_neutral = int(svc.db.scalar("SELECT COUNT(*) FROM unextracted WHERE run_id=? AND neutral=0", (run_id,)) or 0)
-        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0 and not rt.get("navigation_partial")) else "partial"
+        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0 and not rt.get("navigation_partial") and not rt.get("sitemap_partial") and not rt.get("discovery_partial")) else "partial"
         result = {
             "run_id": run_id,
             "format": "jsonl",
@@ -664,6 +749,10 @@ class JobManager:
 
             snap = completeness(svc.db, run_id, dict(doc, state="completed"))
             doc["completeness"] = {k: snap[k] for k in ("target_pages_found", "pages_collected", "records", "not_collected", "not_collected_by_reason")}
+            if snap.get("sitemap_discovery"):
+                doc["completeness"]["sitemap_discovery"] = snap["sitemap_discovery"]
+            if snap.get("sitemap_probe"):
+                doc["completeness"]["sitemap_probe"] = snap["sitemap_probe"]
         except Exception:
             pass
         tl = doc.setdefault("timeline", [])

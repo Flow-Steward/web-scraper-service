@@ -58,6 +58,7 @@ from app.extraction.mapping import apply_mapping, looks_like_target, passes_targ
 from app.extraction.page import Page
 from app.fetching.challenge import detect_html, detect_page, page_html
 from app.fetching.proxies import TierPlan
+from app.fetching.proxy_auth import ProxyAuthenticationRequired, is_proxy_auth_failure
 from app.jobs.throttle import HostThrottle
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("wss.job")
 
 # statuses our handler sees instead of Crawlee raising (challenges, blocks, 429, every 5xx)
-IGNORED_STATUSES = sorted({401, 403, 404, 410, 429, 451} | set(range(500, 600)))
+IGNORED_STATUSES = sorted({401, 403, 404, 407, 410, 429, 451} | set(range(500, 600)))
 STOP_LISTED_REASONS = {"stopped", "max_duration", "max_result_size", "blocked", "stalled"}
 ADMISSION_WAIT_SECONDS = 20.0
 REQUEST_CACHE_SIZE = 2000  # pending requests Crawlee keeps in memory per run
@@ -113,6 +114,15 @@ def fail_on_url_pattern_error(handler):
             await self._url_pattern_failed(exc)
             raise
     return bounded
+
+
+def raise_document_policy_error(ctx):
+    """Surface native late navigation refusals before accepting page contents."""
+    policy = getattr(ctx.page, "_wss_native_document_policy", None)
+    if policy is not None and policy.errors:
+        if not isinstance(policy.errors[0], ProxyAuthenticationRequired):
+            ctx.request.no_retry = True
+        policy.raise_if_denied()
 
 
 def write_unextracted(db, run_id: str, canonical: str, requested: str | None, source_key: str | None, site: str, reason: str,
@@ -180,7 +190,7 @@ class JobRunner:
         self.mappings: dict[str, dict[str, dict]] = {}  # site -> template_id -> {"version", "mapping"}
         self.include = compile_patterns(self.config.get("url_include") or [], "url_include")
         self.exclude = compile_patterns(self.config.get("url_exclude") or [], "url_exclude")
-        self.pages_started = 0
+        self.pages_started = int(self.rt.get("pages_started", self.doc["counters"].get("pages_fetched", 0)))
         self.last_persist = 0.0
         self.secret_strings: list[str] = []
         # admission control (max_records) and per-attempt bookkeeping, in memory only
@@ -329,6 +339,8 @@ class JobRunner:
             await self._run_crawl()
         except asyncio.CancelledError:
             raise
+        except ProxyAuthenticationRequired:
+            pass  # the queue and source traversal remain resumable
         except UrlPatternError as exc:
             await self._url_pattern_failed(exc)
         except Exception as exc:  # unexpected: internal_error
@@ -397,6 +409,10 @@ class JobRunner:
         if self.doc["progress"]["discovery"] == "pending":
             self.doc["progress"]["discovery"] = "running"
         await self._open_storages()
+        # A resumed auxiliary request can finish before its source feeder starts.
+        # Register its waiter before starting the crawler and reuse the queue key.
+        for key in (self.rt.get("aux_pending") or {}).values():
+            self._aux[key] = asyncio.get_running_loop().create_future()
         self._reconcile_requests()
         self._persist()
 
@@ -481,6 +497,8 @@ class JobRunner:
 
         from app.fetching.oneoff import http_get
 
+        if self.state == "waiting_for_credentials":
+            raise ProxyAuthenticationRequired()
         if self._shutdown or await url_is_private(url):
             return None
         if self.crawler is None or self.crawler_task is None or self.crawler_task.done() or self._cut_or_stopping():
@@ -490,24 +508,74 @@ class JobRunner:
             except ValueError:
                 proxy = None
             try:
-                return await http_get(url, proxy=proxy, headers=self.config.get("headers") or None, timeout=30)
+                fetched = await http_get(url, proxy=proxy, headers=self.config.get("headers") or None, timeout=30)
+                if fetched is not None and is_proxy_auth_failure(fetched.error, status=fetched.status, proxy_used=bool(proxy)):
+                    await self._pause_for_proxy_auth()
+                    raise ProxyAuthenticationRequired()
+                return fetched
+            except ProxyAuthenticationRequired:
+                raise
             except Exception:
                 return None
-        key = f"aux\x1f{url}\x1f{new_id('aux')}"
-        fut = asyncio.get_running_loop().create_future()
+        pending = self.rt.setdefault("aux_pending", {})
+        key = pending.get(url)
+        fut = self._aux.get(key) if key else None
+        if key and (fut is None or not fut.done()):
+            previous = await self.rq.get_request(key)
+            if previous is not None and previous.handled_at is not None:
+                # A crash after queue commit but before source consumption cannot
+                # reconstruct an in-memory body; refetch only that source file.
+                self._aux.pop(key, None)
+                key, fut = None, None
+        key = key or f"aux\x1f{url}\x1f{new_id('aux')}"
+        fut = fut or asyncio.get_running_loop().create_future()
         self._aux[key] = fut
+        pending[url] = key
+        self._persist()
         headers = dict(self.config.get("headers") or {})
+        consumed = False
         try:
-            req = Request.from_url(url, unique_key=key, user_data={"aux": True, "src": "aux"}, headers=headers or None)
-            await self.rq.add_requests([req], forefront=True, wait_for_all_requests_to_be_added=True)
-            return await asyncio.wait_for(fut, timeout)
+            if not fut.done():
+                req = Request.from_url(url, unique_key=key, user_data={"aux": True, "src": "aux"}, headers=headers or None)
+                await self.rq.add_requests([req], forefront=True, wait_for_all_requests_to_be_added=True)
+            fetched = await asyncio.wait_for(asyncio.shield(fut), timeout)
+            if fetched is not None and is_proxy_auth_failure(fetched.error, status=fetched.status, proxy_used=self.tiers.enabled):
+                await self._pause_for_proxy_auth()
+                raise ProxyAuthenticationRequired()
+            consumed = True
+            return fetched
         except asyncio.TimeoutError:
             return None
+        except ProxyAuthenticationRequired:
+            raise
         except Exception:
             log.exception("job %s: auxiliary fetch failed", self.run_id)
             return None
         finally:
-            self._aux.pop(key, None)
+            if consumed:
+                self._aux.pop(key, None)
+                pending.pop(url, None)
+                self._persist()
+
+    async def _pause_for_proxy_auth(self) -> None:
+        """Pause without consuming page/source queues or resetting protection budgets."""
+        # This transition is synchronous until the manager call; auxiliary fetches
+        # can also reach it while the supervisor already owns self.lock.
+        self.doc = self._reload_state_fields()
+        if self.state != "running":
+            return
+        self.doc["state"] = "waiting_for_credentials"
+        self.rt["credentials_wait_reason"] = "proxy_auth_failed"
+        self.rt["proxy_auth_pauses"] = int(self.rt.get("proxy_auth_pauses", 0)) + 1
+        self._accumulate_running_time()
+        self._persist()
+        await self.svc.jobs.to_waiting_for_credentials(self.run_id, reason="proxy_auth_failed")
+        if self.crawler is not None:
+            self.crawler.stop("upstream proxy authentication requires Resume")
+        for fut in list(self._aux.values()):
+            if not fut.done():
+                fut.set_exception(ProxyAuthenticationRequired())
+                fut.exception()  # a pre-registered waiter may not have a consumer yet
 
     def _aux_done(self, request, fetched) -> None:
         self.last_progress = time.monotonic()
@@ -569,10 +637,20 @@ class JobRunner:
             self.rt["sitemaps"] = []  # crawl never reads a sitemap
         else:
             robots = await self._robots_for(cfg["site_url"])
-            sitemaps = await find_sitemaps(cfg["site_url"], cfg.get("sitemap_url"), robots, self.aux_fetch)
+            probe = {}
+            sitemaps = await find_sitemaps(cfg["site_url"], cfg.get("sitemap_url"), robots, self.aux_fetch, probe=probe)
+            if mode == "auto" and not sitemaps:
+                # An absent optional default map is ordinary; an unavailable or
+                # invalid one is source uncertainty even when crawl is viable.
+                sitemaps = [u for u, fetched in probe.items() if fetched is None or fetched.status not in (404, 410)]
             self.rt["sitemaps"] = sitemaps
             if mode == "auto":
-                decided, why = await decide_discovery(self, sitemaps, self.aux_fetch)
+                async def probe_fetch(url):
+                    if url in probe:
+                        return probe.pop(url)
+                    return await self.aux_fetch(url)
+
+                decided, why = await decide_discovery(self, sitemaps, probe_fetch)
                 resolved["discovery_mode"] = decided
                 reasons += why
             else:
@@ -615,7 +693,12 @@ class JobRunner:
             desired_concurrency=1,
             max_tasks_per_minute=cfg["max_requests_per_minute"],
         )
+        from app.fetching.crawlee_http import PolicyHttpClient
+
+        http_client = PolicyHttpClient(destination_policy=self._http_redirect_destination_allowed)
+        self._redirect_http_client = http_client
         kwargs: dict[str, Any] = dict(
+            http_client=http_client,
             rendering_type_predictor=JobPredictor(self),
             result_checker=self._result_ok,
             playwright_crawler_specific_kwargs={
@@ -669,6 +752,9 @@ class JobRunner:
         crawler.router.default_handler(self._handle)
         crawler.failed_request_handler(self._failed)
         crawler.pre_navigation_hook(self._pre_nav)
+        from app.jobs.proxy_auth import guard_proxy_auth
+
+        guard_proxy_auth(crawler, self, adaptive=self._adaptive)
         return crawler
 
     def _proxy_url(self, session_id: str | None, request) -> str | None:
@@ -757,6 +843,8 @@ class JobRunner:
         the counters, the consumed backlog rows and the feeder position."""
         from crawlee import Request
 
+        if self.state == "waiting_for_credentials":
+            raise ProxyAuthenticationRequired()
         job_site = self.doc["site"]
         decisions: list[tuple] = []
         new_requests = []
@@ -812,6 +900,8 @@ class JobRunner:
                 log.warning("job %s: a URL Crawlee refuses was skipped", self.run_id)
                 continue
             decisions.append(("queued", ukey, url, source, entry.get("source_key")))
+        if self.state == "waiting_for_credentials":
+            raise ProxyAuthenticationRequired()
         if new_requests:
             await self.rq.add_requests(new_requests, forefront=forefront, wait_for_all_requests_to_be_added=True)
         with self.svc.db.tx():
@@ -1042,6 +1132,8 @@ class JobRunner:
         )
 
     async def _feed(self) -> None:
+        from app.fetching.proxy_auth import ProxyAuthenticationRequired
+
         cfg = self.config
         mode = self.doc["resolved"].get("discovery_mode")
         try:
@@ -1062,48 +1154,89 @@ class JobRunner:
                     await self.enqueue([{"url": cfg["site_url"], "source": "start"}], feed=("start_fed", 1))
             if mode in ("sitemap", "sitemap_and_crawl") and not cfg.get("single_page"):
                 await self._feed_sitemaps()
+            if self.state == "waiting_for_credentials":
+                return
             with self.svc.db.tx():
                 self.rt["feeder_done"] = True
                 self._persist()
         except asyncio.CancelledError:
             raise
+        except ProxyAuthenticationRequired:
+            return  # waiting_for_credentials: retain the committed feeder cursor
         except UrlPatternError as exc:
             await self._url_pattern_failed(exc)
         except Exception as exc:
             log.exception("feeder of %s failed", self.run_id)
             with self.svc.db.tx():
+                self.rt["discovery_partial"] = True
                 self.add_error("internal_error", f"discovery failed ({type(exc).__name__})", severity="warning")
                 self.rt["feeder_done"] = True
                 self._persist()
 
     async def _feed_sitemaps(self) -> None:
-        """Streams the sitemaps (fetched through the crawler) into the queue; a restart skips the
-        URLs already fed instead of counting them again as duplicates."""
-        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps
+        """Commit per-source cursors only after their queue batch commits.
 
-        urls = list(self.rt.get("sitemaps") or [])
+        The iterator mutates a private copy: a supervisor checkpoint while enqueue
+        awaits must never contain a cursor for URLs the queue has not accepted.
+        Legacy sitemap_fed offsets are deliberately replayed through normal dedup.
+        """
+        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps, sitemap_report, _origin
+
+        urls = list(self.rt.get("sitemap_retry_roots") or self.rt.get("sitemaps") or [])
         if not urls:
-            return
-        skip = int(self.rt.get("sitemap_fed", 0))
-        seen = 0
-        batch: list[dict] = []
-        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch):
+            urls = [self.config.get("sitemap_url") or _origin(self.config["site_url"]) + "/sitemap.xml"]
+        state = copy.deepcopy(self.rt.get("sitemap_traversal") or {})
+
+        def checkpoint():
+            with self.svc.db.tx():
+                self.rt["sitemap_traversal"] = copy.deepcopy(state)
+                self.rt["sitemap_feeding_started"] = True
+                report = sitemap_report(state)
+                self.doc["sitemap_discovery"] = report
+                self.rt["sitemap_partial"] = not report["complete"] or bool(self.rt.get("sitemap_probe_partial"))
+                self._persist()
+
+        # Recollect retries failed document URLs as well as failed source files.
+        retry_urls = self.rt.get("sitemap_retry_urls") or []
+        done = int(self.rt.get("sitemap_retry_fed", 0))
+        for i in range(done, len(retry_urls), 100):
             if self._cut_or_stopping():
                 return
-            seen += 1
-            if seen > SITEMAP_CAP:
-                break
-            if seen <= skip:
-                continue
+            chunk = retry_urls[i:i + 100]
+            await self.enqueue([dict(e, source="list", source_key=e.get("key")) for e in chunk],
+                               feed=("sitemap_retry_fed", len(chunk)))
+
+        async def enqueue_source_batch(entries):
+            parent_id = (self.doc.get("recollect_of") or {}).get("run_id")
+            if parent_id:
+                marks = ",".join("?" for _ in entries)
+                prior = self.svc.db.all(
+                    "WITH RECURSIVE ancestors(run_id) AS (SELECT ? UNION SELECT runs.parent_run_id "
+                    "FROM runs JOIN ancestors ON runs.run_id=ancestors.run_id WHERE runs.parent_run_id IS NOT NULL) "
+                    "SELECT url FROM urls WHERE status='done' AND run_id IN (SELECT run_id FROM ancestors) "
+                    f"AND url IN ({marks})", (parent_id, *(e["url"] for e in entries)))
+                completed = {r["url"] for r in prior}
+                entries = [e for e in entries if e["url"] not in completed]
+            if entries:
+                await self.enqueue(entries, feed=("sitemap_fed", len(entries)))
+
+        batch: list[dict] = []
+        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state, max_entries=SITEMAP_CAP):
+            if self._cut_or_stopping():
+                return
             batch.append({"url": loc, "source": "sitemap"})
             if len(batch) >= 100:
-                await self.enqueue(batch, feed=("sitemap_fed", len(batch)))
+                await enqueue_source_batch(batch)
+                checkpoint()
                 batch = []
-        if batch and not self._cut_or_stopping():
-            await self.enqueue(batch, feed=("sitemap_fed", len(batch)))
+        if self._cut_or_stopping():
+            return
+        if batch:
+            await enqueue_source_batch(batch)
+        checkpoint()
 
     def _cut_or_stopping(self) -> bool:
-        return self.doc["progress"]["discovery"] == "cut" or self.state == "stopping" or self._shutdown
+        return self.doc["progress"]["discovery"] == "cut" or self.state in ("stopping", "waiting_for_credentials") or self._shutdown
 
     async def _drain_backlog(self) -> None:
         """Enqueues links and refetches recorded by the follower (after its transaction committed)."""
@@ -1114,6 +1247,8 @@ class JobRunner:
                                    "ORDER BY forefront DESC, seq LIMIT 500", (self.run_id,))
             if not rows:
                 return
+            if self.state == "waiting_for_credentials":
+                return  # pause preserves the backlog for Resume
             if self._cut_or_stopping() or self.state != "running" or self.crawler_task is None or self.crawler_task.done():
                 with self.svc.db.tx():
                     self.svc.db.execute("DELETE FROM link_backlog WHERE run_id=? AND source != 'refetch'", (self.run_id,))
@@ -1170,6 +1305,8 @@ class JobRunner:
         are tried instead and a debug entry says so."""
 
         async def fetch(u: str):
+            if self.state == "waiting_for_credentials":
+                raise ProxyAuthenticationRequired()
             try:
                 host = host_of(u)
             except ValueError:
@@ -1180,13 +1317,19 @@ class JobRunner:
                 self.add_error("debug", f"variants: shop JSON not fetched over HTTP for a host that needs the browser ({u})", url=u, severity="debug")
                 return None
             await self.throttle.wait(host)
+            if self.state == "waiting_for_credentials":
+                raise ProxyAuthenticationRequired()
             try:
                 if browser_run and getattr(ctx, "page", None) is not None:
                     resp = await ctx.page.context.request.get(u, timeout=30000, headers={"Accept": "application/json"})
+                    if is_proxy_auth_failure(status=resp.status, proxy_used=self.tiers.enabled):
+                        raise ProxyAuthenticationRequired()
                     if resp.status >= 400:
                         return None
                     return json.loads(await resp.text())
                 resp = await ctx.send_request(u, headers={"Accept": "application/json"})
+                if is_proxy_auth_failure(status=getattr(resp, "status_code", None), proxy_used=self.tiers.enabled):
+                    raise ProxyAuthenticationRequired()
                 if getattr(resp, "status_code", 200) >= 400:
                     return None
                 body = resp.read()
@@ -1194,6 +1337,9 @@ class JobRunner:
                     body = await body
                 return json.loads(body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body)
             except Exception as exc:
+                if is_proxy_auth_failure(exc, proxy_used=self.tiers.enabled):
+                    await self._pause_for_proxy_auth()
+                    raise ProxyAuthenticationRequired() from None
                 self.add_error("debug", f"variants: shop JSON {u} failed ({type(exc).__name__})", url=u, severity="debug")
                 return None
 
@@ -1334,6 +1480,8 @@ class JobRunner:
         from crawlee.crawlers._adaptive_playwright._adaptive_playwright_crawling_context import AdaptiveContextError
 
         request = ctx.request
+        if self.state == "waiting_for_credentials":
+            self._defer(request, "upstream proxy authentication requires Resume")
         ud = request.user_data
         url = request.url
         try:
@@ -1359,11 +1507,14 @@ class JobRunner:
                     self._defer(request, "page budget reached")
                 await self._admit(request)
                 self.pages_started += 1
+                self.rt["pages_started"] = self.pages_started
             if not self.tiers.enabled:
                 by = self.counters()["proxy_requests_by_tier"]
                 by["none"] = by.get("none", 0) + 1
             await self.throttle.wait(host)
             ud["t0"] = time.monotonic()  # the host's response time
+        if self.state == "waiting_for_credentials":
+            self._defer(request, "upstream proxy authentication requires Resume")
         try:
             page = getattr(ctx, "page", None)
         except AdaptiveContextError:
@@ -1387,7 +1538,42 @@ class JobRunner:
                 pass
 
         # every request of the page passes the private-address rule
-        await page.route("**/*", private_route_guard(None, _allowed))
+        from app.fetching.document_policy import bind_document_policy
+
+        async def destination_allowed(target):
+            try:
+                allowed = await self._document_destination_allowed(
+                    url, target, auxiliary=bool(ud.get("aux")),
+                    robots_allowed=lambda target: self._browser_redirect_robots_allowed(page, target),
+                )
+            except ProxyAuthenticationRequired:
+                raise  # Resume retains ordinary retry eligibility.
+            except Exception:
+                request.no_retry = True
+                raise
+            if not allowed:
+                request.no_retry = True
+            return allowed
+
+        proxy_info = getattr(ctx, "proxy_info", None)
+        proxy_auth = None if proxy_info is None else {
+            "server": f"{proxy_info.scheme}://{proxy_info.hostname}:{proxy_info.port}",
+            "username": proxy_info.username, "password": proxy_info.password,
+        }
+        policy = await bind_document_policy(
+            page, self.browser or "chromium", url, destination_policy=destination_allowed,
+            proxy_auth=proxy_auth,
+            on_proxy_auth_required=lambda: request.user_data.__setitem__("_wss_proxy_auth_failed", True),
+            timeout_s=min(3.0, float(self.config.get("page_timeout_seconds") or 45)),
+        )
+
+        async def native_allowed(route):
+            if route.request.is_navigation_request():
+                await policy.request(route)
+            else:
+                await _allowed(route)
+
+        await page.route("**/*", private_route_guard(None, native_allowed))
 
     def _is_browser(self, ctx) -> bool:
         try:
@@ -1436,6 +1622,9 @@ class JobRunner:
         host = host_of(url)
         browser_run = self._is_browser(ctx)
         status = ctx.http_response.status_code
+        if is_proxy_auth_failure(status=status, proxy_used=self.tiers.enabled):
+            await self._pause_for_proxy_auth()
+            self._defer(request, "upstream proxy authentication requires Resume")
         fetch_mode = self.config["fetch_mode"]
         self._check_session_tier(ctx)
         if ud.get("aux"):
@@ -1449,6 +1638,7 @@ class JobRunner:
             if not await settle(ctx.page, 20.0):
                 # still loading ("Loading https://…") is not a challenge; Crawlee retries the request
                 raise PageNotLoaded("the page did not finish loading within 20 s")
+            raise_document_policy_error(ctx)
             verdict = await detect_page(ctx.page, status)
         else:
             body = await ctx.http_response.read()
@@ -1497,6 +1687,7 @@ class JobRunner:
         if browser_run:
             await self._browser_waits(ctx.page)
             html = await page_html(ctx.page)
+            raise_document_policy_error(ctx)
             final_url = ctx.page.url
             # the challenge may come back while the page settles
             if html is None or detect_html(html, None).is_challenge:
@@ -1515,6 +1706,8 @@ class JobRunner:
             return
         if ud.get("challenged") and outcome.get("kind") == "page":
             outcome["challenge"] = {"passed_at_step": passed_step}
+        if browser_run:
+            raise_document_policy_error(ctx)
         await ctx.push_data(outcome)
 
     def _rate_limited(self, ctx, host: str) -> None:
@@ -1693,6 +1886,7 @@ class JobRunner:
 
         if not await settle(ctx.page, 20.0):
             raise PageNotLoaded("the page did not finish loading within 20 s")
+        raise_document_policy_error(ctx)
         verdict = await detect_page(ctx.page, status)
         if verdict.is_block:
             self.prot()["hard_blocks"] += 1
@@ -1712,15 +1906,31 @@ class JobRunner:
             if session is not None:
                 session.user_data["cleared_usage"] = session.usage_count
         # the raw bytes through the page's context: its cookies (clearance) and its proxy
+        if self.state == "waiting_for_credentials":
+            self._defer(request, "upstream proxy authentication requires Resume")
         try:
-            resp = await ctx.page.context.request.get(url, headers=self.config.get("headers") or None, timeout=60000, max_redirects=10)
-            body = await resp.body()
-            final = resp.url
-            if final != url and await url_is_private(final):
-                self._aux_done(request, None)
-                return
-            self._aux_done(request, Fetched(url, final, resp.status, body[: 64 * 1024 * 1024], {k.lower(): v for k, v in resp.headers.items()}, None))
+            from app.fetching.destinations import document_destination_allowed
+            from app.fetching.oneoff import context_get
+
+            async def destination_allowed(target):
+                return await document_destination_allowed(
+                    target, site_url=url, rules={"sensitive_path", "action_params"},
+                    cancelled=lambda: self._shutdown or self.state != "running" or self._cut_or_stopping(),
+                )
+
+            fetched = await context_get(
+                ctx.page.context, url, headers=self.config.get("headers") or None,
+                destination_policy=destination_allowed, proxy_used=self.tiers.enabled,
+            )
+            if fetched is not None and is_proxy_auth_failure(
+                fetched.error, status=fetched.status, proxy_used=self.tiers.enabled,
+            ):
+                raise ProxyAuthenticationRequired()
+            self._aux_done(request, fetched)
         except Exception as exc:
+            if is_proxy_auth_failure(exc, proxy_used=self.tiers.enabled):
+                await self._pause_for_proxy_auth()
+                self._defer(request, "upstream proxy authentication requires Resume")
             self._aux_done(request, Fetched(url, url, None, b"", {}, type(exc).__name__))
 
     async def _browser_waits(self, page) -> None:
@@ -1891,6 +2101,90 @@ class JobRunner:
                 tier = None
         return {"fetch_mode": "browser" if browser_run else "http", "browser": (self.browser or "chromium") if browser_run else None, "proxy_tier": tier}
 
+    async def _http_redirect_destination_allowed(self, request, target):
+        """Static Crawlee redirects obey ordinary link admission before issuance."""
+        auxiliary = bool(request.user_data.get("aux"))
+        return await self._document_destination_allowed(
+            request.url, target, auxiliary=auxiliary,
+            robots_allowed=None if auxiliary else self._http_redirect_robots_allowed,
+        )
+
+    async def _browser_redirect_robots_allowed(self, page, target):
+        if not self.config.get("respect_robots", True):
+            return True
+        from app.fetching.destinations import document_destination_allowed
+        from app.fetching.oneoff import context_get
+        from app.jobs.discovery import _origin, robots_from
+
+        origin = _origin(target)
+        if origin not in self.robots:
+            async def allowed_aux(url):
+                return await document_destination_allowed(
+                    url, site_url=target, rules={"sensitive_path", "action_params"},
+                    cancelled=lambda: self._shutdown or self.state != "running",
+                )
+            async def fetch_aux(url):
+                return await context_get(
+                    page.context, url, headers=self.config.get("headers") or None,
+                    destination_policy=allowed_aux,
+                )
+            # Raw robots reads already use APIRequestContext in browser jobs.
+            # This path never loads document bytes through it or queues a worker.
+            self.robots[origin] = await robots_from(origin, fetch_aux)
+            robots = self.robots[origin]
+            if robots is not None:
+                self.throttle.set_crawl_delay(host_of(target), robots.get_crawl_delay())
+        robots = self.robots[origin]
+        return robots is None or robots.is_allowed(target)
+
+    async def _http_redirect_robots_allowed(self, target):
+        if not self.config.get("respect_robots", True):
+            return True
+        from app.jobs.discovery import _origin, robots_from
+
+        origin = _origin(target)
+        if origin not in self.robots:
+            # Never enqueue into the same crawler while its document is held.
+            # The nested auxiliary request shares this document's proxy/cookies,
+            # has a bounded deadline, and does not recurse into robots policy.
+            async def fetch_aux(url):
+                return await self._redirect_http_client.fetch_auxiliary(
+                    url, headers=self.config.get("headers") or None,
+                )
+            robots = await robots_from(origin, fetch_aux)
+            self.robots[origin] = robots
+            if robots is not None:
+                self.throttle.set_crawl_delay(host_of(target), robots.get_crawl_delay())
+        robots = self.robots[origin]
+        return robots is None or robots.is_allowed(target)
+
+    async def _document_destination_allowed(self, initial_url, target, *, auxiliary=False, robots_allowed=None):
+        from app.core.scope import in_scope
+        from app.fetching.destinations import document_destination_allowed
+
+        def cancelled():
+            return (
+                self._shutdown or bool(self.rt.get("stop_reason"))
+                or self.state in ("stopping", "completed", "failed")
+                or self.running_seconds() >= self.config["max_duration_minutes"] * 60
+            )
+
+        canonical = canonical_url(target)
+        if not auxiliary and matches_any(self.exclude, canonical):
+            return False
+        target_page = not auxiliary and self._looks_like_target_url(target)
+        scope = self._crawl_scope()
+        if auxiliary or not in_scope(scope, initial_url) or target_page:
+            scope = ()
+        rules = {"sensitive_path", "action_params"} if auxiliary else self.link_rules
+        if target_page:
+            rules = rules - {"facet_params"}
+        return await document_destination_allowed(
+            target, site_url=initial_url, rules=rules, scope=scope,
+            robots_allowed=None if auxiliary else (robots_allowed or self.robots_allowed),
+            cancelled=cancelled,
+        )
+
     async def _collect_navigation(self, ctx, page, canonical, browser_run, ud, out):
         """Discover links across listing states without changing extraction input."""
         if not browser_run:
@@ -1906,7 +2200,7 @@ class JobRunner:
         def cancelled():
             return (
                 bool(self.rt.get("stop_reason"))
-                or self.state in ("stopping", "completed", "failed")
+                or self.state in ("stopping", "completed", "failed", "waiting_for_credentials")
                 or self.running_seconds() >= self.config["max_duration_minutes"] * 60
             )
 
@@ -1956,6 +2250,8 @@ class JobRunner:
             before_action=allowed,
             cancelled=cancelled,
         )
+        if self.state == "waiting_for_credentials":
+            self._defer(ctx.request, "upstream proxy authentication requires Resume")
         page.extra_links = result.links
         page.extra_anchors = result.anchors
         out["navigation"] = {

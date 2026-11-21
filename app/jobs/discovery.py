@@ -10,15 +10,18 @@ before it is fetched.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import re
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
-from app.core.netguard import url_is_private
-from app.core.urls import absolute, canonical_url, site_key
+from app.core.errors import ApiError
+from app.core.netguard import host_is_private, url_is_private
+from app.core.urls import absolute, canonical_url, host_of, site_key
 from app.core.url_patterns import UrlPattern, compile_patterns, matches_any, url_batch, url_pattern_budget
 from app.fetching.oneoff import Fetched, PrivateAddress, gunzip_capped, http_get
 
@@ -63,7 +66,8 @@ def _looks_like_sitemap(body: bytes) -> bool:
     return head[:2] == b"\x1f\x8b" or b"<urlset" in head or b"<sitemapindex" in head or head.startswith(b"<?xml")
 
 
-async def find_sitemaps(site_url: str, sitemap_url: str | None, robots, fetch: Fetcher | None = None) -> list[str]:
+async def find_sitemaps(site_url: str, sitemap_url: str | None, robots, fetch: Fetcher | None = None,
+                        *, probe: dict[str, Fetched | None] | None = None) -> list[str]:
     """``sitemap_url``, else robots.txt ``Sitemap:`` lines, else ``/sitemap.xml`` (when it answers)."""
     if sitemap_url:
         return [sitemap_url]
@@ -80,6 +84,8 @@ async def find_sitemaps(site_url: str, sitemap_url: str | None, robots, fetch: F
         return found
     candidate = _origin(site_url) + "/sitemap.xml"
     fetched = await (fetch or http_fetcher())(candidate)
+    if probe is not None:
+        probe[candidate] = fetched
     if fetched is not None and fetched.status and 200 <= fetched.status < 300 and fetched.body and _looks_like_sitemap(fetched.body):
         return [candidate]
     return []
@@ -101,7 +107,7 @@ def _parse_lastmod(text: str | None) -> datetime | None:
     return value
 
 
-def parse_sitemap(body: bytes, base_url: str) -> tuple[list[tuple[str, datetime | None]], list[str]]:
+def parse_sitemap(body: bytes, base_url: str, *, strict: bool = False) -> tuple[list[tuple[str, datetime | None]], list[str]]:
     """Returns (page URLs with lastmod, nested sitemap URLs) of one sitemap file."""
     if body[:2] == b"\x1f\x8b":
         body = gunzip_capped(body)
@@ -111,13 +117,21 @@ def parse_sitemap(body: bytes, base_url: str) -> tuple[list[tuple[str, datetime 
     if stripped.startswith(b"<"):
         from lxml import etree
 
-        parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True, huge_tree=False)
+        parser = etree.XMLParser(recover=not strict, resolve_entities=False, no_network=True, huge_tree=False)
         try:
             root = etree.fromstring(stripped, parser=parser)
         except etree.XMLSyntaxError:
             root = None
         if root is None:
+            if strict:
+                raise ValueError("invalid sitemap XML")
             return pages, nested
+        if strict and (not isinstance(root.tag, str) or root.tag.rsplit("}", 1)[-1].lower() not in ("urlset", "sitemapindex")):
+            raise ValueError("not a sitemap document")
+        if strict:
+            expected = "url" if root.tag.rsplit("}", 1)[-1].lower() == "urlset" else "sitemap"
+            if any(isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1].lower() != expected for child in root):
+                raise ValueError("invalid sitemap entries")
         for el in root.iter():
             if not isinstance(el.tag, str):
                 continue
@@ -134,9 +148,13 @@ def parse_sitemap(body: bytes, base_url: str) -> tuple[list[tuple[str, datetime 
                 elif ctag == "lastmod" and child.text:
                     lastmod = child.text.strip()
             if not loc:
+                if strict:
+                    raise ValueError("sitemap entry has no location")
                 continue
             full = absolute(base_url, loc)
             if not full:
+                if strict:
+                    raise ValueError("invalid sitemap location")
                 continue
             if tag == "sitemap":
                 nested.append(full)
@@ -147,46 +165,165 @@ def parse_sitemap(body: bytes, base_url: str) -> tuple[list[tuple[str, datetime 
         line = line.strip()
         if re.match(r"^https?://\S+$", line):
             pages.append((line, None))
+        elif strict and line:
+            raise ValueError("invalid sitemap text location")
+    if strict and not pages:
+        raise ValueError("empty or invalid sitemap text")
     return pages, nested
 
 
-async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int = MAX_SITEMAP_FILES):
-    """Yields (page_url, lastmod) of every sitemap (index included, breadth-first, each file once)."""
-    queue = deque(sitemaps)
-    seen: set[str] = set()
-    files = 0
-    while queue and files < max_files:
+def sitemap_report(state: dict) -> dict:
+    """Public, bounded discovery coverage; never expose exception text or URL credentials/query."""
+    sources = state.get("sources") or {}
+    def item(url, entry):
+        try:
+            p = urlsplit(url)
+            safe = urlunsplit((p.scheme, p.netloc.rsplit("@", 1)[-1], p.path, "", ""))
+        except ValueError:
+            safe = "invalid sitemap source"
+        return {"url": safe, "reason": entry.get("reason") or "pending"}
+    failed = [item(u, e) for u, e in sources.items() if e.get("status") == "failed"]
+    pending = [item(u, e) for u, e in sources.items() if e.get("status") == "pending"]
+    if state.get("pending_root"):
+        pending.append(item(state["pending_root"], {"reason": "source_file_limit"}))
+    refused = [item(u, e) for u, e in sources.items() if e.get("status") == "refused"]
+    return {"complete": bool(sources) and not failed and not pending and not state.get("capped", False),
+            "capped": bool(state.get("capped")), "cap_reason": state.get("cap_reason"),
+            "entries_seen": int(state.get("entries_seen", 0)), "source_files": len(sources),
+            "failed_sources": failed, "pending_sources": pending, "refused_sources": refused}
+
+
+def sitemap_coverage(runtime: dict) -> dict:
+    """Inspection coverage until the first feeder commit, then queued coverage."""
+    if runtime.get("sitemap_probe") and not runtime.get("sitemap_feeding_started"):
+        return copy.deepcopy(runtime["sitemap_probe"])
+    return sitemap_report(runtime.get("sitemap_traversal") or {})
+
+
+def sitemap_retry_state(state: dict) -> dict:
+    """A linked run gets a fresh budget and only unfinished source cursors.
+
+    Index offsets preserve undiscovered children beyond the source-file cap. Completed
+    sources are removed to release space; their product entries are never replayed.
+    """
+    sources = {u: copy.deepcopy(e) for u, e in (state.get("sources") or {}).items()
+               if e.get("status") in ("pending", "failed")}
+    for entry in sources.values():
+        entry.update(status="pending")
+        entry.pop("reason", None)
+    return {"sources": sources, "entries_seen": 0, "capped": False, "cap_reason": None,
+            "root_offset": int(state.get("root_offset", 0)), "pending_root": state.get("pending_root")}
+
+
+async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int = MAX_SITEMAP_FILES,
+                        state: dict | None = None, max_entries: int | None = None):
+    """Breadth-first source traversal with optional per-source, caller-owned cursors.
+
+    ``state`` MUST be a private copy: a cursor is advanced before yielding its URL,
+    and the caller may commit it only after enqueue succeeds. Restart can replay a
+    batch through queue deduplication, but never skip an uncommitted batch. Failed
+    sources retain their own offsets, independent of successful sibling sources.
+    Changed bodies (or legacy cursors without a body hash) replay through dedup
+    from the start, without refunding the current run's enumeration budget.
+    """
+    from app.fetching.proxy_auth import ProxyAuthenticationRequired
+
+    state = {} if state is None else state
+    sources = state.setdefault("sources", {})
+    state.setdefault("entries_seen", 0)
+    state.setdefault("capped", False)
+    state.setdefault("cap_reason", None)
+    # Root and child cursors are independent: even robots.txt with > max_files
+    # roots must be partial and retry from the next root, never silently complete.
+    if state["capped"] and state["cap_reason"] == "entry_limit":
+        return
+    for offset in range(int(state.get("root_offset", 0)), len(sitemaps)):
+        url = sitemaps[offset]
+        if url not in sources:
+            if len(sources) >= max_files:
+                state.update(capped=True, cap_reason="source_file_limit", pending_root=url)
+                break
+            sources[url] = {"status": "pending", "page_offset": 0, "nested_offset": 0}
+        state["root_offset"] = offset + 1
+        state.pop("pending_root", None)
+    queue = deque(u for u, e in sources.items() if e["status"] in ("pending", "failed"))
+    attempted = set()
+    while queue:
         url = queue.popleft()
-        if url in seen:
+        if url in attempted:
             continue
-        seen.add(url)
+        attempted.add(url)
+        entry = sources[url]
+        entry.update(status="pending")
+        entry.pop("reason", None)
         if await url_is_private(url):
+            # The guard also refuses unresolvable hosts. Keep that refusal,
+            # but report DNS failure as incomplete rather than a neutral policy.
+            try:
+                private = await host_is_private(host_of(url))
+            except ValueError:
+                private = None
+            if private is None:
+                entry.update(status="failed", reason="fetch_failed")
+            else:
+                entry.update(status="refused", reason="private_address_refused")
             continue
-        fetched = await fetch(url)
-        files += 1
-        if fetched is None or not fetched.status or not 200 <= fetched.status < 300 or not fetched.body:
+        try:
+            fetched = await fetch(url)
+        except (ProxyAuthenticationRequired, ApiError):
+            raise
+        except Exception:
+            entry.update(status="failed", reason="fetch_failed")
             continue
-        pages, nested = parse_sitemap(fetched.body, fetched.final_url or url)
-        for item in pages:
-            yield item
-        for n in nested:
-            if n not in seen:
-                queue.append(n)
+        if fetched is None or not fetched.status or not 200 <= fetched.status < 300:
+            entry.update(status="failed", reason="fetch_failed")
+            continue
+        try:
+            pages, nested = parse_sitemap(fetched.body, fetched.final_url or url, strict=True)
+        except Exception:
+            entry.update(status="failed", reason="invalid_sitemap")
+            continue
+        fingerprint = hashlib.sha256(fetched.body).hexdigest()
+        if entry.get("body_sha256") != fingerprint:
+            # An incomplete file may change while paused or failed. Ordinal
+            # cursors then cannot prove which locations were already emitted;
+            # legacy cursors without a fingerprint are equally uncertain.
+            # Replay through caller dedup, spending the same run's entry budget.
+            entry.update(page_offset=0, nested_offset=0)
+        entry["body_sha256"] = fingerprint
+        for offset in range(int(entry["page_offset"]), len(pages)):
+            if max_entries is not None and state["entries_seen"] >= max_entries:
+                entry["reason"] = "entry_limit"
+                state.update(capped=True, cap_reason="entry_limit")
+                return
+            entry["page_offset"] = offset + 1
+            state["entries_seen"] += 1
+            yield pages[offset]
+        for offset in range(int(entry["nested_offset"]), len(nested)):
+            child = nested[offset]
+            if child not in sources:
+                if len(sources) >= max_files:
+                    entry["reason"] = "source_file_limit"
+                    state.update(capped=True, cap_reason="source_file_limit")
+                    break
+                sources[child] = {"status": "pending", "page_offset": 0, "nested_offset": 0}
+                queue.append(child)
+            entry["nested_offset"] = offset + 1
+        else:
+            entry["status"] = "complete"
 
 
-async def collect_sitemap_urls(sitemaps: list[str], cap: int = SITEMAP_CAP, fetch: Fetcher | None = None) -> tuple[list[str], bool, Any]:
-    """All page URLs of the sitemaps (index, text and gzip included), up to ``cap``."""
+async def collect_sitemap_urls(sitemaps: list[str], cap: int = SITEMAP_CAP, fetch: Fetcher | None = None,
+                               *, state: dict | None = None) -> tuple[list[str], bool, Any]:
+    """Inspect source URLs up to the total enumeration cap, optionally retaining coverage."""
     urls: list[str] = []
     latest = None
-    capped = False
-    async for loc, lastmod in iter_sitemaps(sitemaps, fetch or http_fetcher()):
+    state = {} if state is None else state
+    async for loc, lastmod in iter_sitemaps(sitemaps, fetch or http_fetcher(), state=state, max_entries=cap):
         urls.append(loc)
         if lastmod is not None and (latest is None or lastmod > latest):
             latest = lastmod
-        if len(urls) >= cap:
-            capped = True
-            break
-    return urls, capped, latest
+    return urls, bool(state.get("capped")), latest
 
 
 @url_batch
@@ -265,7 +402,26 @@ async def start_page_links(site_url: str, fetch: Fetcher | None = None) -> tuple
 
 async def decide_discovery(runner, sitemaps: list[str], fetch: Fetcher | None = None) -> tuple[str, list[str]]:
     cfg = runner.config
-    urls, _capped, _ = await collect_sitemap_urls(sitemaps, fetch=fetch) if sitemaps else ([], False, None)
+    probe_state: dict = {}
+    urls, _capped, _ = await collect_sitemap_urls(sitemaps, cap=SITEMAP_CAP, fetch=fetch, state=probe_state) if sitemaps else ([], False, None)
+    if probe_state:
+        report = sitemap_report(probe_state)
+        runner.rt["sitemap_probe"] = report
+        runner.rt["sitemap_probe_partial"] = not report["complete"]
+        runner.doc["sitemap_probe"] = copy.deepcopy(report)
+        runner.doc["sitemap_discovery"] = copy.deepcopy(report)
+        # Inspection emitted no queue requests. Keep only zero-offset discovery
+        # intent: neither a successful probe prefix nor its budget is a committed
+        # feeder cursor. Failed sources remain available for linked recollection.
+        intent = copy.deepcopy(probe_state)
+        intent.update(entries_seen=0, capped=False, cap_reason=None)
+        for entry in intent["sources"].values():
+            if entry["page_offset"] or entry["nested_offset"]:
+                entry["status"] = "pending"
+                entry.pop("reason", None)
+            entry.update(page_offset=0, nested_offset=0)
+        runner.rt["sitemap_traversal"] = intent
+        runner.rt["sitemap_partial"] = not report["complete"]
     matching = filter_urls(urls, cfg.get("url_include") or [], cfg.get("url_exclude") or [])
     share = None
     if matching:

@@ -63,6 +63,81 @@ async def test_identity_is_reused_per_exit_and_survives_a_restart(tmp_path):
         idm.reset_for_tests(None)
 
 
+@pytest.mark.parametrize("geo", [None, _geo("5.6.7.8")])
+@pytest.mark.parametrize("kind", ["user_password", "custom_list"])
+def test_identity_key_ignores_rotated_proxy_password(geo, kind):
+    from app.fetching.identity import key_for
+    from app.fetching.proxies import tier_url
+
+    if kind == "custom_list":
+        first = tier_url({"tier": 1, "provider": kind, "proxy_urls": ["http://account:fixture-first-credential@proxy.test:8000/private?token=first"]}, "same-session")
+        rotated = tier_url({"tier": 1, "provider": kind, "proxy_urls": ["http://account:fixture-next%3A%40credential@proxy.test:8000/other?token=next"]}, "same-session")
+    else:
+        first = tier_url(dict(TIER, password="fixture-first-credential"), "same-session")
+        rotated = tier_url(dict(TIER, password="fixture-next:@/%credential"), "same-session")
+    assert key_for("camoufox", "linux", first, geo) == key_for("camoufox", "linux", rotated, geo)
+
+
+def test_proxy_identity_hashes_only_public_session_metadata(monkeypatch):
+    import hashlib
+    from app.fetching import identity as idm
+
+    seen, original = [], hashlib.sha256
+    def public_digest(data=b"", **kwargs):
+        seen.append(data)
+        return original(data, **kwargs)
+    monkeypatch.setattr(hashlib, "sha256", public_digest)
+    key = idm.key_for("camoufox", "linux", "http://account-session-1:fixture-credential@proxy.test:8000", None)
+    other = idm.key_for("camoufox", "linux", "http://account-session-2:fixture-credential@proxy.test:8000", None)
+    from app.fetching.proxies import tier_url
+    custom = tier_url({"tier": 1, "provider": "custom_list", "proxy_urls": ["http://account:fixture-credential@proxy.test:8000/fixture-private-path?token=fixture-query-secret"]}, "sample")
+    idm.key_for("camoufox", "linux", custom, None)
+    assert key != other
+    assert seen and all(b"fixture-credential" not in data for data in seen)
+    assert all(b"fixture-private-path" not in data and b"fixture-query-secret" not in data for data in seen)
+
+
+def test_legacy_password_derived_session_entries_are_removed_on_load(tmp_path):
+    import json
+    from dataclasses import asdict
+    from app.fetching.identity import Identity, IdentityStore, key_for
+
+    legacy = "camoufox|linux|proxy-fixture|session:0123456789abcdef"
+    known = "camoufox|linux|proxy-fixture|ip:5.6.7.8"
+    public = key_for("camoufox", "linux", "http://account:fixture-credential@proxy.test:8000", None)
+    path = tmp_path / "identities.json"
+    path.write_text(json.dumps({"version": 1, "identities": {
+        name: asdict(Identity(preset_id=name, browser="camoufox", os="linux"))
+        for name in (legacy, known, public)
+    }}))
+    store = IdentityStore(path)
+    assert store.get(legacy) is None
+    assert store.get(known).preset_id == known
+    assert store.get(public).preset_id == public
+    assert legacy not in json.loads(path.read_text())["identities"]
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_tier_scopes_upgrade_once_without_losing_direct_identities(tmp_path, version):
+    import json
+    from dataclasses import asdict
+    from app.fetching.identity import Identity, IdentityStore
+
+    scoped = "camoufox|linux|t1-0123456789ab|ip:5.6.7.8"
+    direct = "camoufox|linux|direct|ip:5.6.7.8"
+    path = tmp_path / "identities.json"
+    path.write_text(json.dumps({"version": version, "identities": {
+        name: asdict(Identity(preset_id=name, browser="camoufox", os="linux"))
+        for name in (scoped, direct)
+    }}))
+    store = IdentityStore(path)
+    assert (store.get(scoped) is None) == (version == 1)
+    assert store.get(direct).preset_id == direct
+    saved = json.loads(path.read_text())
+    assert saved["version"] == 2
+    assert (scoped in saved["identities"]) == (version == 2)
+
+
 def test_camoufox_identity_pins_fonts_voices_gpu_and_screen():
     from app.fetching.identity import camoufox_fingerprint, new_camoufox_identity
 

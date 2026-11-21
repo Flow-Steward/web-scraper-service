@@ -85,7 +85,11 @@
       ],
       "properties": {
         "found": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Null when inspection was skipped or the limited preview has not established whether a sitemap contains URLs."
         },
         "url": {
           "anyOf": [
@@ -98,17 +102,24 @@
           ]
         },
         "url_count": {
-          "type": "integer",
-          "minimum": 0
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Observed URLs in the setup preview; null when skipped or no count is known. A capped count is a lower bound."
         },
         "url_count_capped": {
           "type": "boolean",
-          "description": "true when counting stopped at 100,000 URLs."
+          "description": "True when the setup sitemap preview reached its URL, file or time budget, or source reads were incomplete. Counts are lower bounds; full inventory is deferred to the run."
         },
         "matching_url_count": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0,
-          "description": "After `url_include` / `url_exclude`."
+          "description": "Observed URLs after url_include/url_exclude; null when skipped or no count is known. A capped count is a lower bound."
         },
         "target_share": {
           "anyOf": [
@@ -132,6 +143,15 @@
               "type": "null"
             }
           ]
+        },
+        "inspection": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "limited",
+            "skipped"
+          ],
+          "description": "Setup preview state: complete, limited by budgets or incomplete/refused source reads, or skipped for explicit crawl/url_list."
         }
       }
     },

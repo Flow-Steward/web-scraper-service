@@ -75,7 +75,9 @@ def test_analysis_does_not_rerun_the_route_for_a_sitemap_of_a_failed_host(guarde
     assert "plain HTTP" in warn[0]["message"]
     # the sitemap was asked for once over plain HTTP (challenged): no browser request, no route
     assert hits.get("8603/robots.txt") == 1 and hits.get("8603/guarded-sitemap.xml") == 1, hits
-    assert body["sitemap"]["found"] is False
+    assert body["sitemap"]["found"] is None
+    assert body["sitemap"]["inspection"] == "limited"
+    assert body["sitemap"]["url_count"] is None
 
 
 def test_analysis_with_robots_behind_the_failed_challenge_runs_one_route(guarded_service, fixture_world):
@@ -99,6 +101,12 @@ def test_one_identity_per_exit(guarded_service, fixture_world, browser):
     a = check(guarded_service.post("/v1/analyze", {"config": cfg, "profile": prof}), "analysis.schema.json", 200)
     fixture_world.set(8603, reset_clearances=True)
     s = check(guarded_service.post("/v1/samples", {"config": cfg, "profile": prof, "urls": [f"{GUARD}/p/2"]}), "samples.schema.json", 200)
+    assert a.get("protection_trace"), {
+        "phase": "analysis", "response": a, "service_log": guarded_service.log()[-12000:],
+    }
+    assert s.get("protection_trace"), {
+        "phase": "samples", "response": s, "service_log": guarded_service.log()[-12000:],
+    }
     ta, ts = a["protection_trace"][0], s["protection_trace"][0]
     assert ta["exit_ip"] == ts["exit_ip"] == "203.0.113.7"
     pa, ps = ta["environment"]["preset_id"], ts["environment"]["preset_id"]

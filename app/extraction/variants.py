@@ -31,6 +31,8 @@ import re
 from typing import Any, Awaitable, Callable
 from urllib.parse import urljoin, urlsplit
 
+from app.fetching.proxy_auth import ProxyAuthenticationRequired
+
 FetchJson = Callable[[str], Awaitable[Any]]
 
 NORMAL_KEYS = ("id", "title", "options", "price", "regular_price", "currency", "sku", "barcode", "availability", "in_stock",
@@ -510,6 +512,8 @@ async def resolve(page, block: dict | None, fetch_json: FetchJson | None) -> tup
                 variants = from_structured(page, src)
             else:
                 variants = []
+        except ProxyAuthenticationRequired:
+            raise
         except Exception:
             variants = []
         if variants:

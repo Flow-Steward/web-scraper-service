@@ -324,6 +324,12 @@
               "type": "string"
             }
           }
+        },
+        "sitemap_discovery": {
+          "$ref": "#/$defs/sitemap_discovery"
+        },
+        "sitemap_probe": {
+          "$ref": "#/$defs/sitemap_discovery"
         }
       }
     },
@@ -385,7 +391,7 @@
         "url_count",
         "by_reason"
       ],
-      "description": "Added 2026-11-14. On a re-collect run: the run whose missed pages it collects again, the unextracted reasons taken, how many URLs (README 4.10).",
+      "description": "On a linked re-collect run: the parent run, selected unextracted reasons, known failed-document URLs and optional unfinished sitemap sources. url_count may be zero when only source traversal failed. The finished parent remains unchanged.",
       "properties": {
         "run_id": {
           "$ref": "run_summary.schema.json#/$defs/run_id"
@@ -398,7 +404,7 @@
         },
         "url_count": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "by_reason": {
           "type": "object",
@@ -409,6 +415,12 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "source_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 501,
+          "description": "Unfinished sitemap sources retried alongside the failed document URLs. Each linked run receives a fresh source/entry budget and preserves per-source offsets."
         }
       }
     },
@@ -475,7 +487,7 @@
         "preset",
         "text"
       ],
-      "description": "Added 2026-11-14. The run's effective politeness: `preset` (`gentle`/`normal`/`fast`), `text` (\"normal: 2–5 s, 2 at a time, 30/min, page timeout 60 s\"), and `slowed_hosts` while the automatic slow-down has widened a host's delay: host → {`factor` (× the configured delay), `since`, `reason`} (README 4.15).",
+      "description": "Added 2026-11-14. The run's effective politeness: `preset` (`gentle`/`normal`/`fast`), `text` (\"normal: 2\u20135 s, 2 at a time, 30/min, page timeout 60 s\"), and `slowed_hosts` while the automatic slow-down has widened a host's delay: host \u2192 {`factor` (\u00d7 the configured delay), `since`, `reason`} (README 4.15).",
       "properties": {
         "preset": {
           "type": "string",
@@ -516,6 +528,12 @@
           }
         }
       }
+    },
+    "sitemap_discovery": {
+      "$ref": "#/$defs/sitemap_discovery"
+    },
+    "sitemap_probe": {
+      "$ref": "#/$defs/sitemap_discovery"
     }
   },
   "$defs": {
@@ -745,11 +763,12 @@
         "challenge_limit_reached",
         "store_limit_reached",
         "waiting_for_credentials",
+        "proxy_auth_failed",
         "site_unavailable",
         "sitemap_outdated",
         "stalled"
       ],
-      "description": "Added 2026-11-14: `site_unavailable` (the run stopped, see `stop_reason`), `sitemap_outdated` (a high share of the sitemap's URLs answered 404; in `auto` discovery the link crawl was added). `stalled` (added 2026-11-14): no progress for `stall_seconds`; the message says what is stuck."
+      "description": "`proxy_auth_failed`: an upstream proxy explicitly refused authentication; the run is waiting for Resume and retains pending work. Added 2026-11-14: `site_unavailable` (the run stopped, see `stop_reason`), `sitemap_outdated` (a high share of the sitemap's URLs answered 404; in `auto` discovery the link crawl was added). `stalled` (added 2026-11-14): no progress for `stall_seconds`; the message says what is stuck."
     },
     "run_error_code": {
       "type": "string",
@@ -1642,6 +1661,132 @@
             },
             "text": {
               "type": "string"
+            }
+          }
+        },
+        "sitemap_discovery": {
+          "$ref": "#/$defs/sitemap_discovery"
+        },
+        "sitemap_probe": {
+          "$ref": "#/$defs/sitemap_discovery"
+        }
+      }
+    },
+    "sitemap_discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete",
+        "capped",
+        "cap_reason",
+        "entries_seen",
+        "source_files",
+        "failed_sources",
+        "pending_sources",
+        "refused_sources"
+      ],
+      "description": "Sitemap source coverage. A capped or inaccessible source makes outcome partial even with no known missing documents. Source URLs omit credentials, queries and fragments; errors use fixed reason codes. Private-address refusals remain outcome-neutral.",
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "capped": {
+          "type": "boolean"
+        },
+        "cap_reason": {
+          "enum": [
+            null,
+            "entry_limit",
+            "source_file_limit"
+          ]
+        },
+        "entries_seen": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 500
+        },
+        "failed_sources": {
+          "type": "array",
+          "maxItems": 501,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "url",
+              "reason"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "pending",
+                  "fetch_failed",
+                  "invalid_sitemap",
+                  "entry_limit",
+                  "source_file_limit",
+                  "private_address_refused"
+                ]
+              }
+            }
+          }
+        },
+        "pending_sources": {
+          "type": "array",
+          "maxItems": 501,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "url",
+              "reason"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "pending",
+                  "fetch_failed",
+                  "invalid_sitemap",
+                  "entry_limit",
+                  "source_file_limit",
+                  "private_address_refused"
+                ]
+              }
+            }
+          }
+        },
+        "refused_sources": {
+          "type": "array",
+          "maxItems": 501,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "url",
+              "reason"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "pending",
+                  "fetch_failed",
+                  "invalid_sitemap",
+                  "entry_limit",
+                  "source_file_limit",
+                  "private_address_refused"
+                ]
+              }
             }
           }
         }

@@ -18,6 +18,7 @@ import httpx
 
 from app.core.netguard import PrivateAddressError, guarded_transport, url_is_private
 from app.core.urls import absolute
+from app.fetching.proxy_auth import ProxyAuthenticationRequired, is_proxy_auth_failure
 
 if TYPE_CHECKING:
     from app.fetching.navigation import (
@@ -119,6 +120,7 @@ async def http_get(
     max_redirects: int = 10,
     check_private: bool = True,
     max_bytes: int = 60 * 1024 * 1024,
+    destination_policy=None,
 ) -> Fetched:
     merged = dict(DEFAULT_HEADERS)
     merged.update(headers or {})
@@ -139,6 +141,14 @@ async def http_get(
                         nxt = absolute(current, resp.headers["location"])
                         if not nxt:
                             return Fetched(url, current, resp.status_code, b"", dict(resp.headers), "bad redirect", hops)
+                        if check_private and await url_is_private(nxt):
+                            raise PrivateAddress(nxt)
+                        from app.fetching.destinations import redirect_destination_allowed
+
+                        if not await redirect_destination_allowed(
+                            nxt, site_url=url, destination_policy=destination_policy,
+                        ):
+                            return Fetched(url, current, resp.status_code, b"", dict(resp.headers), "redirect_policy_denied", hops)
                         hops.append(current)
                         current = nxt
                         continue
@@ -157,7 +167,58 @@ async def http_get(
     except PrivateAddressError as exc:
         raise PrivateAddress(current) from exc
     except (httpx.HTTPError, OSError, ValueError) as exc:
-        return Fetched(url, current, None, b"", {}, type(exc).__name__, hops)
+        error = "proxy_auth_failed" if is_proxy_auth_failure(exc, proxy_used=bool(proxy)) else type(exc).__name__
+        return Fetched(url, current, None, b"", {}, error, hops)
+
+
+
+async def context_get(context, url: str, *, headers=None, destination_policy=None,
+                      timeout_ms=60000, max_redirects=10, proxy_used=False) -> Fetched | None:
+    """Raw context GET sharing cookies/proxy with per-hop destination checks.
+
+    Explicit auth rejection with a configured proxy raises a sanitized resumable
+    signal; other transport exceptions propagate without losing their identity.
+    """
+    from app.fetching.destinations import redirect_destination_allowed
+
+    current, hops = url, []
+    for _ in range(max_redirects + 1):
+        if await url_is_private(current):
+            return None
+        response = None
+        try:
+            response = await context.request.get(
+                current, timeout=timeout_ms, max_redirects=0, headers=headers,
+            )
+            if is_proxy_auth_failure(status=response.status, proxy_used=proxy_used):
+                raise ProxyAuthenticationRequired()
+            if response.status in (301, 302, 303, 307, 308) and response.headers.get("location"):
+                target = absolute(current, response.headers["location"])
+                if target is None:
+                    return Fetched(url, current, response.status, error="bad redirect", redirects=hops)
+                if await url_is_private(target):
+                    return None
+                if not await redirect_destination_allowed(
+                    target, site_url=url, destination_policy=destination_policy,
+                ):
+                    return Fetched(url, current, response.status, error="redirect_policy_denied", redirects=hops)
+                hops.append(current)
+                current = target
+                continue
+            body = await response.body()
+            return Fetched(url, response.url, response.status, body[:MAX_DECOMPRESSED],
+                           {k.lower(): v for k, v in response.headers.items()}, redirects=hops)
+        except Exception as exc:
+            if is_proxy_auth_failure(exc, proxy_used=proxy_used):
+                raise ProxyAuthenticationRequired() from None
+            raise
+        finally:
+            if response is not None:
+                try:
+                    await response.dispose()
+                except Exception:
+                    pass  # Cleanup must not erase the original fetch/auth result.
+    return Fetched(url, current, None, error="too many redirects", redirects=hops)
 
 
 def _proxy_cfg(proxy: str | None) -> dict | None:
@@ -203,6 +264,7 @@ class BrowserSession:
         self.context = None
         self.page = None
         self._refused: list[str] = []
+        self._native_document_policy = None
         self.cleared_step: str | None = None  # the route step that earned this session's clearance
         self.identity = None  # identity.Identity of this session's exit
         # host -> the first failed protection route of this request: no further
@@ -270,19 +332,39 @@ class BrowserSession:
                                                   viewport={"width": WINDOW[0], "height": WINDOW[1]},
                                                   **(self.geo.context_kwargs(camoufox=False) if self.geo else {}))
         self.page = await self.context.new_page()
-        await self.page.route("**/*", private_route_guard(self._refused))
+        async def native_document(route):
+            if self._native_document_policy is not None:
+                await self._native_document_policy.request(route)
+            else:
+                await route.continue_()
+
+        await self.page.route("**/*", private_route_guard(self._refused, native_document))
         return self
 
     async def close(self) -> None:
+        cancelled = None
+        if self._native_document_policy is not None:
+            try:
+                await self._native_document_policy.close()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception:
+                pass
+            finally:
+                self._native_document_policy = None
         for closer in (getattr(self.context, "close", None), getattr(self._browser, "close", None), getattr(self._pw, "stop", None)):
             if closer is None:
                 continue
             try:
                 await closer()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
             except Exception:
                 pass
+        if cancelled is not None:
+            raise cancelled
 
-    async def get(self, url: str, *, wait_ms: int = 0, settle: bool = False) -> tuple[int | None, str, str, str | None]:
+    async def get(self, url: str, *, wait_ms: int = 0, settle: bool = False, destination_policy=None) -> tuple[int | None, str, str, str | None]:
         """Returns (status, html, final_url, passed_at_step); ``passed_at_step`` is the route
         step that passed a challenge (``wait``, ``click``, ``solver``), else None."""
         from app.fetching.challenge import detect_page, page_html
@@ -294,6 +376,25 @@ class BrowserSession:
         if stopped is not None:
             raise HostStopped(stopped)
         self._refused.clear()
+        if self.is_closed:
+            # A read-only native command preserves TargetClosedError instead
+            # of replacing the transport failure with a guard RuntimeError.
+            await self.page.title()
+            raise RuntimeError("browser session is closed")
+        from app.fetching.destinations import resolved
+        from app.fetching.document_policy import bind_document_policy
+
+        async def allowed(target):
+            stopped = self.failure_for(target)
+            if stopped is not None:
+                raise HostStopped(stopped)
+            return destination_policy is None or bool(await resolved(destination_policy(target)))
+
+        self._native_document_policy = await bind_document_policy(
+            self.page, self.browser_name, url, destination_policy=allowed,
+            proxy_auth=_proxy_cfg(self.proxy),
+            timeout_s=min(3.0, float(self.timeout_s)),
+        )
         page = self.page
         referer = None
         if self._last_url is not None:
@@ -302,7 +403,14 @@ class BrowserSession:
             if host_label(self._last_url) == host_label(url):
                 referer = self._last_url
         self._last_url = url
-        resp = await page.goto(url, timeout=self.timeout_s * 1000, wait_until="load", referer=referer)
+        try:
+            resp = await page.goto(url, timeout=self.timeout_s * 1000, wait_until="load", referer=referer)
+        except Exception:
+            self._native_document_policy.raise_if_denied()
+            if self._refused:
+                raise PrivateAddress(self._refused[0])
+            raise
+        self._native_document_policy.raise_if_denied()
         status = resp.status if resp else None
         passed = None
         from app.fetching.challenge import PageNotLoaded, settle as settle_page
@@ -340,6 +448,8 @@ class BrowserSession:
         if verdict.is_challenge and passed is None and self.budget is not None:
             self._record_failure(url, trace, html)
         # the final URL after HTTP, meta and JavaScript redirects (review M7a)
+        if self._native_document_policy is not None:
+            self._native_document_policy.raise_if_denied()
         if self._refused:
             raise PrivateAddress(self._refused[0])
         if final != url and await url_is_private(final):
@@ -401,6 +511,8 @@ class BrowserSession:
         )
         # Preserve the request guard's normal failure contract if an allowed
         # script attempted a private redirect during listing navigation.
+        if self._native_document_policy is not None:
+            self._native_document_policy.raise_if_denied()
         if self._refused:
             raise PrivateAddress(self._refused[0])
         final_url = self.page.url
@@ -445,7 +557,7 @@ class BrowserSession:
         self.traces.append(trace)
         log.info(redact(trace_line(trace), [self.proxy or ""]))
 
-    async def raw(self, url: str) -> Fetched | None:
+    async def raw(self, url: str, *, destination_policy=None, headers=None) -> Fetched | None:
         """The raw bytes of ``url`` (robots.txt, a sitemap) through the session's context: its
         cookies and proxy. A challenge is passed in the page first, then the bytes are fetched."""
         from app.fetching.challenge import detect_html
@@ -456,24 +568,30 @@ class BrowserSession:
             return Fetched(url, url, None, b"", {}, "protection_not_passed")
         for attempt in range(2):
             try:
-                resp = await self.context.request.get(url, timeout=60000, max_redirects=10)
-                body = await resp.body()
+                fetched = await context_get(
+                    self.context, url, headers=headers, destination_policy=destination_policy,
+                    proxy_used=bool(self.proxy),
+                )
+                if fetched is None or fetched.error is not None:
+                    return fetched
+                body = fetched.body
+
             except Exception as exc:
-                return Fetched(url, url, None, b"", {}, type(exc).__name__)
+                error = "proxy_auth_failed" if is_proxy_auth_failure(exc, proxy_used=bool(self.proxy)) else type(exc).__name__
+                return Fetched(url, url, None, b"", {}, error)
             head = body[:300_000].decode("utf-8", errors="replace") if body[:2] != b"\x1f\x8b" else ""
-            if attempt == 0 and detect_html(head, resp.status).is_challenge:
+            if attempt == 0 and detect_html(head, fetched.status).is_challenge:
                 try:
-                    await self.get(url)
+                    await self.get(url, destination_policy=destination_policy)
                 except PrivateAddress:
                     return None
-                except Exception:
-                    return Fetched(url, url, resp.status, b"", {}, "challenge")
+                except Exception as exc:
+                    error = "proxy_auth_failed" if is_proxy_auth_failure(exc, proxy_used=bool(self.proxy)) else "challenge"
+                    return Fetched(url, url, fetched.status, b"", {}, error)
                 if self.failure_for(url) is not None:  # the route failed: no second fetch
-                    return Fetched(url, url, resp.status, b"", {}, "protection_not_passed")
+                    return Fetched(url, url, fetched.status, b"", {}, "protection_not_passed")
                 continue
-            if resp.url != url and await url_is_private(resp.url):
-                return None
-            return Fetched(url, resp.url, resp.status, body[:MAX_DECOMPRESSED], {k.lower(): v for k, v in resp.headers.items()}, None)
+            return fetched
         return None
 
 

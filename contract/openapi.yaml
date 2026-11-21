@@ -631,7 +631,7 @@ paths:
       tags:
         - "runs"
       summary: "Send the job's secrets again"
-      description: "Replaces the stored secrets still kept for the run's state. `waiting_for_credentials` → `running`; in any other state the secrets are replaced (signing secret always, proxy/solver secrets only before a final state) and the state is unchanged. Pending deliveries are retried at once."
+      description: "Replaces the stored secrets still kept for the run's state. `waiting_for_credentials` → `running` after credential refresh or proxy IP allow-list approval, retaining pending work and existing budgets; in any other state the secrets are replaced (signing secret always, proxy/solver secrets only before a final state) and the state is unchanged. Pending deliveries are retried at once."
       parameters:
         - "$ref": "#/components/parameters/run_id"
       requestBody:
@@ -671,7 +671,7 @@ paths:
       tags:
         - "runs"
       summary: "Added 2026-11-14. Collect a finished run's missed pages again in a new linked run"
-      description: "Starts a new run (201, `Location`) over only the parent's unextracted URLs whose reason is in `reasons` (default `fetch_failed`, `blocked`, `incomplete`, `no_template`, `template_failed`, `stopped`): the parent's config in `url_list` mode with each entry's `key` kept, no mapping rebuild, the site's active mappings, the caller's `profile` and `platform`. The new run has its own result; `recollect_of` links it to the parent, the parent's `recollected_by` lists it. Same `Idempotency-Key` rules as `POST /v1/runs` (README 4.10, 5)."
+      description: "Starts a new linked run (201, `Location`) over unfinished sitemap source cursors and the parent's unextracted URLs whose reason is in `reasons` (default `fetch_failed`, `blocked`, `incomplete`, `no_template`, `template_failed`, `stopped`): the parent's config in `url_list` mode with each entry's `key` kept, no mapping rebuild, the site's active mappings, the caller's `profile` and `platform`. When sources are unfinished, the run uses sitemap mode with retained per-source offsets and a fresh discovery budget, also queues the selected failed URLs, and may have `url_count: 0` with `source_count`. The new run has its own result; `recollect_of` links it to the parent, the parent's `recollected_by` lists it. Same `Idempotency-Key` rules as `POST /v1/runs` (README 4.10, 5)."
       parameters:
         - "$ref": "#/components/parameters/run_id"
         - "$ref": "#/components/parameters/idempotency_key"

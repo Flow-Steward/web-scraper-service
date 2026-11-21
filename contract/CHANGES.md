@@ -1,9 +1,52 @@
 # Contract changes after the first publication
 
-All changes are additive within v1 (new optional fields, new optional
-header, new warning code, clarified text). Newest first. "Extension" says what
+Changes within v1 include new optional fields, optional headers, warning codes
+and clarified text. Nullable fields introduced below require consumers to handle unknown values. Newest first. "Extension" says what
 the extension (`flowsteward.web-scraper`, which keeps a copy of this
 directory) must do.
+
+## 2026-11-21 (discovery and connection reliability)
+
+- Run summaries and completeness reports add `sitemap_discovery` (`complete`,
+  `capped`, `cap_reason`, `entries_seen`, `source_files`, and sanitized
+  `failed_sources` / `pending_sources` / `refused_sources`). Failed or invalid
+  sources and discovery caps produce `outcome=partial`, including zero-record runs.
+  `recollect` retries unfinished source cursors together with selected failed
+  document URLs in a new linked run. `recollect_of.source_count` is additive;
+  `url_count` may be zero for a source-only retry.
+- Auto discovery retains its bounded initial source inspection as `sitemap_probe`.
+  An inaccessible source or cap remains partial when auto falls back to crawl,
+  including default-map outages (ordinary 404/410 remains absent). Probe offsets
+  never stand in for committed feeder cursors. A source-only failure can be
+  recollected after a healthy crawl.
+- Explicit upstream proxy authentication rejection pauses a run in
+  `waiting_for_credentials` with one sanitized `proxy_auth_failed` problem.
+  Resume applies the approved replacement profile while preserving pending work,
+  completed records and existing budgets. An origin login or ordinary timeout
+  is not evidence of proxy authentication failure.
+- Ordinary HTTP and native browser document redirects now receive destination
+  checks before following each hop. Browser networking, cookies and identity
+  remain native; this also covers redirects from committed cross-site frames.
+
+Extension: the synchronized run-summary schema accepts the additional coverage
+fields. Show partial discovery and the actionable connection problem; never
+present an inaccessible inventory as a proven complete empty catalogue.
+
+## 2026-11-21 (bounded setup sitemap preview)
+
+`analysis.sitemap` adds optional `inspection: complete | limited | skipped`.
+`found`, `url_count` and `matching_url_count` now also allow `null`: explicit
+`crawl`/`url_list` skips enumeration, and an interrupted preview may not establish
+whether any sitemap URLs exist. Unknown values must not be displayed as zero/false.
+`url_count_capped` also covers the setup file/time budgets and incomplete source reads
+(missing, malformed or refused sources); numeric counts with it
+are lower bounds. The preview caps are 1,000 URLs, 20 files and 10 seconds.
+
+Extension: synchronize `schemas/analysis.schema.json`; accept nullable found/counts,
+show skipped/unknown metadata, and qualify limited counts. Existing complete previews
+retain boolean/integer values. Setup work has the documented service overall timeout
+and caller lifetime; timeout is `503 service_unavailable` with reason
+`setup_deadline_exceeded`.
 
 ## 2026-11-14 (unusable answers, page timeout, slow-down, politeness presets, busy sites)
 

@@ -19,7 +19,7 @@ import hashlib
 import json
 import re
 from collections import OrderedDict
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 PRESET_ENDPOINTS = {
     "oxylabs": ("http", "pr.oxylabs.io", 7777),
@@ -86,11 +86,20 @@ _SCOPES: "OrderedDict[str, str]" = OrderedDict()  # proxy URL -> tier scope (ide
 _SCOPES_MAX = 20000
 
 
+def identity_metadata(proxy_url: str) -> dict:
+    """Public proxy routing identity, excluding credential and token fields."""
+    parsed = urlsplit(proxy_url)
+    return {"endpoint": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+            "username": parsed.username or ""}
+
+
 def tier_scope(tier: dict) -> str:
     """The proxy account and tier a URL belongs to, as a short hash of the tier's definition
     (never the password): one part of the browser identity key (identity.py)."""
-    material = json.dumps({k: tier.get(k) for k in ("tier", "provider", "protocol", "host", "port", "username", "country", "city", "proxy_urls")},
-                          sort_keys=True, default=str)
+    public = {k: tier.get(k) for k in ("tier", "provider", "protocol", "host", "port", "username", "country", "city")}
+    urls = tier.get("proxy_urls")
+    public["proxy_urls"] = [identity_metadata(url) for url in urls] if urls is not None else None
+    material = json.dumps(public, sort_keys=True, default=str)
     return f"t{tier.get('tier')}-" + hashlib.sha256(material.encode()).hexdigest()[:12]
 
 

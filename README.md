@@ -177,7 +177,7 @@ Environment variables, all optional except the first:
 | Variable | Default | Meaning |
 |---|---|---|
 | `WSS_API_TOKEN` | — (required) | Bearer token of the API |
-| `WSS_SECRETS_KEY` | unset | Key that encrypts job secrets at rest (AES-256-GCM): 32 bytes URL-safe base64, or a passphrase ≥ 16 chars. Without it `POST /v1/runs` and resume answer `503 secrets_key_unavailable`. A changed key puts running jobs into `waiting_for_credentials` until Resume |
+| `WSS_SECRETS_KEY` | unset | Key that encrypts job secrets at rest (AES-256-GCM): 32 bytes URL-safe base64, or a passphrase ≥ 16 chars. Without it `POST /v1/runs` and resume answer `503 secrets_key_unavailable`. A changed key puts running jobs into `waiting_for_credentials` until Resume. Explicit upstream proxy authentication rejection also pauses for Resume after credentials or IP allow-list approval, preserving pending work and budgets |
 | `WSS_DATA_DIR` | `/data` | The one volume: `service.sqlite3`, `jobs/<run_id>/crawlee` (Crawlee storage per job), `results/`, `samples/`, `identities.json` |
 | `WSS_PORT`, `WSS_HOST` | `8080`, `0.0.0.0` | Listen address |
 | `WSS_ALLOW_CHALLENGE_CLICK` | `0` | Allow the model-free checkbox click (route step `click`) |
@@ -193,6 +193,7 @@ Environment variables, all optional except the first:
 | `WSS_CHALLENGE_WAIT_SECONDS` | 30 | Route step `wait`: up to this long for the challenge to clear by itself (stops as soon as it does), then the click |
 | `WSS_CHALLENGE_CLICK_WAIT_SECONDS` | 15 | After the one click on a widget: how long the page is polled (every second) before the click counts as failed |
 | `WSS_NAVIGATION_TIMEOUT_SECONDS` | 60 | Page timeout of a run whose configuration has no `page_timeout_seconds` (the politeness preset normally sets it) |
+| `WSS_SETUP_TIMEOUT_SECONDS` | 180 | Overall analysis/samples work budget, 5–1800 s; separate from the per-page timeout. Caller disconnect/cancellation stops work sooner and closes request resources |
 | `WSS_BROWSER_HEADLESS` | `0` | Run the browsers headless. By default they run headed on the image's virtual display (Xvfb), which the protection route relies on; set `1` only where no display can run |
 | `WSS_BREAKER_FAILURES` | 5 | Circuit breaker per host: this many server errors, timeouts or network errors (or unusable answers) in a row pause the host (1–1000) |
 | `WSS_BREAKER_PAUSE_SECONDS` | 30 | Length of the first pause; it doubles with every further pause (0–3600) |
@@ -218,10 +219,18 @@ Everything the service keeps is on the one volume (`WSS_DATA_DIR`, `/data`):
 | Run records (runs, records, events …) | `service.sqlite3` | `WSS_RETENTION_JOB_RECORD_DAYS` (30) after the run finished |
 | Samples and protection screenshots | `samples/`, `samples/shots/` | `WSS_RETENTION_SAMPLES_HOURS` (24) |
 | Database and its write-ahead log | `service.sqlite3`, `-wal`, `-shm` | Always; shrinks only by compaction |
-| Browser identities per host | `identities.json` | Always; never removed |
+| Browser identity cache | `identities.json` | Up to 1,000 entries; least recently used entries are replaced |
 
 The sweeper runs every `WSS_RETENTION_INTERVAL_SECONDS` (60) and never touches a run that
 is not finished. Each pass is recorded (`last_cleanup` below).
+
+Identity cache format 2 derives proxy identifiers from public routing fields,
+including session-bearing usernames, excluding URL passwords, paths, query strings
+and fragments. This also applies to `custom_list` tiers. On the first upgrade,
+legacy session keys and ambiguous tier-scoped format-1 entries are removed and
+recreated as needed. A site may require another protection challenge after that
+one-time fingerprint change. Direct/endpoint-only entries and format-2 public
+identities retain their cache entries.
 
 Two routes (same bearer token; contract README 16):
 
@@ -331,9 +340,9 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
 * **One run per site, watchdog:** a second start of a busy site is skipped by default
   (`when_site_busy`, see below); a run with no progress for `WSS_STALL_SECONDS` raises
   `stalled`, then stops (contract README 4.13, 4.14).
-* **Re-collect:** `POST /v1/runs/{id}/recollect` starts a new linked run over only a finished
-  run's unextracted URLs (by reason), with the parent's config in `url_list` mode and its own
-  result (contract README 4.10).
+* **Re-collect:** `POST /v1/runs/{id}/recollect` starts a new linked run over a finished
+  run's selected unextracted URLs and unfinished sitemap sources, preserving per-source
+  progress with its own result (contract README 4.10).
 * **Events:** journal in SQLite, HMAC-SHA256 signing, delivery with the contract's
   back-off across restarts, claim/stage/complete/resend.
 
@@ -371,6 +380,22 @@ that takes longer fails like a network error (retried up to `max_retries`, then
 Scripted listing pagination uses the selected timeout for its bounded link-observation
 window, with no separate 30-second ceiling. Action/page budgets and the run
 `max_duration_minutes` limit continue to apply.
+
+**Setup previews and caller lifetime.** Analysis preserves explicit `crawl` or `url_list`
+intent and skips sitemap enumeration. Its `sitemap.inspection` is `skipped`, with
+`found`, `url_count` and `matching_url_count` set to `null` (unknown, not zero).
+`auto`, `sitemap` and `sitemap_and_crawl` inspect at most 1,000 observed page URLs,
+20 sitemap files and 10 seconds including sitemap discovery. Missing, malformed or refused
+nested sources also leave coverage incomplete. A limited preview reports
+`inspection: limited` and `url_count_capped: true`; known counts are lower bounds, and
+counts remain `null` when no count was established. `target_share` remains unknown
+for a limited preview. Full sitemap inventory belongs to a run.
+
+Analysis and samples work also ends at `WSS_SETUP_TIMEOUT_SECONDS` or when the caller
+disconnects/cancels. The overall budget can end a request before its per-page timeout.
+The service cancels and awaits request work, closing its active HTTP streams and browser
+session (including partial browser startup). Budget exhaustion returns a sanitized
+`503 service_unavailable` with `error.details.reason: setup_deadline_exceeded`.
 
 **Automatic slow-down.** Per host the service watches the last 20 pages. When at least
 20 % of them were server errors, timeouts, network errors or unusable answers, or the
@@ -516,3 +541,32 @@ fallback prioritizes the product's local region and following content before
 large preceding menus. Section comments still name the original DOM paths; no
 supplier-specific selectors are built into this fallback. Unsupported layouts
 and truncated evidence still require review before declaring optional fields absent.
+
+Sitemap source coverage is reported in `sitemap_discovery` and
+`completeness.sitemap_discovery`. A missing, inaccessible, empty-body or malformed
+sitemap is a failed source, while a valid empty `<urlset>` or `<sitemapindex>` (or
+URLs all excluded by the configured filters) can be complete. Source failures and
+the total 100,000-location or 500-source-file limits make the result partial even
+when no failed product URL is known. The location budget counts all locations,
+before product filters, and stays spent across a service restart. Source report
+URLs omit user information, queries and fragments; failure reasons do not contain
+raw upstream errors. Private-address refusals remain explicit and outcome-neutral.
+
+Use `POST /v1/runs/{id}/recollect` with a fresh profile to retry unfinished sitemap
+sources and selected failed document URLs. This creates a linked run with a fresh
+discovery budget and retained per-source offsets, including an index's remaining
+children. It does not rewrite the finished parent's result. Completed source
+entries are skipped and previously completed ancestor document URLs are not fetched
+again if a retried source repeats them. Cursors are committed only after their
+queue batch commits, so a crash can safely replay a batch through queue deduplication.
+Each incomplete source cursor retains a private body fingerprint. If its body changes
+or an older cursor has no fingerprint, that source replays from the start through
+queue/ancestor deduplication; replay spends the current run's remaining location
+budget and stays partial when exhausted. Completed sources are not re-polled; use
+a fresh full run when a complete new inventory is required.
+
+`auto` retains its initial source inspection in `sitemap_probe`, including failed
+sources and caps, even when it falls back to crawling. These remain partial-run
+provenance if a later source body changes. Probe offsets are reset before feeding;
+inspecting a URL never counts as having queued it. A default `/sitemap.xml` that
+returns 404/410 is absent; an inaccessible or invalid default is incomplete.
