@@ -152,7 +152,8 @@ class JobRunner:
         self._shutdown = False
         self._no_crawl = False
         self.job_dir = Path(self.settings.data_dir) / "jobs" / run_id
-        self.throttle = HostThrottle(self.config["delay_min_seconds"], self.config["delay_max_seconds"])
+        rate_floor = 60 / float(self.config.get("max_requests_per_minute") or 60000)
+        self.throttle = HostThrottle(max(rate_floor, self.config["delay_min_seconds"]), max(rate_floor, self.config["delay_max_seconds"]))
         self._shape_stats: dict[str, softerror.ShapeStats] = {}  # what normal pages of a URL shape look like
         self.tiers = TierPlan([], self.rt.get("host_level"))
         self.solver = None
@@ -822,8 +823,10 @@ class JobRunner:
         return len(new_requests)
 
     def _ukey(self, canonical: str, source_key: str | None) -> str:
-        """The page key a URL is queued under: hash-like path segments and learned dynamic
-        parameters left out; the URL itself is fetched unchanged."""
+        """Queue canonical path identity, ignoring only learned dynamic query parameters.
+
+        URL shape heuristics group trap budgets; they never merge resource paths.
+        """
         from app.core.linkrules import key_url
 
         return page_key(key_url(canonical, self.dynamic.learned), source_key)
@@ -871,6 +874,8 @@ class JobRunner:
             except ValueError:
                 continue
             r = "nofollow" if ("nofollow" in rules and cu in nofollow and cu not in follow) else url_skip(cu, rules)
+            if r == "facet_params" and self._looks_like_target_url(cu):
+                r = None  # an explicit target URL can use size/color/etc as identity
             if r:
                 skips[r] = skips.get(r, 0) + 1
                 continue
@@ -1123,7 +1128,7 @@ class JobRunner:
     def _variant_rows_static(self, tmpl: dict, data: dict, page) -> list:
         from app.extraction.variants import variant_rows
 
-        return variant_rows(tmpl, data, [], None, page.base_url)
+        return variant_rows(tmpl, data, [], None, page.base_url, page=page)
 
     def _variant_fetcher(self, ctx, browser_run: bool):
         """The shop's product JSON for a variant source: one light request through the
@@ -1313,6 +1318,12 @@ class JobRunner:
             if req_tier is not None and cur is not None and req_tier < cur["tier"]:
                 self._defer(request, "stale proxy tier")
             if not ud.get("aux"):
+                if (
+                    self.pages_started + int(self.rt.get("navigation_actions", 0))
+                    >= self.config["max_pages"]
+                ):
+                    self._cut("max_pages")
+                    self._defer(request, "page budget reached")
                 await self._admit(request)
                 self.pages_started += 1
             if not self.tiers.enabled:
@@ -1848,7 +1859,84 @@ class JobRunner:
                 tier = None
         return {"fetch_mode": "browser" if browser_run else "http", "browser": (self.browser or "chromium") if browser_run else None, "proxy_tier": tier}
 
-    async def _classify(self, ctx, html: str, final_url: str, status: int, browser_run: bool, ud) -> dict | None:
+    async def _collect_navigation(self, ctx, page, canonical, browser_run, ud, out):
+        """Discover links across listing states without changing extraction input."""
+        if not browser_run:
+            return
+        from dataclasses import asdict
+        from app.core.scope import in_scope
+        from app.fetching.navigation import NavigationLimits, collect_listing_links
+
+        scope = self._crawl_scope()
+        if scope and ud.get("src") != "start" and not in_scope(scope, canonical):
+            return
+
+        def cancelled():
+            return (
+                bool(self.rt.get("stop_reason"))
+                or self.state in ("stopping", "completed", "failed")
+                or self.running_seconds() >= self.config["max_duration_minutes"] * 60
+            )
+
+        async def allowed(action):
+            from app.core.linkrules import url_skip
+
+            if (
+                self.pages_started + int(self.rt.get("navigation_actions", 0))
+                >= self.config["max_pages"]
+            ):
+                return False
+            if cancelled() or await url_is_private(action.url):
+                return False
+            if getattr(action, "nofollow", False) and "nofollow" in self.link_rules:
+                return False
+            if site_key(action.url) != site_key(canonical) or url_skip(
+                action.url, self.link_rules
+            ):
+                return False
+            if scope and action.url != canonical and not in_scope(scope, action.url):
+                return False
+            if not await self.robots_allowed(action.url):
+                return False
+            while time.monotonic() < self.paused_until:
+                if cancelled():
+                    return False
+                await asyncio.sleep(0.2)
+            await self.throttle.wait(host_of(action.url))
+            if cancelled() or self.pages_started + int(self.rt.get("navigation_actions", 0)) >= self.config["max_pages"]:
+                return False
+            self.rt["navigation_actions"] = (
+                int(self.rt.get("navigation_actions", 0)) + 1
+            )
+            return True
+
+        result = await collect_listing_links(
+            ctx.page,
+            site_url=self.config["site_url"],
+            limits=NavigationLimits(
+                max_steps=min(100, int(self.config.get("max_pages") or 12)),
+                max_seconds=int(self.config.get("page_timeout_seconds") or 45),
+            ),
+            before_action=allowed,
+            cancelled=cancelled,
+        )
+        page.extra_links = result.links
+        page.extra_anchors = result.anchors
+        out["navigation"] = {
+            k: v for k, v in asdict(result).items() if k not in ("links", "anchors")
+        }
+        if result.bounded:
+            self.rt["navigation_partial"] = True
+            self.add_error(
+                "navigation_partial",
+                result.coverage_notes[-1],
+                url=canonical,
+                severity="warning",
+            )
+
+    async def _classify(
+        self, ctx, html: str, final_url: str, status: int, browser_run: bool, ud
+    ) -> dict | None:
         url = ctx.request.url
         try:
             canonical = canonical_url(final_url)
@@ -1916,6 +2004,7 @@ class JobRunner:
         out = dict(base)
         follow_links = self.doc["resolved"].get("discovery_mode") in ("crawl", "sitemap_and_crawl") and not self.config.get("single_page")
         if follow_links:
+            await self._collect_navigation(ctx, page, canonical, browser_run, ud, out)
             links, link_skips = self._filter_links(page, self._ranked_links(page))
             if link_skips:
                 out["link_skips"] = link_skips
@@ -1941,23 +2030,63 @@ class JobRunner:
                 from app.extraction.variants import resolve, variant_rows
 
                 variants, vinfo = await resolve(page, tmpl["variants"], self._variant_fetcher(ctx, browser_run))
-                rows = variant_rows(tmpl, ext.data, variants, (vinfo or {}).get("kind"), page.base_url)
+                rows = variant_rows(
+                    tmpl,
+                    ext.data,
+                    variants,
+                    (vinfo or {}).get("kind"),
+                    page.base_url,
+                    page=page,
+                )
                 out["variants"] = {"count": len(variants), "source": (vinfo or {}).get("kind")}
             required = required_set(tmpl, self.config.get("required_fields") or [])
-            first = rows[0][0]
-            missing = sorted(n for n in required if first.get(n) is None or first.get(n) == [])
+            from app.extraction.record_filter import record_filter_missing, record_matches
+
+            selected = [
+                (index, row)
+                for index, row in enumerate(rows)
+                if record_matches(tmpl, row[0])
+            ]
+            missing = sorted(
+                {
+                    name
+                    for _index, (data, _meta, _filled) in selected
+                    for name in required
+                    if data.get(name) is None or data.get(name) == []
+                }
+            )
+            missing = sorted(
+                set(missing)
+                | {
+                    name
+                    for data, _meta, _filled in rows
+                    for name in record_filter_missing(tmpl, data)
+                }
+            )
+            out["records_filtered"] = len(rows) - len(selected)
             out["template_id"] = tmpl["template_id"]
             out["mapping_version"] = tmpl["__version"]
             out["filled"] = [name for name, ok in ext.filled.items() if ok]
             view = price_view(page, tmpl)  # price status, ranges, the default currency
-            gaps = [] if missing else self._mapping_gaps(tmpl, page, rows, view)
-            if not missing and not gaps:
+            gaps = (
+                []
+                if missing or not selected
+                else self._mapping_gaps(
+                    tmpl, page, [row for _index, row in selected], view
+                )
+            )
+            if not selected and not missing:
+                out["page_class"] = "not_target"
+                out["records"] = []
+            elif not missing and not gaps:
                 out["page_class"] = "extracted"
                 records = []
-                for index, (data, meta, _filled) in enumerate(rows):
+                for index, (data, meta, _filled) in selected:
                     price_keys = annotate_price(tmpl, data, view)
                     rec: dict[str, Any] = {
-                        "record_id": record_id(canonical, tmpl["template_id"], index, ud.get("source_key")),
+                        "record_id": record_id(
+                            canonical, tmpl["template_id"], index, ud.get("source_key")
+                        ),
                         "source_url": canonical,
                         "site": site,
                         "template_id": tmpl["template_id"],
@@ -1989,7 +2118,7 @@ class JobRunner:
             out["page_class"] = "no_template" if target else "not_target"
         # a kind of page that was always a target page answered without its template's marks
         can_fall_through = not browser_run and self.config["fetch_mode"] == "auto" and self.browser
-        lost = None if can_fall_through or from_list else softerror.lost_template(stats, out["page_class"])
+        lost = None if can_fall_through or from_list or out.get("records_filtered") else softerror.lost_template(stats, out["page_class"])
         if lost is not None:
             return self._soft_retry(ctx, ud, url, host, elapsed, base, lost)
         self._observe(host, True, elapsed)
@@ -2005,13 +2134,22 @@ class JobRunner:
             and self.browser
             and not ctx.request.user_data.get("static_rejected")
         ):
-            weak = out["page_class"] in ("incomplete", "no_template") or (out["page_class"] == "not_target" and page.visible_text_chars < 300)
+            from app.fetching.navigation import needs_browser_navigation
+
+            interactive = follow_links and needs_browser_navigation(
+                page, is_target=out["page_class"] != "not_target"
+            )
+            weak = (
+                interactive
+                or out["page_class"] in ("incomplete", "no_template")
+                or (out["page_class"] == "not_target" and page.visible_text_chars < 300)
+            )
             host = host_of(url)
             stats = self.rt.setdefault("render_stats", {}).setdefault(host, [0, 0])
             if out["page_class"] == "extracted":
                 stats[0] += 1
             trusted = stats[0] >= 3 and stats[1] == 0
-            if weak and not trusted:
+            if weak and (not trusted or interactive):
                 ctx.request.user_data["static_rejected"] = True
                 return {"needs_browser": True}
         if browser_run and ctx.request.user_data.get("static_rejected") and out["page_class"] == "extracted":
@@ -2158,6 +2296,8 @@ class JobRunner:
         skey = item.get("source_key")
         site = item.get("site") or (site_key(canonical) if canonical.startswith("http") else self.doc["site"])
         pkey = page_key(canonical, skey)
+        if cls == "not_target" and item.get("records_filtered", 0) > 0:
+            self._drop_unextracted(canonical, skey)
         requested_key = page_key(canonical_url(item["requested_url"]) if item.get("requested_url") else canonical, skey)
         self.svc.db.execute("UPDATE urls SET status='done' WHERE run_id=? AND unique_key=?", (self.run_id, requested_key))
         if item.get("ukey") and item["ukey"] != requested_key:
@@ -2347,6 +2487,8 @@ class JobRunner:
         }
         if item.get("gaps"):
             doc["gaps"] = item["gaps"]
+        if item.get("missing_fields"):
+            doc["missing_fields"] = item["missing_fields"]
         if not has_html:
             self.counters()["refetch_after_repair"] += 1
             if not self.rt.get("store_limit_problem"):
@@ -2698,7 +2840,7 @@ class JobRunner:
             d = loads(row["doc"])
             if d.get("gaps") and d.get("needs_reextract"):
                 continue
-            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], "template_failed", tid, d.get("status"), 1)
+            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], "template_failed", tid, d.get("status"), 1, missing=d.get("missing_fields"))
             self.svc.db.execute("DELETE FROM stored_pages WHERE run_id=? AND page_key=?", (self.run_id, row["page_key"]))
         self._refresh_store_counter()
         self.svc.events.create(
@@ -2839,19 +2981,29 @@ class JobRunner:
 
         # stored pages: the in-page variant sources only (a shop-JSON source needs the live page)
         variants, vinfo = resolve_in_page(page, tmpl.get("variants"))
-        rows = variant_rows(tmpl, ext.data, variants, (vinfo or {}).get("kind"), page.base_url)
+        rows = variant_rows(tmpl, ext.data, variants, (vinfo or {}).get("kind"), page.base_url, page=page)
         required = required_set(tmpl, self.config.get("required_fields") or [])
-        missing = sorted(n for n in required if rows[0][0].get(n) is None or rows[0][0].get(n) == [])
+        from app.extraction.record_filter import record_filter_missing, record_matches
+
+        selected = [(index, row) for index, row in enumerate(rows) if record_matches(tmpl, row[0])]
+        missing = sorted({name for _index, (data, _meta, _filled) in selected for name in required if data.get(name) is None or data.get(name) == []})
+        missing = sorted(set(missing) | {name for data, _meta, _filled in rows for name in record_filter_missing(tmpl, data)})
         t = self.template(tmpl["template_id"])
         view = price_view(page, tmpl)
-        gaps = [] if missing else self._mapping_gaps(tmpl, page, rows, view)
+        gaps = (
+            []
+            if missing or not selected
+            else self._mapping_gaps(tmpl, page, [row for _index, row in selected], view)
+        )
         if not missing and not gaps:
             if tmpl["__version"] not in t["versions_used"]:
                 t["versions_used"].append(tmpl["__version"])
-            for index, (data, meta, _filled) in enumerate(rows):
+            for index, (data, meta, _filled) in selected:
                 price_keys = annotate_price(tmpl, data, view)
                 rec: dict[str, Any] = {
-                    "record_id": record_id(d["url"], tmpl["template_id"], index, d.get("source_key")),
+                    "record_id": record_id(
+                        d["url"], tmpl["template_id"], index, d.get("source_key")
+                    ),
                     "source_url": d["url"],
                     "requested_url": d.get("requested_url"),
                     "source_key": d.get("source_key"),
@@ -2872,9 +3024,13 @@ class JobRunner:
                 rec.update(price_keys)
                 if not self._write_record({k: rec[k] for k in RECORD_ORDER if k in rec}, None):
                     break
+            self._drop_unextracted(d["url"], d.get("source_key"))
             self.svc.db.execute("DELETE FROM stored_pages WHERE run_id=? AND page_key=?", (self.run_id, row["page_key"]))
         else:
             d["needs_reextract"] = False
+            d.pop("missing_fields", None)
+            if missing:
+                d["missing_fields"] = missing
             d.pop("gaps", None)
             if gaps:
                 d["gaps"] = gaps
@@ -2922,7 +3078,7 @@ class JobRunner:
         cfg = self.config
         if cfg.get("max_records") and c["records_extracted"] >= cfg["max_records"]:
             self._cut("max_records")
-        if c["pages_fetched"] >= cfg["max_pages"]:
+        if c["pages_fetched"] + int(self.rt.get("navigation_actions", 0)) >= cfg["max_pages"]:
             self._cut("max_pages")
 
     def _check_block_rule(self) -> None:
@@ -3231,7 +3387,7 @@ class JobRunner:
         for row in rows:
             d = loads(row["doc"])
             reason = row["page_class"] if row["page_class"] in ("incomplete", "no_template") else "stopped"
-            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], reason, row["template_id"], d.get("status"), 1)
+            self._unextracted(d["url"], d.get("requested_url"), d.get("source_key"), d.get("site") or self.doc["site"], reason, row["template_id"], d.get("status"), 1, missing=d.get("missing_fields"), gaps=d.get("gaps"))
 
     def cleanup_crawlee_storage(self) -> None:
         shutil.rmtree(self.job_dir / "crawlee" / "request_queues", ignore_errors=True)

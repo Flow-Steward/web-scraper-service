@@ -27,6 +27,7 @@ from app.extraction.page import Page
 from app.extraction.pricing import annotate as annotate_price, plain as plain_prices, price_view
 from app.extraction.sampling import Explain, ProbePlan, link_groups, spread_by_shape, url_groups
 from app.fetching.challenge import detect_html
+from app.fetching.navigation import needs_browser_navigation
 from app.fetching.protection import describe_failure
 from app.fetching.oneoff import BrowserSession, Fetched, HostStopped, PrivateAddress, http_get
 from app.fetching.proxies import tier_url
@@ -115,6 +116,86 @@ class SetupFetch:
         self._browser_hosts: set[str] = set()  # hosts that answered HTTP with a challenge: browser only from then on
         self.last_how = "none"  # how fetch_page got its last page: http | browser | reused | none
         self._browser: dict[str, tuple] = {}  # canonical URL -> the request's one browser load of it
+        self.navigation: dict[str, Any] = {}
+        self._navigation_robots: dict[str, Any] = {}
+        self._navigation_actions = 0
+        from app.jobs.throttle import HostThrottle
+
+        floor = 60 / float(config.get("max_requests_per_minute") or 60000)
+        self._navigation_throttle = HostThrottle(
+            max(floor, config.get("delay_min_seconds", 0)),
+            max(floor, config.get("delay_max_seconds", 0)),
+        )
+
+    async def discover_links(self, url: str, page: Page | None = None):
+        """Observe listing states while retaining the originally fetched document."""
+        from app.fetching.navigation import NavigationLimits
+        from app.jobs.discovery import _origin
+        from app.core.urls import host_of
+
+        key = _url_key(url)
+        result = self.navigation.get(key)
+        session = self._session
+        if (
+            result is None
+            and session is not None
+            and self.browser_cached(url) is not None
+        ):
+            got = self.browser_cached(url)
+            if _url_key(session.page.url) != _url_key(got[2] or url):
+                return None
+            throttle = self._navigation_throttle
+
+            async def allowed(action):
+                if self._navigation_actions >= min(
+                    100, int(self.config.get("max_pages") or 12)
+                ):
+                    return False
+                from app.core.linkrules import enabled_rules, url_skip
+                from app.core.scope import crawl_patterns, in_scope
+
+                if (
+                    getattr(action, "nofollow", False)
+                    and "nofollow" in enabled_rules(self.config)
+                ) or url_skip(action.url, enabled_rules(self.config)):
+                    return False
+                scope = crawl_patterns(self.config)
+                if (
+                    scope
+                    and not in_scope(scope, action.url)
+                    and _url_key(action.url) != key
+                ):
+                    return False
+                if self.config.get("respect_robots", True):
+                    origin = _origin(action.url)
+                    if origin not in self._navigation_robots:
+                        self._navigation_robots[origin] = await _robots(
+                            action.url, self.http
+                        )
+                    robots = self._navigation_robots[origin]
+                    if robots is not None:
+                        throttle.set_crawl_delay(
+                            host_of(action.url), robots.get_crawl_delay()
+                        )
+                        if not robots.is_allowed(action.url):
+                            return False
+                await throttle.wait(host_of(action.url))
+                self._navigation_actions += 1
+                return True
+
+            result = await session.discover_links(
+                site_url=self.config.get("site_url") or url,
+                limits=NavigationLimits(
+                    max_steps=min(100, int(self.config.get("max_pages") or 12)),
+                    max_seconds=self.page_timeout,
+                ),
+                before_action=allowed,
+            )
+            self.navigation[key] = result
+        if page is not None and result is not None:
+            page.extra_links = list(result.links)
+            page.extra_anchors = list(result.anchors)
+        return result
 
     def failure_for(self, url: str) -> dict | None:
         return self._session.failure_for(url) if self._session is not None else None
@@ -138,6 +219,23 @@ class SetupFetch:
             return None
         except Exception:
             return None
+
+    def needs_browser_navigation(self, page: Page) -> bool:
+        """Render potential listing navigation while leaving usable targets on HTTP."""
+        if not needs_browser_navigation(page, is_target=False):
+            return False
+        store = getattr(self.svc, "mappings", None)
+        mappings = (
+            [entry["mapping"] for entry in store.active_mappings(site_key(page.url))]
+            if store is not None
+            else []
+        )
+        canonical = canonical_url(page.url)
+        return not (
+            _url_looks_target(canonical, self.config, mappings)
+            or pick_template(mappings, page, canonical) is not None
+            or looks_like_target(page, self.config, False)
+        )
 
     def needs_browser(self, url: str) -> bool:
         """A host that answered plain HTTP with a challenge, or passed one in the browser, is
@@ -175,8 +273,7 @@ class SetupFetch:
                 self._session = await BrowserSession(self.browser, proxy=self.proxy, budget=self.budget, proxy_tier=self.tier,
                                                      debug=bool(self.config.get("debug")), shots=self.svc.samples,
                                                      variant=Variant.from_config(self.config),
-                                                     delay=(float(self.config.get("delay_min_seconds") or 0),
-                                                            float(self.config.get("delay_max_seconds") or 0)),
+                                                     delay=(0, 0),
                                                      timeout_s=self.page_timeout).start()
             except Exception:
                 self._session_failed = True
@@ -197,6 +294,8 @@ class SetupFetch:
         key = _url_key(url)
         hit = self._http.get(key)
         if hit is None:
+            from app.core.urls import host_of
+            await self._navigation_throttle.wait(host_of(url))
             hit = await http_get(url, proxy=self.proxy, headers=self.headers, timeout=float(self.page_timeout))
             self._http[key] = hit
         return hit
@@ -214,9 +313,23 @@ class SetupFetch:
         session = await self.session()
         if session is None:
             raise RuntimeError("no browser")
+        from app.core.urls import host_of
+        await self._navigation_throttle.wait(host_of(url))
         got = await session.get(url, wait_ms=wait_ms, settle=settle)
         self._browser[key] = got
+        if settle and got[0] and got[0] < 400 and detect_html(got[1], got[0]).kind == "none":
+            await self.discover_links(url)
         return got
+
+    def _browser_fetched(self, url, got):
+        from dataclasses import asdict
+        fetched = _as_fetched(url, got)
+        navigation = self.navigation.get(_url_key(url))
+        if navigation is not None:
+            fetched.extra_links = list(navigation.links)
+            fetched.extra_anchors = list(navigation.anchors)
+            fetched.navigation = {k: v for k, v in asdict(navigation).items() if k not in ("links", "anchors")}
+        return fetched
 
     async def fetch(self, url: str) -> Fetched | None:
         """Discovery fetcher (robots.txt, sitemaps, start page): HTTP, then the browser session
@@ -226,11 +339,11 @@ class SetupFetch:
             return None
         hit = self.browser_cached(url)
         if hit is not None:
-            return _as_fetched(url, hit)
+            return self._browser_fetched(url, hit)
         page_in_browser = bool(self.browser) and _is_document(url) and (self.config.get("fetch_mode") == "browser" or self.needs_browser(url))
         if page_in_browser:  # Fetch mode browser, or a host that needed the browser: the page's links as the browser sees them
             try:
-                return _as_fetched(url, await self.browser_get(url, wait_ms=self.config.get("wait_after_load_ms", 0), settle=True))
+                return self._browser_fetched(url, await self.browser_get(url, wait_ms=self.config.get("wait_after_load_ms", 0), settle=True))
             except PrivateAddress:
                 return None
             except Exception:
@@ -245,10 +358,31 @@ class SetupFetch:
             self.mark_challenged(url)
         if challenged and self.failure_for(url) is not None:
             return fetched  # the same failure as before: no second route for this host
-        if (not challenged and self.browser and self.config.get("fetch_mode") == "auto" and _is_document(url) and fetched.status
-                and fetched.status < 400 and Page(fetched.text, fetched.final_url or url, fetched.status).visible_text_chars < 300):
+        auto_page = (
+            Page(fetched.text, fetched.final_url or url, fetched.status)
+            if (
+                not challenged
+                and self.browser
+                and self.config.get("fetch_mode") == "auto"
+                and _is_document(url)
+                and fetched.status
+                and fetched.status < 400
+            )
+            else None
+        )
+        if auto_page is not None and (
+            auto_page.visible_text_chars < 300
+            or self.needs_browser_navigation(auto_page)
+        ):
             try:  # a page that needs JavaScript: its links as the browser sees them
-                return _as_fetched(url, await self.browser_get(url, wait_ms=self.config.get("wait_after_load_ms", 0), settle=True))
+                return self._browser_fetched(
+                    url,
+                    await self.browser_get(
+                        url,
+                        wait_ms=self.config.get("wait_after_load_ms", 0),
+                        settle=True,
+                    ),
+                )
             except PrivateAddress:
                 return None
             except Exception:
@@ -256,7 +390,14 @@ class SetupFetch:
         if challenged and self.browser and self.config.get("fetch_mode") != "http":
             try:
                 if _is_document(url):
-                    return _as_fetched(url, await self.browser_get(url, wait_ms=self.config.get("wait_after_load_ms", 0), settle=True))
+                    return self._browser_fetched(
+                        url,
+                        await self.browser_get(
+                            url,
+                            wait_ms=self.config.get("wait_after_load_ms", 0),
+                            settle=True,
+                        ),
+                    )
                 session = await self.session()
                 return await session.raw(url) if session else fetched
             except PrivateAddress:
@@ -482,7 +623,12 @@ async def fetch_page(svc, url: str, config: dict, sf: SetupFetch) -> tuple[Page 
             sf.mark_challenged(url)
         info = {"fetch_mode": "http", "browser": None, "proxy_tier": tier, "passed_at_step": None}
         want_browser = config.get("fetch_mode") == "browser" or (
-            config.get("fetch_mode") == "auto" and (verdict.kind != "none" or page.visible_text_chars < 300)
+            config.get("fetch_mode") == "auto"
+            and (
+                verdict.kind != "none"
+                or page.visible_text_chars < 300
+                or sf.needs_browser_navigation(page)
+            )
         )
         if browser and want_browser:
             try:
@@ -522,6 +668,30 @@ async def samples(svc, body: dict) -> dict:
         return await _samples(svc, body, config, count, sf)
     finally:
         await sf.close()
+
+
+def _sample_link_groups(page, site, config, mappings):
+    """Navigation scope applies to intermediate links, not extraction admission."""
+    from app.core.scope import crawl_patterns, in_scope
+
+    pats = target_patterns(mappings, config.get("url_include") or [])
+    groups, _ = link_groups(
+        page, site, [re.compile(p) for p in config.get("url_exclude") or []], pats
+    )
+    scope = crawl_patterns(config)
+    if scope:
+        groups = [
+            dict(
+                g,
+                urls=[
+                    u
+                    for u in g["urls"]
+                    if in_scope(scope, u) or any(p.search(u) for p in pats)
+                ],
+            )
+            for g in groups
+        ]
+    return groups
 
 
 async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) -> dict:
@@ -569,10 +739,13 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
             return sorted(product_signals(page), key=list(SIGNAL_NAMES).index)
         except Exception:
             return []
+
     out: list[dict] = []
     taken = {m["template_id"] for m in mappings}
     seen_pages = 0
-    for idx, (url, key) in (_plan_iter(plan, ex) if plan is not None else enumerate(candidates)):
+    for idx, (url, key) in (
+        _plan_iter(plan, ex) if plan is not None else enumerate(candidates)
+    ):
         if len(out) >= count and not explicit:
             break
         shown = redact(url)
@@ -585,8 +758,35 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
             continue
         try:
             page, info, err = await fetch_page(svc, url, config, sf)
+            if (
+                page is not None
+                and plan is not None
+                and config.get("fetch_mode") == "auto"
+                and sf.last_how == "http"
+                and sf.browser
+                and sf.needs_browser_navigation(page)
+                and plan.depths.get(canonical_url(page.url), 1) < 4
+            ):
+                # Fresh SSR links do not establish that a scripted listing is complete.
+                # Its guarded browser observation may reveal additional listing states.
+                try:
+                    await sf.browser_get(
+                        url, wait_ms=config.get("wait_after_load_ms", 0), settle=True
+                    )
+                    page, info, err = await fetch_page(svc, url, config, sf)
+                    sf.last_how = "browser"
+                except PrivateAddress:
+                    raise
+                except Exception as exc:
+                    page, err = None, f"browser discovery failed ({type(exc).__name__})"
         except PrivateAddress:
-            warnings.append(field_error(f"urls[{idx}]" if explicit else "site_url", "private_address_refused", "a redirect leads to a private address"))
+            warnings.append(
+                field_error(
+                    f"urls[{idx}]" if explicit else "site_url",
+                    "private_address_refused",
+                    "a redirect leads to a private address",
+                )
+            )
             ex.page(shown, sf.last_how, "skipped", "redirect to a private address")
             continue
         seen_pages += 1
@@ -611,6 +811,30 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
         except ValueError:
             ex.page(shown, how, "failed", "no usable final URL", signals, **facts)
             continue
+        if plan is not None:
+            await sf.discover_links(url, page)
+            groups = _sample_link_groups(page, site, config, mappings)
+            plan.extend(
+                groups,
+                canonical,
+                preferred=target_patterns(mappings, config.get("url_include") or []),
+            )
+            ex.discovery["shapes"] = len(plan.groups)
+        if (
+            not explicit
+            and not listed
+            and config.get("url_include")
+            and not any(re.search(p, canonical) for p in config["url_include"])
+        ):
+            ex.page(
+                shown,
+                how,
+                "not_target",
+                "outside url_include (links still explored)",
+                signals,
+                **facts,
+            )
+            continue
         if not explicit and not listed and not passes_target_selector(page, config):
             ex.page(shown, how, "not_target", "target_page_selector absent", signals, **facts)
             continue  # without target_page_selector a page is not a target page
@@ -618,9 +842,21 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
         if only is not None and tmpl is None:
             ex.page(shown, how, "not_target", f"template {template_id} does not match", signals, **facts)
             continue
-        if not explicit and tmpl is None and not looks_like_target(page, config, False) and not _url_looks_target(canonical, config, mappings):
-            ex.page(shown, how, "not_target", "no matching template, no structured data of the wanted types, no selector or URL pattern hint",
-                    signals, **facts)
+        if (
+            not explicit
+            and not listed
+            and tmpl is None
+            and not looks_like_target(page, config, False)
+            and not _url_looks_target(canonical, config, mappings)
+        ):
+            ex.page(
+                shown,
+                how,
+                "not_target",
+                "no matching template, no structured data of the wanted types, no selector or URL pattern hint",
+                signals,
+                **facts,
+            )
             continue
         ex.page(shown, how, "sample", None, signals, **facts)
         extracted = plain_prices(apply_mapping(tmpl, page, config.get("extraction_mode", "auto")).data) if tmpl else None
@@ -833,13 +1069,11 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
             matching = filter_urls(urls, include, exclude)
             ex.discovery["sitemap_matching"] = len(matching)
             preferred = [u for u in matching if any(p.search(u) for p in pats)] if pats else []
-            sitemap_groups = url_groups(matching)
+            sitemap_groups = url_groups(matching, include=inc)
     groups: list[dict] = []
     if mode == "crawl" or not (sitemap_groups or preferred) or (deep and mode == "auto" and not pats):
         groups = await _start_link_groups(site_url, fetch, exclude, ex, config)
-        if inc:
-            groups = [dict(g, urls=[u for u in g["urls"] if any(p.search(u) for p in inc)]) for g in groups]
-            groups = [g for g in groups if g["urls"]]
+        # Include patterns select extracted pages, not intermediate navigation.
         from app.core.scope import crawl_patterns, in_scope
 
         scope = crawl_patterns(config)
@@ -864,7 +1098,8 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         plan = ProbePlan(sitemap_groups, limit=limit)
     else:
         ex.discovery["source"] = "start_page"
-        plan = ProbePlan([], limit=1, tail=[site_url])
+        plan = ProbePlan([], limit=links_limit, tail=[site_url])
+    plan.depths[_url_key(site_url)] = 0
     ex.discovery["shapes"] = len(plan.groups)
     return plan
 
@@ -877,8 +1112,8 @@ async def _start_link_groups(site_url: str, fetch, exclude: list[str], ex: Expla
         ex.page(redact(site_url), loaded, "failed", f"start page: HTTP {status}" if status else "start page not loaded", status=status)
         ex.discovery["start_page"] = {"url": redact(site_url), "status": status, "loaded": loaded}
         return []
-    page = Page(fetched.text, fetched.final_url or site_url, fetched.status)
-    groups, stats = link_groups(page, site_key(site_url), [re.compile(p) for p in exclude])
+    page = Page(fetched.text, fetched.final_url or site_url, fetched.status, extra_links=fetched.extra_links, extra_anchors=fetched.extra_anchors)
+    groups, stats = link_groups(page, site_key(site_url), [re.compile(p) for p in exclude], [re.compile(p) for p in config.get("url_include") or []])
     selector = config.get("target_page_selector")
     ex.page(redact(site_url), loaded, "start", None, status=fetched.status, links=stats["in_site"],
             selector_found=page.has_selector(selector) if selector else None)
@@ -925,6 +1160,26 @@ def validate_mapping_rules(mapping: dict, svc, prefix: str) -> list[dict]:
         if spec["name"] in seen_vf:
             errors.append(field_error(f"{prefix}.variants.fields[{i}].name", "duplicate_field_name", f"variant field {spec['name']} appears twice"))
         seen_vf.add(spec["name"])
+        selector = spec.get("selector_template")
+        if selector and not _css_ok(
+            selector.replace("{id}", "sample").replace("{sku}", "sample")
+        ):
+            errors.append(
+                field_error(
+                    f"{prefix}.variants.fields[{i}].selector_template",
+                    "invalid_value",
+                    "the CSS selector template does not parse",
+                )
+            )
+    for i, condition in enumerate(mapping.get("record_filter") or []):
+        if condition["field"] not in names | seen_vf:
+            errors.append(
+                field_error(
+                    f"{prefix}.record_filter[{i}].field",
+                    "invalid_value",
+                    "record filter must name a declared extracted field",
+                )
+            )
     if len(names | (seen_vf - names)) > limits["max_fields_per_template"]:
         errors.append(field_error(f"{prefix}.variants.fields", "limit_exceeded", "too many fields with the variant fields", limits["max_fields_per_template"]))
     match = mapping.get("match") or {}
@@ -972,6 +1227,9 @@ async def mapping_test(svc, body: dict) -> dict:
     mode = body.get("extraction_mode", "auto")
     ordered = sorted(mappings, key=lambda m: m["template_id"])
     per_template: dict[str, list[tuple[str, Any]]] = {m["template_id"]: [] for m in ordered}
+    evaluated_rows: dict[str, list[tuple[str, dict, Any, dict]]] = {
+        m["template_id"]: [] for m in ordered
+    }
     sample_results = []
     unmatched = []
     per_variant: dict[str, list] = {}
@@ -1006,21 +1264,80 @@ async def mapping_test(svc, body: dict) -> dict:
                 return _c.get(url)
 
             variants, vinfo = await resolve(page, tmpl["variants"], stored_json)
-            rows = variant_rows(tmpl, ext.data, variants, (vinfo or {}).get("kind"), page.base_url)
+            rows = variant_rows(
+                tmpl,
+                ext.data,
+                variants,
+                (vinfo or {}).get("kind"),
+                page.base_url,
+                page=page,
+            )
+            from app.extraction.record_filter import (
+                record_filter_missing,
+                record_matches,
+            )
+
+            raw_count = len(rows)
+            filter_missing = {
+                name
+                for data, _meta, _filled in rows
+                for name in record_filter_missing(tmpl, data)
+            }
+            rows = [row for row in rows if record_matches(tmpl, row[0])]
+            result["missing_required"] = sorted(
+                filter_missing
+                | {
+                    name
+                    for data, _meta, _filled in rows
+                    for name in required
+                    if data.get(name) is None or data.get(name) == []
+                }
+            )
+            checks[sid]["excluded"] = bool(raw_count and not rows)
             row_keys = [annotate_price(tmpl, data, view) for data, _meta, _f in rows]
             if variants:
                 checks[sid]["has_price"] = any(k.get("price_status") in ("shown", "range") for k in row_keys)
-            result["variants"] = {"count": len(variants), "source": (vinfo or {}).get("kind"), "source_index": (vinfo or {}).get("index"),
-                                  "items": [{"variant": meta, "data": data, **keys} for (data, meta, _f), keys in zip(rows[:20], row_keys)] if variants else []}
+            result["variants"] = {
+                "count": len(variants),
+                "included_count": len(rows),
+                "excluded_count": raw_count - len(rows),
+                "source": (vinfo or {}).get("kind"),
+                "source_index": (vinfo or {}).get("index"),
+                "items": [
+                    {"variant": meta, "data": data, **keys}
+                    for (data, meta, _f), keys in zip(rows[:20], row_keys)
+                ]
+                if variants
+                else [],
+            }
             per_variant.setdefault(tmpl["template_id"], []).append((sid, variants, rows, (vinfo or {}).get("kind")))
+            evaluated_rows[tmpl["template_id"]].extend(
+                (sid, data, ext, filled) for data, _meta, filled in rows
+            )
             own_record = not variants
         keys = annotate_price(tmpl, ext.data, view)
         for name, value in ext.data.items():
             if value is None and ext.filled.get(name):
                 ext.filled[name] = False  # a default currency emptied on a record without a price
-        result["missing_required"] = ext.missing(required)
+        if not tmpl.get("variants"):
+            from app.extraction.record_filter import (
+                record_filter_missing,
+                record_matches,
+            )
+
+            checks[sid]["excluded"] = not record_matches(tmpl, ext.data)
+            result["missing_required"] = sorted(
+                set(record_filter_missing(tmpl, ext.data))
+                | set([] if checks[sid]["excluded"] else ext.missing(required))
+            )
+            if not checks[sid]["excluded"]:
+                evaluated_rows[tmpl["template_id"]].append((sid, ext.data, ext, {}))
         result.update(keys)
-        if own_record and keys.get("price_status") in ("shown", "range"):
+        if (
+            own_record
+            and not checks[sid].get("excluded")
+            and keys.get("price_status") in ("shown", "range")
+        ):
             checks[sid]["has_price"] = True
             # a price read from visible text against what the page states for programs
             from app.extraction.pricing import machine_price, price_field, prices_differ
@@ -1029,9 +1346,20 @@ async def mapping_test(svc, body: dict) -> dict:
             stated = machine_price(page)
             mapped = ext.data.get(pname) if pname else None
             sale = view.sale
-            if sale is not None and isinstance(mapped, (int, float)) and not prices_differ(float(mapped), sale["regular"], "sale"):
-                checks[sid]["old_price"] = (float(mapped), sale["current"])  # the struck-through amount was read as the price
-            elif stated is not None and isinstance(mapped, (int, float)) and prices_differ(float(mapped), stated[0], stated[1]):
+            if (
+                sale is not None
+                and isinstance(mapped, (int, float))
+                and not prices_differ(float(mapped), sale["regular"], "sale")
+            ):
+                checks[sid]["old_price"] = (
+                    float(mapped),
+                    sale["current"],
+                )  # the struck-through amount was read as the price
+            elif (
+                stated is not None
+                and isinstance(mapped, (int, float))
+                and prices_differ(float(mapped), stated[0], stated[1])
+            ):
                 checks[sid]["mismatch"] = (float(mapped), stated[0], stated[1])
         sample_results.append(result)
     templates = []
@@ -1041,30 +1369,63 @@ async def mapping_test(svc, body: dict) -> dict:
     for m in ordered:
         tid = m["template_id"]
         hits = per_template[tid]
+        evaluated = evaluated_rows[tid]
         required = required_set(m, extra_required)
         names = [f["name"] for f in m["fields"]]
+        reported_fields = list(m["fields"])
+        variant_specs = {
+            spec["name"]: spec for spec in (m.get("variants") or {}).get("fields") or []
+        }
+        for name in sorted(required - set(names)):
+            if name in variant_specs:
+                reported_fields.append(
+                    {
+                        "name": name,
+                        "type": variant_specs[name].get("type", "text"),
+                        "sources": [],
+                    }
+                )
+                names.append(name)
         fields_out = []
-        t_passed = bool(hits)
-        for f in m["fields"]:
-            filled = [ext for _, ext in hits if ext.filled.get(f["name"])]
-            rate = round(len(filled) / len(hits), 4) if hits else 0.0
+        t_passed = bool(hits) and not any(
+            r["missing_required"] for r in sample_results if r["template_id"] == tid
+        )
+        for f in reported_fields:
+            filled = [
+                data
+                for _sid, data, _ext, _vf in evaluated
+                if data.get(f["name"]) is not None and data.get(f["name"]) != []
+            ]
+            rate = round(len(filled) / len(evaluated), 4) if evaluated else 0.0
             is_req = f["name"] in required
-            passed = (rate >= threshold) if is_req else True
+            passed = (not evaluated or rate >= threshold) if is_req else True
             if is_req and not passed:
                 t_passed = False
             hits_by_source = [0] * len(f["sources"])
-            for _, ext in hits:
+            for _sid, _data, ext, variant_filled in evaluated:
+                if variant_filled.get(f["name"]):
+                    continue  # a variant source, not the page source, supplied this value
                 idx = ext.source_hits.get(f["name"])
                 if idx is not None:
                     hits_by_source[idx] += 1
-            examples = [ext.data[f["name"]] for ext in filled][:3]
+            examples = [data[f["name"]] for data in filled][:3]
             errs = [{"sample_id": sid, "message": msg} for sid, ext in hits for msg in ext.errors.get(f["name"], [])]
             notes = [{"sample_id": sid, **n} for sid, ext in hits for n in ext.notes.get(f["name"], [])][:10]
-            fields_out.append({
-                "name": f["name"], "type": f["type"], "required": is_req, "sample_count": len(hits), "filled_count": len(filled),
-                "fill_rate": rate, "passed": passed and bool(hits), "example_values": examples, "source_hits": hits_by_source, "errors": errs,
-                **({"reading_rules": notes} if notes else {}),
-            })
+            fields_out.append(
+                {
+                    "name": f["name"],
+                    "type": f["type"],
+                    "required": is_req,
+                    "sample_count": len(evaluated),
+                    "filled_count": len(filled),
+                    "fill_rate": rate,
+                    "passed": passed and bool(hits),
+                    "example_values": examples,
+                    "source_hits": hits_by_source,
+                    "errors": errs,
+                    **({"reading_rules": notes} if notes else {}),
+                }
+            )
         for name in sorted(required - set(names)):
             # a required name missing from the mapping is always empty
             fields_out.append({"name": name, "type": "text", "required": True, "sample_count": len(hits), "filled_count": 0,
@@ -1086,7 +1447,7 @@ async def mapping_test(svc, body: dict) -> dict:
             warnings.extend(failures)
         # fields of the mapping that no matched sample filled (a test passes on its required
         # fields only; an optional field empty everywhere is worth a loud warning)
-        empty = [f["name"] for f in fields_out if hits and f["filled_count"] == 0]
+        empty = [f["name"] for f in fields_out if evaluated and f["filled_count"] == 0]
         if hits:
             entry["empty_fields"] = empty
         if empty:
@@ -1118,6 +1479,7 @@ def _price_and_variant_failures(mapping: dict, index: int, sample_ids: list[str]
     more variants) and the mapping declares no ``variants``."""
     from app.extraction.pricing import price_field
 
+    sample_ids = [sid for sid in sample_ids if not checks[sid].get("excluded")]
     tid = mapping["template_id"]
     out: list[dict] = []
     name = price_field(mapping)

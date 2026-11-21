@@ -45,10 +45,19 @@ def test_link_rules_canonicals_and_traps(links_service, fixture_world):
     run = check(svc.get(f"/v1/runs/{run['run_id']}"), "run_summary.schema.json", 200)
     assert run["state"] == "completed", run
     recs = _records(svc, run)
-    by_sku = {r["data"]["sku"]: r for r in recs}
-    assert sorted(by_sku) == ["LK-1", "LK-2", "LK-3", "LK-4", "LK-5", "LK-9"], sorted(by_sku)  # once each
-    assert all(r["source_url"] == f"{L}/lk/p{r['data']['sku'][3:]}.html" for r in recs), [r["source_url"] for r in recs]
-    assert by_sku["LK-2"]["requested_url"] in (f"{L}/lk/item?id=2", f"{L}/lk/cat/a/p2.html")  # canonical from the Link header or <link>
+    by_url = {record["source_url"]: record for record in recs}
+    expected_canonicals = {f"{L}/lk/p{number}.html" for number in (1, 2, 3, 4, 5, 9)}
+    assert len(recs) == 7
+    assert set(by_url) == expected_canonicals | {f"{L}/lk/item?id=2"}
+    assert len({record["record_id"] for record in recs}) == 7
+    for number in (1, 2, 3, 4, 5, 9):
+        assert by_url[f"{L}/lk/p{number}.html"]["data"]["sku"] == f"LK-{number}"
+    # A query-free path alias still adopts its declared canonical.
+    assert by_url[f"{L}/lk/p2.html"]["requested_url"] == f"{L}/lk/cat/a/p2.html"
+    # An SEO canonical cannot erase a non-pagination query identity.
+    query_item = by_url[f"{L}/lk/item?id=2"]
+    assert query_item["data"]["sku"] == "LK-2"
+    assert "requested_url" not in query_item
     c = run["counters"]
     skipped = c["links_skipped"]
     assert skipped["scheme"] >= 3 and skipped["messenger_social"] >= 2, skipped  # mailto, tel, whatsapp:, viber:; wa.me, sharer

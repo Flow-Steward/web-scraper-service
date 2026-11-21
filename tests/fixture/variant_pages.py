@@ -85,13 +85,121 @@ def shopify_page(handle: str) -> str:
 <script>window.Shopify = {{"shop": "fixture.myshopify.com"}};</script></body></html>"""
 
 
+def keyed_editions(slug: str) -> str:
+    choices = [{"id": "a", "sku": "0001-A", "enabled": True}, {"id": "b", "sku": "0001-B", "enabled": False}, {"id": "c", "sku": "0001-C", "enabled": True}]
+    return ('<!doctype html><html><body><main><h1>Fixture item</h1><div class="parent" data-allowed="true">Parent text must not fill an empty edition.</div>'
+            f'<script type="application/json" id="choices">{json.dumps({"state": {"choices": choices}})}</script>'
+            '<section data-edition="a"><div class="description"><p>First edition notes</p></div></section>'
+            '<section data-edition="b"><div class="description"><p>Other edition notes</p></div></section>'
+            '<section data-edition="c"><div class="description"></div></section>'
+            '<p>' + 'Fixture context for a complete product sheet. ' * 80 + '</p></main></body></html>')
+
+
+def dynamic_listing(slug: str) -> str:
+    return (
+        '<!doctype html><html><body><main id="listing"><a href="/v/plain-item/first">First</a></main>'
+        '<nav aria-label="Pagination"><button type="button" aria-label="Next page" onclick="advance(this)">Next</button></nav>'
+        "<script>function advance(button) { const a=document.createElement('a'); a.href='/v/plain-item/second'; "
+        "a.textContent='Second'; document.querySelector('#listing').replaceChildren(a); button.disabled=true; }</script>"
+        "<p>" + "Fixture catalogue context. " * 50 + "</p></body></html>"
+    )
+
+
+def shell_listing(slug: str) -> str:
+    """A populated HTML shell whose useful listing exists only after hydration."""
+    return (
+        '<!doctype html><html><body><h1>Catalogue</h1><main id="listing"></main>'
+        f'<nav id="catalogue"><a href="/v/shell-listing/{slug}">Catalogue</a></nav>'
+        "<p>" + "Server-rendered catalogue context. " * 50 + "</p>"
+        "<script>queueMicrotask(() => {"
+        "const first=document.createElement('a'); first.href='/v/plain-item/first'; first.textContent='First';"
+        "document.querySelector('#listing').append(first);"
+        "const button=document.createElement('button'); button.type='button';"
+        "button.setAttribute('aria-label','Next page'); button.textContent='Next';"
+        "button.onclick=function() { const second=document.createElement('a');"
+        "second.href='/v/plain-item/second'; second.textContent='Second';"
+        "document.querySelector('#listing').replaceChildren(second); this.disabled=true; };"
+        "document.querySelector('#catalogue').append(button);"
+        "});</script></body></html>"
+    )
+
+
+def productive_shell_listing(slug: str) -> str:
+    """Useful SSR navigation is not proof that a scripted listing is complete."""
+    context = "<p>" + "Server-rendered catalogue navigation. " * 40 + "</p>"
+    if slug != "category":
+        item = {
+            "navigation": "initial",
+            "first-maker": "first",
+            "second-maker": "second",
+        }.get(slug)
+        link = f'<a href="/v/plain-item/{item}">Item</a>' if item else ""
+        return (
+            "<!doctype html><html><body><main><h1>Catalogue navigation</h1>"
+            + link
+            + context
+            + "</main></body></html>"
+        )
+    return (
+        '<!doctype html><html><body><h1>Catalogue</h1><main id="maker-list"></main>'
+        '<nav><a href="/v/productive-shell/navigation">Browse catalogue</a></nav>'
+        '<nav id="pagination" aria-label="Pagination"></nav>'
+        + context
+        + "<script>queueMicrotask(() => {"
+        "const first=document.createElement('a'); first.href='/v/productive-shell/first-maker'; first.textContent='First maker';"
+        "document.querySelector('#maker-list').append(first);"
+        "const next=document.createElement('button'); next.type='button'; next.setAttribute('aria-label','Next page'); next.textContent='Next';"
+        "next.onclick=function() { const second=document.createElement('a');"
+        "second.href='/v/productive-shell/second-maker'; second.textContent='Second maker';"
+        "document.querySelector('#maker-list').replaceChildren(second); this.disabled=true; };"
+        "document.querySelector('#pagination').append(next);"
+        "});</script></body></html>"
+    )
+
+
+def plain_item(slug: str) -> str:
+    return (
+        '<html><body><main class="sheet"><h1>Item '
+        + slug
+        + "</h1><p>"
+        + "Complete item description. " * 50
+        + "</p></main></body></html>"
+    )
+
+
 def release_page(slug: str) -> str:
-    ld = {"@context": "https://schema.org", "@type": ["Product", "MusicAlbum"], "name": f"Release {slug}", "byArtist": {"@type": "MusicGroup", "name": "Fixture Band"},
-          "offers": [
-              {"@type": "Offer", "price": "12.99", "priceCurrency": "EUR", "sku": f"{slug}-CD", "availability": "https://schema.org/InStock",
-               "itemOffered": {"@type": "MusicRelease", "name": "CD", "musicReleaseFormat": "https://schema.org/CDFormat"}},
-              {"@type": "Offer", "price": "24.99", "priceCurrency": "EUR", "sku": f"{slug}-LP", "availability": "https://schema.org/OutOfStock",
-               "itemOffered": {"@type": "MusicRelease", "name": "Vinyl", "musicReleaseFormat": "https://schema.org/VinylFormat"}}]}
+    ld = {
+        "@context": "https://schema.org",
+        "@type": ["Product", "MusicAlbum"],
+        "name": f"Release {slug}",
+        "byArtist": {"@type": "MusicGroup", "name": "Fixture Band"},
+        "offers": [
+            {
+                "@type": "Offer",
+                "price": "12.99",
+                "priceCurrency": "EUR",
+                "sku": f"{slug}-CD",
+                "availability": "https://schema.org/InStock",
+                "itemOffered": {
+                    "@type": "MusicRelease",
+                    "name": "CD",
+                    "musicReleaseFormat": "https://schema.org/CDFormat",
+                },
+            },
+            {
+                "@type": "Offer",
+                "price": "24.99",
+                "priceCurrency": "EUR",
+                "sku": f"{slug}-LP",
+                "availability": "https://schema.org/OutOfStock",
+                "itemOffered": {
+                    "@type": "MusicRelease",
+                    "name": "Vinyl",
+                    "musicReleaseFormat": "https://schema.org/VinylFormat",
+                },
+            },
+        ],
+    }
     return (f"<!doctype html><html><head><title>Release {slug}</title><script type='application/ld+json'>{json.dumps(ld)}</script></head>"
             f"<body><h1>Release {slug}</h1><p>CD 12,99 € · Vinyl 24,99 €</p></body></html>")
 
@@ -243,6 +351,36 @@ def gap_product(slug: str) -> str | None:
     return (f'<!doctype html><html><head><meta charset="utf-8"><title>{title}</title></head><body class="woocommerce">'
             f'<div id="product-{8000 + n}" class="product"><div class="summary entry-summary"><h1 class="product_title">{title}</h1>'
             f'{price}<span class="sku">GC-{slug}</span>{form}</div></div></body></html>')
+
+
+def nested_editions(slug: str) -> str:
+    editions = [
+        {
+            "year": "2023",
+            "notes": "Earlier edition",
+            "packages": [
+                {
+                    "sku": "001",
+                    "format": "1 x 150 cl",
+                    "packaging": "Wood presentation box",
+                    "available": False,
+                },
+                {"sku": "002", "format": "6 x 75 cl", "available": True},
+            ],
+        },
+        {
+            "year": "2024",
+            "notes": "Later edition",
+            "packages": [
+                {"sku": "003", "format": "1 x 75 cl", "packaging": "Individual carton"},
+            ],
+        },
+    ]
+    return (
+        '<html><body><h1>Example editions</h1><script type="application/json" id="state">'
+        + json.dumps({"editions": editions})
+        + "</script></body></html>"
+    )
 
 
 # ---------------------------------------------------------------- prices split into tags, separators, machine prices

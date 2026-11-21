@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.netguard import url_is_private
@@ -95,7 +96,7 @@ def _parse_lastmod(text: str | None) -> datetime | None:
         except ValueError:
             return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+        value = value.replace(tzinfo=UTC)
     return value
 
 
@@ -256,7 +257,13 @@ async def start_page_links(site_url: str, fetch: Fetcher | None = None) -> tuple
     fetched = await (fetch or http_fetcher())(site_url)
     if fetched is None or not fetched.status or fetched.status >= 400:
         return [], fetched
-    return Page(fetched.text, fetched.final_url, fetched.status).links(), fetched
+    return Page(
+        fetched.text,
+        fetched.final_url,
+        fetched.status,
+        extra_links=fetched.extra_links,
+        extra_anchors=fetched.extra_anchors,
+    ).links(), fetched
 
 
 async def decide_discovery(runner, sitemaps: list[str], fetch: Fetcher | None = None) -> tuple[str, list[str]]:

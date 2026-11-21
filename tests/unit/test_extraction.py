@@ -4,10 +4,15 @@ import json
 
 import pytest
 
-from app.extraction.htmlclean import clean_html
-from app.extraction.mapping import apply_mapping, jsonld_values, pick_template, required_set
-from app.extraction.page import Page
 from app.extraction import transforms as T
+from app.extraction.htmlclean import clean_html
+from app.extraction.mapping import (
+    apply_mapping,
+    jsonld_values,
+    pick_template,
+    required_set,
+)
+from app.extraction.page import Page
 
 BASE = "https://www.lumen-shop.example/produkt/aurora"
 JSONLD = {
@@ -164,3 +169,57 @@ def test_page_signature_stable_for_same_template():
     p2 = Page("<html><body><div class='a'><h1>y</h1><ul><li>1</li></ul></div></body></html>", "https://e.example/2")
     p3 = Page("<html><body><main class='b'><h2>y</h2></main></body></html>", "https://e.example/3")
     assert p1.signature == p2.signature != p3.signature
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("12 July 2019", "2019-07-12"),
+        ("12 Jul 2019", "2019-07-12"),
+        ("July 12, 2019", "2019-07-12"),
+        ("Jul. 12 2019", "2019-07-12"),
+        (" 29 FEBRUARY 2020 ", "2020-02-29"),
+        ("1 September 2024", "2024-09-01"),
+        ("Sep. 1, 2024", "2024-09-01"),
+        ("1 Sept. 2024", "2024-09-01"),
+    ],
+)
+def test_english_month_dates_are_locale_independent_and_unambiguous(value, expected):
+    assert T.to_date(value, day_first=False) == expected
+    assert T.to_date(value, day_first=True) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "31 April 2024",
+        "29 February 2019",
+        "0 July 2019",
+        "-1 July 2019",
+        "July 2019",
+        "12 July",
+        "July 12",
+        "2019 July",
+        "12 Smarch 2019",
+        "12 Juillet 2019",
+        "12 July 20199",
+        "text " * 200 + "12 July 2019",
+    ],
+)
+def test_invalid_or_partial_english_month_dates_stay_null(value):
+    assert T.to_date(value) is None
+
+
+@pytest.mark.parametrize("with_transform", [False, True])
+def test_date_fields_keep_english_month_values_through_mapping_coercion(with_transform):
+    source = {"kind": "css", "selector": ".released", "extract": "text"}
+    if with_transform:
+        source["transforms"] = [{"op": "date", "day_first": True}]
+    mapping = {
+        "template_id": "item",
+        "fields": [{"name": "release_date", "type": "date", "sources": [source]}],
+    }
+    page_with_date = Page(
+        '<span class="released">12 July 2019</span>', "https://example.test/item"
+    )
+    assert apply_mapping(mapping, page_with_date).data["release_date"] == "2019-07-12"

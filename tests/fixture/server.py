@@ -476,9 +476,24 @@ def make_shop(with_sitemap: bool) -> Starlette:
 
         _count(request)
         kind, slug = request.path_params["kind"], request.path_params["slug"]
-        maker = {"woo": vp.woo_classic, "woo-block": vp.woo_block, "products": vp.shopify_page, "release": vp.release_page,
-                 "group": vp.group_page, "micro": vp.micro_page, "woo-heavy": vp.woo_heavy, "on-request": vp.woo_on_request,
-                 "range": vp.range_page, "woo-sale-var": vp.woo_sale_variable}.get(kind)
+        maker = {
+            "woo": vp.woo_classic,
+            "woo-block": vp.woo_block,
+            "products": vp.shopify_page,
+            "release": vp.release_page,
+            "group": vp.group_page,
+            "micro": vp.micro_page,
+            "woo-heavy": vp.woo_heavy,
+            "on-request": vp.woo_on_request,
+            "range": vp.range_page,
+            "woo-sale-var": vp.woo_sale_variable,
+            "editions": vp.keyed_editions,
+            "listing": vp.dynamic_listing,
+            "shell-listing": vp.shell_listing,
+            "productive-shell": vp.productive_shell_listing,
+            "nested-editions": vp.nested_editions,
+            "plain-item": vp.plain_item,
+        }.get(kind)
         if maker is None:
             return PlainTextResponse("not found", status_code=404)
         return HTMLResponse(maker(slug))

@@ -53,9 +53,18 @@ def test_session_parameters_leave_the_canonical_url():
 
 
 def test_key_url_and_trap_pattern():
-    k = key_url(S + "/wishlist/index/add/uenc/aHR0cHM6Ly9zaG9wLmV4YW1wbGUvcDEuaHRtbA,,/form_key/x/")
-    assert "<h>" in k
-    assert key_url(S + "/product/very-long-product-name-with-many-words-2024/") == S + "/product/very-long-product-name-with-many-words-2024/"
+    address = (
+        S
+        + "/wishlist/index/add/uenc/aHR0cHM6Ly9zaG9wLmV4YW1wbGUvcDEuaHRtbA,,/form_key/x/"
+    )
+    # Opaque path data is identity, not proof of an alias.
+    assert key_url(address) == address
+    # Action-path protection remains separate.
+    assert url_skip(address, ALL) == "sensitive_path"
+    assert (
+        key_url(S + "/product/very-long-product-name-with-many-words-2024/")
+        == S + "/product/very-long-product-name-with-many-words-2024/"
+    )
     assert key_url(S + "/a?tok=1&b=2", {"tok"}) == S + "/a?b=2"
     assert trap_pattern(S + "/events?month=2026-01") == "/events?month"
     assert trap_pattern(S + "/lights/sub/color-red/size-xl/") == "/<path-filters>" == trap_pattern(S + "/decor/f/12-40/")

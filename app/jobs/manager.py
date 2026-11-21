@@ -627,7 +627,7 @@ class JobManager:
         templates_failed = any(t.get("status") == "failed" for t in (rt.get("templates") or {}).values())
         # outcome-neutral entries: not_found, and sitemap URLs refused by robots.txt or the private rule
         non_neutral = int(svc.db.scalar("SELECT COUNT(*) FROM unextracted WHERE run_id=? AND neutral=0", (run_id,)) or 0)
-        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0) else "partial"
+        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0 and not rt.get("navigation_partial")) else "partial"
         result = {
             "run_id": run_id,
             "format": "jsonl",

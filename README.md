@@ -360,6 +360,10 @@ navigation of a run, and every fetch of `POST /v1/analyze` and `POST /v1/samples
 that takes longer fails like a network error (retried up to `max_retries`, then
 `fetch_failed`).
 
+Scripted listing pagination uses the selected timeout for its bounded link-observation
+window, with no separate 30-second ceiling. Action/page budgets and the run
+`max_duration_minutes` limit continue to apply.
+
 **Automatic slow-down.** Per host the service watches the last 20 pages. When at least
 20 % of them were server errors, timeouts, network errors or unusable answers, or the
 median response time reaches 3 times the host's first median and at least 5 s, the host's
@@ -464,3 +468,29 @@ counts time in `running`/`stopping` only; the result never exceeds `max_result_b
 
 Apache-2.0 (see `LICENSE` and `NOTICE`). Users build the image themselves; the
 third-party components in it are downloaded from their upstream sources during the build.
+
+## Generic catalogue development candidate
+
+This branch is an unreleased development candidate. It adds bounded discovery through
+intermediate pages and JavaScript listings, typed record inclusion filters and
+per-variant DOM fields. Discovery never relies on a maintained product URL list.
+Mappings still describe each site's observed data and selectors. Required values
+are checked on included variants; unknown inclusion inputs report incomplete
+extraction. Optional missing values can remain null without inheriting a parent
+value. Navigation limits and unsupported controls must be reviewed before claiming
+complete catalogue coverage. Test and deployment evidence is separate from a release.
+
+Embedded JSON variants may declare `children_path` relative to each object selected
+by `path`. A source with `path: "editions"` and `children_path: "packages"` emits
+each package with its own `raw` data and its corresponding edition at `parent.raw`.
+Map fields explicitly, for example `raw.sku` and `parent.raw.year`; parent values
+are never merged into missing child values. An absent or empty child collection
+keeps one context-only row so required child fields report incomplete extraction.
+The bounded sample candidates expose this relational choice as optional evidence;
+they do not automatically treat every nested array as saleable product variants.
+
+When a sample has no recognized summary/main container, a bounded heading-based
+fallback prioritizes the product's local region and following content before
+large preceding menus. Section comments still name the original DOM paths; no
+supplier-specific selectors are built into this fallback. Unsupported layouts
+and truncated evidence still require review before declaring optional fields absent.

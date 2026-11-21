@@ -6,7 +6,7 @@ not products, and a category page whose first 30 links are the header menu. So:
 
 * links of a page are ranked like a visitor scans a listing: links in product cards / with
   an image first, links in the header, navigation, footer, breadcrumbs last, and URL variants
-  (pagination, sort, filters, any query string) after everything else;
+  (pagination, sort and filters) after everything else;
 * sitemap URLs are spread over their URL shapes (round robin, largest shape first) instead
   of taking the first N;
 * every candidate tried is recorded (how it was loaded, what came of it, the product signals
@@ -37,8 +37,8 @@ CARD_XPATH = ("ancestor::*[contains(translate(@class,'PRODUCTIEMCAR','productiem
 
 
 def is_variant(url: str) -> bool:
-    """Pagination, sort, filter or any query-string variant of a listing."""
-    return "?" in url or bool(VARIANT_RE.search(url))
+    """Known listing controls; arbitrary query keys can identify real products."""
+    return bool(VARIANT_RE.search(url))
 
 
 MARKER_RE = re.compile(r"^.*?-([a-z]{0,3})(\d+)(\.[a-z0-9]{1,5})?$", re.I)
@@ -115,7 +115,7 @@ def anchor_flags(page) -> list[tuple[str, bool, bool]]:
     return out
 
 
-def link_groups(page, site: str, exclude: list | None = None) -> tuple[list[dict], dict]:
+def link_groups(page, site: str, exclude: list | None = None, include: list | None = None) -> tuple[list[dict], dict]:
     """The page's same-site links grouped by URL shape, for probing one link per shape first.
     Each group: ``shape``, ``urls`` (links inside product cards / around an image first, menu
     links last), ``links``, ``in_menus`` (share of its links inside header/nav/footer/menu
@@ -130,7 +130,9 @@ def link_groups(page, site: str, exclude: list | None = None) -> tuple[list[dict
         start = page.url
     info: "OrderedDict[str, dict]" = OrderedDict()
     stats = {"hrefs": 0, "in_site": 0, "other_hosts": 0, "variants_skipped": 0}
-    for href, chrome, card in anchor_flags(page):
+    flags = anchor_flags(page)
+    flags.extend((u, False, False) for u in getattr(page, "extra_links", []))
+    for href, chrome, card in flags:
         stats["hrefs"] += 1
         resolved = absolute(page.base_url, href)
         if not resolved:
@@ -144,7 +146,7 @@ def link_groups(page, site: str, exclude: list | None = None) -> tuple[list[dict
             continue
         if c == start or any(p.search(c) for p in exclude or []):
             continue
-        if is_variant(c):
+        if is_variant(c) and not any(p.search(c) for p in include or []):
             stats["variants_skipped"] += 1
             continue
         cur = info.get(c)
@@ -169,12 +171,12 @@ def link_groups(page, site: str, exclude: list | None = None) -> tuple[list[dict
     return out, stats
 
 
-def url_groups(urls: list[str]) -> list[dict]:
+def url_groups(urls: list[str], include: list | None = None) -> list[dict]:
     """Sitemap URLs grouped by URL shape, largest group first (no page context to judge
     menus by); query variants left out."""
     groups: "OrderedDict[str, list[str]]" = OrderedDict()
     for u in urls:
-        if not is_variant(u):
+        if not is_variant(u) or any(p.search(u) for p in include or []):
             groups.setdefault(url_shape(u), []).append(u)
     return sorted(({"shape": k, "urls": v, "links": len(v), "in_menus": 0.0} for k, v in groups.items()), key=lambda g: -g["links"])
 
@@ -197,11 +199,67 @@ class ProbePlan:
     group yields a sample, the rest of that group before anything else; ``tail`` after all."""
 
     def __init__(self, groups: list[dict], *, limit: int, misses: int = 2, tail: list[str] | None = None) -> None:
-        self.groups = [{"shape": g["shape"], "queue": list(g["urls"]), "tried": 0, "hits": 0, "misses": 0} for g in groups]
+        self.groups = [
+            {
+                "shape": g["shape"],
+                "queue": list(g["urls"]),
+                "tried": 0,
+                "hits": 0,
+                "misses": 0,
+            }
+            for g in groups
+        ]
         self.limit, self.max_misses = limit, misses
         self.tail = list(tail or [])
         self.tried = 0
         self._of: dict[str, dict] = {}
+        self._known = {u for g in self.groups for u in g["queue"]} | set(self.tail)
+        self.depths: dict[str, int] = {}
+
+    def has_unseen(self, groups: list[dict]) -> bool:
+        """Whether this observation contributes any new traversal candidate."""
+        return any(u not in self._known for group in groups for u in group["urls"])
+
+    def extend(
+        self,
+        groups: list[dict],
+        parent: str,
+        *,
+        max_depth: int = 4,
+        preferred: list[re.Pattern] | None = None,
+    ) -> None:
+        """Add another level, placing known targets ahead of pending intermediates."""
+        depth = self.depths.get(parent, 1) + 1
+        if depth > max_depth:
+            return
+        by_shape = {g["shape"]: g for g in self.groups}
+        for group in groups:
+            fresh = [u for u in group["urls"] if u not in self._known]
+            if not fresh:
+                continue
+            g = by_shape.get(group["shape"])
+            if g is None:
+                g = {
+                    "shape": group["shape"],
+                    "queue": [],
+                    "tried": 0,
+                    "hits": 0,
+                    "misses": 0,
+                }
+                self.groups.append(g)
+                by_shape[g["shape"]] = g
+            g["misses"] = 0  # a new subtree may contain products of the same URL shape
+            preferred_count = 0
+            for url in fresh:
+                if len(self._known) >= max(1000, self.limit * 100):
+                    return
+                self._known.add(url)
+                self.depths[url] = depth
+                if preferred and any(pattern.search(url) for pattern in preferred):
+                    g["queue"].insert(preferred_count, url)
+                    preferred_count += 1
+                else:
+                    g["queue"].append(url)
 
     def _take(self, g: dict) -> str | None:
         while g["queue"]:

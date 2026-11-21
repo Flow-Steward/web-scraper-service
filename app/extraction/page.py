@@ -101,10 +101,20 @@ def _parse_microdata(html: str) -> list[Any]:
 
 
 class Page:
-    def __init__(self, html: str, url: str, status: int | None = 200) -> None:
+    def __init__(
+        self,
+        html: str,
+        url: str,
+        status: int | None = 200,
+        *,
+        extra_links: list[str] | None = None,
+        extra_anchors: list[tuple[str, str | None, bool]] | None = None,
+    ) -> None:
         self.html = html or ""
         self.url = url
         self.status = status
+        self.extra_links = list(extra_links or [])
+        self.extra_anchors = [tuple(anchor) for anchor in extra_anchors or []]
 
     @cached_property
     def selector(self) -> Selector:
@@ -216,7 +226,7 @@ class Page:
             resolved = absolute(self.base_url, href)
             if resolved:
                 out.append(resolved.split("#", 1)[0])
-        return out
+        return list(dict.fromkeys(out + self.extra_links))
 
     def anchors(self) -> list[tuple[str, str | None, bool]]:
         """Every ``<a href>``: (raw href, absolute http(s) URL without fragment or None, rel nofollow)."""
@@ -228,6 +238,11 @@ class Page:
             rel = (a.attrib.get("rel") or "").lower().split()
             resolved = absolute(self.base_url, href)
             out.append((href, resolved.split("#", 1)[0] if resolved else None, "nofollow" in rel))
+        seen = set(out)
+        for anchor in self.extra_anchors:
+            if anchor not in seen:
+                out.append(anchor)
+                seen.add(anchor)
         return out
 
     def canonical_link(self) -> str | None:
