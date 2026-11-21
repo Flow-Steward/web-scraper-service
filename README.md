@@ -446,6 +446,12 @@ vertical middle, ±3 px), then the page is polled for up to
 `WSS_CHALLENGE_CLICK_WAIT_SECONDS`; with Camoufox one `mouse.move` lets its `humanize`
 draw the path. `POST /v1/analyze` and `POST /v1/samples` run the same route (one browser
 session per request, the config's flags and caps), so a protected site gets samples.
+If that browser closes or fails to start, setup returns HTTP 503 with
+`error.details.reason: browser_unavailable`. It closes and discards the failed session;
+it does not relaunch automatically or substitute an HTTP challenge for the browser failure.
+Retry the setup request; repeated failures require checking the service logs. The error
+alone does not establish resource exhaustion. Selector advice is based only on usable
+documents inspected during sampling.
 `scripts/protection_report.py` measures pass rates on a site you own (server, amd64). Clicks and solves are capped
 per job; a challenge-limit or block-rate `problem` is emitted; a site that blocks almost
 everything ends with `stop_reason: blocked`. A run that asks for the click or a solver with

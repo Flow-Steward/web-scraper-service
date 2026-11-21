@@ -404,7 +404,7 @@ class Explain:
         if c["samples"] >= sample_count:
             return hints
         selector = config.get("target_page_selector")
-        loaded = c["tried"] - c["not_loaded"]
+        loaded = sum(p["outcome"] in ("sample", "not_target", "probed") for p in self._tried())
         best = None
         for g in self.groups():
             if g["with_product_signals"] and (best is None or g["with_product_signals"] > best["with_product_signals"]):

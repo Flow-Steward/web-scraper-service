@@ -55,7 +55,7 @@ def test_selector_that_matches_nothing_is_explained_with_a_hint(guarded_service,
     assert "url_include" in kinds  # product pages (price, gallery …) were seen: a pattern is offered
     warn = next(w for w in body["warnings"] if w["field"] == "sample_count")
     assert warn["message"].startswith("found 0 of 1 target page: start page (browser, HTTP 200): 38 links, 37 on this site in ")
-    loaded = counts["tried"] - counts["not_loaded"]
+    loaded = len(rejected)
     assert f"Next: none of the {loaded} pages loaded had the product page selector" in warn["message"], warn
     assert f"samples site=guard.test:8603 source=crawl start_links=38/37 shapes={ex['discovery']['shapes']}" in guarded_service.log()
     assert "/p/11 browser 200 sel=no links=" in guarded_service.log()

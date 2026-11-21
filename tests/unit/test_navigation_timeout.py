@@ -31,7 +31,7 @@ async def test_setup_listing_navigation_honors_selected_page_timeout(seconds):
         },
         {},
     )
-    sf._session = SimpleNamespace(page=SimpleNamespace(url=URL), discover_links=collect)
+    sf._session = SimpleNamespace(page=SimpleNamespace(url=URL), discover_links=collect, is_closed=False)
     sf._browser[URL] = (200, "<main>Listing</main>", URL, None)
 
     result = await sf.discover_links(URL)

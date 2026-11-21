@@ -219,6 +219,13 @@ class BrowserSession:
     def failure_for(self, url: str) -> dict | None:
         return self.failures.get(host_label(url))
 
+    @property
+    def is_closed(self) -> bool:
+        return bool(
+            (self.page is not None and self.page.is_closed())
+            or (self._browser is not None and not self._browser.is_connected())
+        )
+
     async def start(self) -> BrowserSession:
         import os
 
