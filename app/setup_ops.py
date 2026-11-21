@@ -456,7 +456,10 @@ class SetupFetch:
         from app.core.urls import host_of
         await self._navigation_throttle.wait(host_of(url))
         try:
-            got = await session.get(url, wait_ms=wait_ms, settle=settle)
+            got = await session.get(
+                url, wait_ms=wait_ms, settle=settle,
+                destination_policy=lambda destination: self._destination_allowed(destination, site_url=url),
+            )
         except (PrivateAddress, HostStopped):
             raise
         except Exception as exc:

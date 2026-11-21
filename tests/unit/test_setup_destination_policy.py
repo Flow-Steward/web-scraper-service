@@ -61,9 +61,12 @@ async def test_setup_http_redirect_uses_document_or_auxiliary_policy(setup_fetch
     assert result == [allowed]
 
 
-async def test_setup_browser_documents_keep_native_navigation_interface(setup_fetch):
-    async def get(url, **kwargs):
-        assert "destination_policy" not in kwargs
+async def test_setup_browser_documents_pass_policy_to_native_guard(setup_fetch):
+    async def get(url, *, destination_policy=None, **kwargs):
+        assert destination_policy is not None
+        assert not await destination_policy("https://other.test/catalogue/")
+        assert not await destination_policy(SITE + "blocked/")
+        assert await destination_policy("https://supplier.test/product/item?color=blue")
         return 200, "<main>ok</main>", url, None
 
     async def session():
@@ -129,3 +132,17 @@ async def test_setup_redirect_policy_binds_each_admitted_host(setup_fetch, monke
         return Fetched(original, original, 200, b"ok")
     monkeypatch.setattr("app.setup_ops.http_get", http)
     await setup_fetch.http(url)
+
+
+async def test_setup_browser_redirect_policy_binds_each_admitted_host(setup_fetch):
+    setup_fetch.config["respect_robots"] = False
+    initial = "https://second.test/catalogue/item"
+    async def get(url, *, destination_policy=None, **kwargs):
+        assert destination_policy is not None
+        assert await destination_policy(url + "?page=2")
+        assert not await destination_policy(SITE + "other")
+        return 200, "<main>ok</main>", url, None
+    async def session():
+        return SimpleNamespace(get=get, is_closed=False)
+    setup_fetch.session = session
+    assert (await setup_fetch.browser_get(initial))[2] == initial
