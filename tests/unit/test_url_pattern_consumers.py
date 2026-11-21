@@ -189,3 +189,76 @@ async def test_enqueue_rejected_urls_share_sync_budget_and_reset_before_dns(runn
     await runner.enqueue(entries[:2] + [{"url": "https://catalogue.example.test/keep/1", "source": "sitemap"}] + entries[2:])
     await sibling_task
     assert len(calls) == 1
+
+
+def timed_policy(monkeypatch, pattern=r"/item/"):
+    """Use the real engine with deterministic matching CPU accounting."""
+    from app.core import url_patterns as policy
+
+    clock = [0.0]
+    original_compile = policy._compile
+    monkeypatch.setattr(policy, "_clock", lambda: clock[0])
+    monkeypatch.setattr(policy, "BATCH_SECONDS", 0.035)
+
+    class TimedSearch:
+        def __init__(self, compiled):
+            self.compiled = compiled
+
+        def search(self, *args, **kwargs):
+            result = self.compiled.search(*args, **kwargs)
+            clock[0] += 0.015
+            return result
+
+    monkeypatch.setattr(policy, "_compile", lambda raw, flags: TimedSearch(original_compile(raw, flags)))
+    return policy.compile_patterns([pattern], "url_include")
+
+
+async def test_backlog_prioritization_shares_one_sync_matching_budget(runner, monkeypatch):
+    from app.core.urls import site_key
+
+    patterns = timed_policy(monkeypatch)
+    runner._target_patterns[site_key("https://catalogue.example.test/")] = patterns
+    runner.crawler_task = SimpleNamespace(done=lambda: False)
+    for index in range(4):
+        runner.svc.db.execute(
+            "INSERT INTO link_backlog(run_id,url,source,forefront) VALUES (?,?,?,0)",
+            (runner.run_id, f"https://catalogue.example.test/item/{index}", "link"),
+        )
+    enqueued = []
+    async def enqueue(entries, **kwargs):
+        enqueued.extend(entries)
+        runner._shutdown = True
+
+    monkeypatch.setattr(runner, "enqueue", enqueue)
+    with pytest.raises(UrlPatternError):
+        await runner._drain_backlog()
+    assert not enqueued
+    assert len(runner.svc.db.all("SELECT seq FROM link_backlog WHERE run_id=?", (runner.run_id,))) == 4
+
+
+async def test_reextraction_shares_budget_and_rolls_back_all_page_updates(runner, monkeypatch):
+    from app.core import url_patterns as policy
+    from app.core.db import loads
+
+    timed_policy(monkeypatch, r"/different-section/")
+    mapping = {"template_id": "item", "match": {"url_patterns": [r"/different-section/"]}}
+    monkeypatch.setattr(runner, "mappings_for", lambda site: [mapping])
+    read = []
+    async def html(key):
+        assert policy._batch_budget.get() is None  # storage awaits precede the bounded transaction
+        read.append(key)
+        return "<main><h1>Item</h1></main>"
+
+    runner.kvs = SimpleNamespace(get_value=html)
+    for index in range(4):
+        url = f"https://catalogue.example.test/item/{index}"
+        doc = {"url": url, "kvs_key": f"page-{index}", "needs_reextract": True}
+        runner.svc.db.execute(
+            "INSERT INTO stored_pages(run_id,page_key,url,template_id,page_class,has_html,doc) VALUES (?,?,?,?,?,1,?)",
+            (runner.run_id, f"page-{index}", url, "item", "no_template", dumps(doc)),
+        )
+    with pytest.raises(UrlPatternError):
+        await runner._reextract_some()
+    assert len(read) == 4
+    rows = runner.svc.db.all("SELECT doc FROM stored_pages WHERE run_id=?", (runner.run_id,))
+    assert all(loads(row["doc"])["needs_reextract"] for row in rows)

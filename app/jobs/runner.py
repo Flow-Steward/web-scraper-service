@@ -1125,8 +1125,9 @@ class JobRunner:
             # links that look like targets (an active mapping's url_patterns, url_include) go to the
             # front of the queue, listings behind: a trial run reaches its records first, a full
             # crawl still fetches every listing
-            front = [r for r in rows if r["forefront"] or (r["source"] == "link" and self._targetish(r["url"]))]
-            back = [r for r in rows if r not in front]
+            with url_pattern_batch():
+                front = [r for r in rows if r["forefront"] or (r["source"] == "link" and self._targetish(r["url"]))]
+                back = [r for r in rows if r not in front]
             for forefront, part in ((1, front), (0, back)):
                 if part:
                     await self.enqueue(
@@ -2992,7 +2993,7 @@ class JobRunner:
         crawl_open = self.doc["progress"]["discovery"] != "cut" and self.state == "running" and not self._shutdown
         snap = self._snapshot()
         try:
-            with self.svc.db.tx():
+            with url_pattern_batch(), self.svc.db.tx():
                 for row, d, html in work:
                     self._reextract_one(row, d, html, crawl_open)
                 self._refresh_store_counter()
