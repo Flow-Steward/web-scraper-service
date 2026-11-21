@@ -1,8 +1,8 @@
 """Bounded navigation of generic browser listings after their initial load.
 
 Only explicit next-page/load-more controls are clicked. The caller retains the
-browser context, request guards and robots/rate policy; ``before_action`` is the
-hook to enforce that policy before *every* click or opt-in scroll. Links from all
+browser context, request guards and robots/rate policy; ``before_action`` enforces
+that policy before each action and deferred document destination. Links from all
 observed states are retained, including query-distinct links on an unchanged URL.
 No host, catalogue vocabulary or client-side framework is assumed.
 """
@@ -56,6 +56,7 @@ class NavigationResult:
     bounded: bool = False
     coverage_notes: list[str] = field(default_factory=list)
     anchors: list[tuple[str, str | None, bool]] = field(default_factory=list)
+    deferred_links: list[str] = field(default_factory=list)
 
 
 ActionPolicy = Callable[[NavigationAction], bool | Awaitable[bool]]
@@ -300,6 +301,7 @@ def _stopped(result: NavigationResult, reason: str) -> NavigationResult:
         "time_limit": "Navigation reached its time budget; additional listing pages may remain.",
         "no_progress": "Repeated listing actions revealed no new same-site links; coverage may be partial.",
         "loop_detected": "Listing navigation returned to an already observed state; coverage may be partial.",
+        "navigation_deferred": "Document navigation was deferred to normal fetching before issuing a browser request; listing coverage is partial.",
         "policy_denied": "The caller's navigation policy declined an action; coverage is partial.",
         "cancelled": "Listing navigation was cancelled; collected links are partial.",
         "action_error": "A browser action or observation failed; collected links are partial.",
@@ -328,6 +330,14 @@ async def collect_listing_links(
     the current URL for JS buttons/scrolls. Returning false stops immediately.
     Caller task cancellation propagates; the optional cancellation predicate
     returns a partial result and is checked during settling as well as actions.
+
+    Main-frame document requests are stopped before issuance, including requests
+    initiated by script. Playwright routes do not intercept every HTTP redirect
+    hop, so following them here could bypass policy. Safe destinations are
+    returned in ``deferred_links`` for normal fetching instead. The policy sees
+    these as kind ``navigation``; they do not consume another action budget.
+    XHR and subresources retain the caller's existing request guards. The
+    browser context must block service workers, which bypass Playwright routes.
     """
     limits = limits or NavigationLimits()
     result = NavigationResult()
@@ -336,9 +346,64 @@ async def collect_listing_links(
     seen_anchors: set[tuple[str, str | None, bool]] = set()
     seen_states: set[tuple[str, tuple[str, ...]]] = set()
     no_progress = 0
+    request_stop: str | None = None
+    request_tasks: set[asyncio.Task] = set()
+    route_installed = False
 
     async def is_cancelled() -> bool:
         return bool(await _resolved(cancelled())) if cancelled else False
+
+    async def guard_document(route):
+        nonlocal request_stop
+        request = route.request
+        if not request.is_navigation_request() or request.frame != page.main_frame:
+            # Keep private-address/resource guards and rendering requests intact.
+            await route.fallback()
+            return
+        task = asyncio.current_task()
+        request_tasks.add(task)
+        try:
+            if await is_cancelled():
+                request_stop = "cancelled"
+                return
+            from app.core.linkrules import url_skip
+
+            target = _same_site_url(request.url, site)
+            if (
+                request.method != "GET"
+                or target is None
+                or url_skip(target, {"sensitive_path", "action_params"})
+            ):
+                request_stop = "policy_denied"
+                return
+            action = NavigationAction("navigation", "Deferred listing navigation", target)
+            if before_action is not None and not await _resolved(before_action(action)):
+                request_stop = "policy_denied"
+                return
+            if await is_cancelled():
+                request_stop = "cancelled"
+                return
+            if target not in seen_links:
+                seen_links.add(target)
+                result.links.append(target)
+            if target not in result.deferred_links:
+                result.deferred_links.append(target)
+            anchor = (target, target, False)
+            if anchor not in seen_anchors:
+                seen_anchors.add(anchor)
+                result.anchors.append(anchor)
+            request_stop = "navigation_deferred"
+        except Exception:
+            request_stop = "action_error"
+        finally:
+            try:
+                # A terminal 204 prevents network issuance and leaves the
+                # existing document intact. Aborting a navigation can replace
+                # it with a browser error document and poison session reuse.
+                await route.fulfill(status=204, body="")
+            except Exception:
+                pass
+            request_tasks.discard(task)
 
     async def observe() -> tuple[dict, int, tuple[str, tuple[str, ...]]]:
         snapshot = await page.evaluate(_SNAPSHOT_JS)
@@ -365,10 +430,14 @@ async def collect_listing_links(
         # Includes the caller's async policy, DOM inspection and each action;
         # individual browser timeouts alone cannot bound a hanging callback.
         async with asyncio.timeout(limits.max_seconds):
+            await page.route("**/*", guard_document)
+            route_installed = True
             snapshot, _, signature = await observe()
             seen_states.add(signature)
             result.observations = 1
             while True:
+                if request_stop is not None:
+                    return _stopped(result, request_stop)
                 if await is_cancelled():
                     return _stopped(result, "cancelled")
                 if not _same_site_url(snapshot["url"], site):
@@ -429,6 +498,8 @@ async def collect_listing_links(
                     if element is not None:
                         await element.dispose()
                 result.steps += 1
+                if request_stop is not None:
+                    return _stopped(result, request_stop)
                 # Wait for a link-state change, not networkidle: long-polling and
                 # analytics must not consume the whole navigation budget. The
                 # bounded polling also permits prompt cancellation.
@@ -437,6 +508,8 @@ async def collect_listing_links(
                 settle_deadline = loop.time() + limits.settle_ms / 1000
                 observed_action = False
                 while True:
+                    if request_stop is not None:
+                        return _stopped(result, request_stop)
                     if await is_cancelled():
                         return _stopped(result, "cancelled")
                     snapshot, new, signature = await observe()
@@ -461,4 +534,19 @@ async def collect_listing_links(
     except TimeoutError:
         return _stopped(result, "time_limit")
     except Exception:
-        return _stopped(result, "action_error")
+        return _stopped(result, request_stop or "action_error")
+    finally:
+        # Policy callbacks may still be running when the collector times out or
+        # is cancelled. Cancel them before releasing this temporary guard.
+        try:
+            pending = list(request_tasks)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            if route_installed:
+                try:
+                    await page.unroute("**/*", guard_document)
+                except Exception:
+                    pass  # A closed page has no remaining requests to guard.

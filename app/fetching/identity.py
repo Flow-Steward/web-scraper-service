@@ -359,6 +359,8 @@ async def camoufox_context_raw(browser, identity: Identity | None, *, proxy: dic
     Raises ValueError like ``AsyncNewContext`` on a browser that renders as the host."""
     from camoufox.async_api import AsyncNewContext
 
+    # Service workers bypass Playwright request routes, including safety guards.
+    kwargs["service_workers"] = "block"
     if identity is None or not identity.preset:
         return tag(await AsyncNewContext(browser, proxy=proxy, **kwargs), None)
     try:
@@ -408,6 +410,8 @@ async def chromium_context(browser, identity: Identity, **options: Any):
     language follows ``options["locale"]`` (the exit's, geo.py) when given."""
     from browserforge.injectors.playwright import AsyncNewContext
 
+    # Keep private-address and listing-navigation guards on every request.
+    options["service_workers"] = "block"
     context = await AsyncNewContext(browser=browser, fingerprint=chromium_fingerprint(identity, options.get("locale")), **options)
     env = {"browser_os": identity.os, "canvas_noise": None}
     env.update(await readback(context, ("chromium", identity.preset_id, "")))

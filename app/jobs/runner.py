@@ -1881,8 +1881,10 @@ class JobRunner:
         async def allowed(action):
             from app.core.linkrules import url_skip
 
+            document = action.kind == "navigation"
             if (
-                self.pages_started + int(self.rt.get("navigation_actions", 0))
+                not document
+                and self.pages_started + int(self.rt.get("navigation_actions", 0))
                 >= self.config["max_pages"]
             ):
                 return False
@@ -1902,6 +1904,8 @@ class JobRunner:
                 if cancelled():
                     return False
                 await asyncio.sleep(0.2)
+            if document:
+                return not cancelled()
             await self.throttle.wait(host_of(action.url))
             if cancelled() or self.pages_started + int(self.rt.get("navigation_actions", 0)) >= self.config["max_pages"]:
                 return False
@@ -1923,7 +1927,7 @@ class JobRunner:
         page.extra_links = result.links
         page.extra_anchors = result.anchors
         out["navigation"] = {
-            k: v for k, v in asdict(result).items() if k not in ("links", "anchors")
+            k: v for k, v in asdict(result).items() if k not in ("links", "anchors", "deferred_links")
         }
         if result.bounded:
             self.rt["navigation_partial"] = True

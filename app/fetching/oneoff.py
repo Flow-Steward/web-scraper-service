@@ -356,10 +356,11 @@ class BrowserSession:
         listing state. No extra browser or context is created.
 
         A supplied ``before_action`` owns robots, pause and rate/host spacing,
-        and is called once per action after private/failed-host checks. There
-        is no second hidden delay. Without that callback, the session's existing
-        inter-navigation delay is applied to each action. Robots policy belongs
-        to the caller, just as it does for ``get()``.
+        and checks each action and deferred document destination after the
+        private/failed-host checks. A ``navigation`` destination check must not
+        charge another action or delay: the collector sends no document request.
+        Without that callback, the session's inter-navigation delay applies to
+        each action. Robots policy belongs to the caller, as for ``get()``.
         """
         from app.fetching.navigation import NavigationLimits, collect_listing_links
 
@@ -380,7 +381,7 @@ class BrowserSession:
             if before_action is not None:
                 decision = before_action(action)
                 return bool(await decision if inspect.isawaitable(decision) else decision)
-            if self.delay[1] > 0:
+            if action.kind != "navigation" and self.delay[1] > 0:
                 await asyncio.sleep(random.uniform(*self.delay))
             return True
 

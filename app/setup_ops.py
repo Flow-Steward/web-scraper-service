@@ -147,7 +147,8 @@ class SetupFetch:
             throttle = self._navigation_throttle
 
             async def allowed(action):
-                if self._navigation_actions >= min(
+                document = action.kind == "navigation"
+                if not document and self._navigation_actions >= min(
                     100, int(self.config.get("max_pages") or 12)
                 ):
                     return False
@@ -179,8 +180,9 @@ class SetupFetch:
                         )
                         if not robots.is_allowed(action.url):
                             return False
-                await throttle.wait(host_of(action.url))
-                self._navigation_actions += 1
+                if not document:
+                    await throttle.wait(host_of(action.url))
+                    self._navigation_actions += 1
                 return True
 
             result = await session.discover_links(

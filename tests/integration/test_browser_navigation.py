@@ -7,6 +7,7 @@ site, category vocabulary, framework or particular pagination library is needed.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 import pytest_asyncio
@@ -17,9 +18,10 @@ from playwright.async_api import async_playwright
 async def listing_page():
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            channel="chromium", headless=True, args=["--no-sandbox"]
+            channel="chromium", headless=True, args=["--no-sandbox"],
+            executable_path=os.environ.get("WSS_TEST_CHROMIUM_PATH"),
         )
-        page = await browser.new_page(viewport={"width": 900, "height": 600})
+        page = await browser.new_page(viewport={"width": 900, "height": 600}, service_workers="block")
         yield page
         await browser.close()
 
@@ -233,7 +235,7 @@ async def test_scroll_can_reveal_links_without_a_button(listing_page):
 
 
 @pytest.mark.asyncio
-async def test_rel_next_follows_same_site_listing_and_keeps_prior_links(listing_page):
+async def test_rel_next_defers_same_site_document_and_keeps_prior_links(listing_page):
     limits, collect = navigation_api()
 
     async def listing(route):
@@ -252,11 +254,11 @@ async def test_rel_next_follows_same_site_listing_and_keeps_prior_links(listing_
     assert set(result.links) == {
         "https://music.example.test/track/a?release=1",
         "https://music.example.test/list?page=2",
-        "https://music.example.test/track/b?release=2",
     }
-    assert listing_page.url == "https://music.example.test/list?page=2"
+    assert listing_page.url == "https://music.example.test/list"
+    assert result.deferred_links == ["https://music.example.test/list?page=2"]
     assert result.steps == 1
-    assert result.stop_reason == "controls_exhausted"
+    assert result.stop_reason == "navigation_deferred"
 
 
 @pytest.mark.asyncio
@@ -558,3 +560,213 @@ async def test_filter_show_more_is_not_listing_navigation(listing_page, filter_g
     assert result.steps == 1
     assert result.stop_reason == "controls_exhausted"
     assert result.bounded is False
+
+
+@pytest.fixture
+def redirect_listing_server():
+    """Local HTTP redirect chain: the collector must never start it."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path == "/list?page=2":
+                self.send_response(302)
+                self.send_header("Location", "/cart?add-to-cart=42")
+                self.end_headers()
+                return
+            body = (
+                '<a rel="next" href="/list?page=2">Next page</a>'
+                if self.path == "/list"
+                else "<main>Action endpoint</main>"
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}", requests
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+@pytest.mark.asyncio
+async def test_listing_defers_document_navigation_before_http_redirect_chain(
+    listing_page, redirect_listing_server
+):
+    limits, collect = navigation_api()
+    origin, requests = redirect_listing_server
+    await listing_page.goto(origin + "/list")
+
+    result = await collect(listing_page, limits=limits(settle_ms=100))
+
+    assert "/list?page=2" not in requests
+    assert "/cart?add-to-cart=42" not in requests
+    assert listing_page.url == origin + "/list"
+    assert result.deferred_links == [origin + "/list?page=2"]
+    assert origin + "/list?page=2" in result.links
+    assert result.stop_reason == "navigation_deferred"
+    assert result.bounded is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destination, method", [
+    ("/cart?add-to-cart=42", "GET"),
+    ("/list?action=delete", "GET"),
+    ("https://outside.example.test/list", "GET"),
+    ("/list?page=2", "POST"),
+])
+async def test_script_navigation_cannot_issue_unsafe_document_requests(
+    listing_page, destination, method
+):
+    limits, collect = navigation_api()
+    sent = []
+    script = (
+        f"location.href={destination!r}"
+        if method == "GET"
+        else "const form=document.createElement('form'); form.method='POST'; "
+             "form.action='/list?page=2'; document.body.append(form); form.submit()"
+    )
+    initial = f'<button aria-label="Next page" onclick="{script}">Next</button>'
+
+    async def fixture(route):
+        sent.append((route.request.url, route.request.method))
+        await route.fulfill(content_type="text/html", body=initial if len(sent) == 1 else "Done")
+
+    await listing_page.route("**/*", fixture)
+    await listing_page.goto("https://catalogue.example.test/list")
+    result = await collect(listing_page, limits=limits(settle_ms=100))
+
+    assert sent == [("https://catalogue.example.test/list", "GET")]
+    assert listing_page.url == "https://catalogue.example.test/list"
+    assert await listing_page.locator("button").count() == 1
+    assert result.stop_reason == "policy_denied"
+    assert result.bounded is True
+    assert not result.deferred_links
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", ["scope", "robots", "cancelled", "error", "timeout"])
+async def test_document_policy_and_cleanup_preserve_existing_routes(listing_page, denial):
+    limits, collect = navigation_api()
+    sent = []
+    calls = []
+    stopped = False
+    body = """<button aria-label="Next page" onclick="location.href='/list?page=2'">Next</button>"""
+
+    async def fixture(route):
+        sent.append(route.request.url)
+        await route.fulfill(content_type="text/html", body=body)
+
+    async def policy(action):
+        nonlocal stopped
+        calls.append((action.kind, action.url))
+        if action.kind == "navigation":
+            if denial == "error":
+                raise RuntimeError("policy unavailable")
+            if denial == "timeout":
+                await asyncio.Event().wait()
+            if denial == "cancelled":
+                stopped = True
+                return True
+            return False
+        return True
+
+    async def cancelled():
+        return stopped
+
+    await listing_page.route("**/*", fixture)
+    await listing_page.goto("https://catalogue.example.test/list")
+    result = await collect(
+        listing_page, limits=limits(settle_ms=100, max_seconds=0.5), before_action=policy,
+        cancelled=cancelled if denial == "cancelled" else None,
+    )
+
+    assert sent == ["https://catalogue.example.test/list"]
+    assert result.stop_reason == {"error": "action_error", "timeout": "time_limit", "cancelled": "cancelled"}.get(denial, "policy_denied")
+    assert not result.deferred_links
+    assert ("navigation", "https://catalogue.example.test/list?page=2") in calls
+    # The temporary guard is removed even on error; the previous route survives.
+    await listing_page.goto("https://catalogue.example.test/after")
+    assert sent[-1] == "https://catalogue.example.test/after"
+
+
+@pytest.mark.asyncio
+async def test_document_guard_preserves_xhr_listing_rendering(listing_page):
+    limits, collect = navigation_api()
+    sent = []
+    html = """<main><a href="/part/a">A</a></main>
+      <button aria-label="Next page" onclick="this.disabled=true; fetch('/api/list')
+        .then(response => response.text()).then(html => document.querySelector('main').innerHTML=html)">Next</button>"""
+
+    async def fixture(route):
+        sent.append(route.request.url)
+        await route.fulfill(content_type="text/html", body=(
+            '<a href="/part/b">B</a>' if route.request.url.endswith("/api/list") else html
+        ))
+
+    await listing_page.route("**/*", fixture)
+    await listing_page.goto("https://catalogue.example.test/list")
+    result = await collect(listing_page, limits=limits(settle_ms=300))
+
+    assert sent == ["https://catalogue.example.test/list", "https://catalogue.example.test/api/list"]
+    assert "https://catalogue.example.test/part/b" in result.links
+    assert result.stop_reason == "controls_exhausted"
+    assert not result.deferred_links
+
+
+@pytest.mark.asyncio
+async def test_session_can_reuse_document_after_deferring_navigation(listing_page, monkeypatch):
+    from app.fetching.oneoff import BrowserSession
+
+    limits, _ = navigation_api()
+    url = "https://catalogue.example.test/list"
+    await open_fixture(listing_page, '<a rel="next" href="/list?page=2">Next page</a>', url)
+
+    async def public(url):
+        return False
+
+    monkeypatch.setattr("app.fetching.oneoff.url_is_private", public)
+    session = BrowserSession("chromium")
+    session.page = listing_page
+    result = await session.discover_links(limits=limits(settle_ms=100))
+
+    assert result.stop_reason == "navigation_deferred"
+    assert result.deferred_links == [url + "?page=2"]
+    assert listing_page.url == url
+    assert await listing_page.locator('a[rel="next"]').count() == 1
+    status, html, final, _ = await session.get(url)
+    assert status == 200
+    assert "Next page" in html
+    assert final == url
+
+
+@pytest.mark.asyncio
+async def test_deferred_navigation_waits_for_async_destination_policy(listing_page):
+    limits, collect = navigation_api()
+    await open_fixture(listing_page, """<a href="/part/a">A</a>
+      <button aria-label="Next page" onclick="this.disabled=true;
+        setTimeout(() => location.href='/list?page=2', 50)">Next</button>""")
+
+    async def policy(action):
+        if action.kind == "navigation":
+            await asyncio.sleep(0.2)
+        return True
+
+    result = await collect(
+        listing_page, limits=limits(settle_ms=500), before_action=policy
+    )
+
+    assert result.stop_reason == "navigation_deferred"
+    assert result.deferred_links == ["https://catalogue.example.test/list?page=2"]
