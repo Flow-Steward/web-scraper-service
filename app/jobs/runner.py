@@ -1899,15 +1899,24 @@ class JobRunner:
         if self.state == "waiting_for_credentials":
             self._defer(request, "upstream proxy authentication requires Resume")
         try:
-            resp = await ctx.page.context.request.get(url, headers=self.config.get("headers") or None, timeout=60000, max_redirects=10)
-            if is_proxy_auth_failure(status=resp.status, proxy_used=self.tiers.enabled):
+            from app.fetching.destinations import document_destination_allowed
+            from app.fetching.oneoff import context_get
+
+            async def destination_allowed(target):
+                return await document_destination_allowed(
+                    target, site_url=url, rules={"sensitive_path", "action_params"},
+                    cancelled=lambda: self._shutdown or self.state != "running" or self._cut_or_stopping(),
+                )
+
+            fetched = await context_get(
+                ctx.page.context, url, headers=self.config.get("headers") or None,
+                destination_policy=destination_allowed, proxy_used=self.tiers.enabled,
+            )
+            if fetched is not None and is_proxy_auth_failure(
+                fetched.error, status=fetched.status, proxy_used=self.tiers.enabled,
+            ):
                 raise ProxyAuthenticationRequired()
-            body = await resp.body()
-            final = resp.url
-            if final != url and await url_is_private(final):
-                self._aux_done(request, None)
-                return
-            self._aux_done(request, Fetched(url, final, resp.status, body[: 64 * 1024 * 1024], {k.lower(): v for k, v in resp.headers.items()}, None))
+            self._aux_done(request, fetched)
         except Exception as exc:
             if is_proxy_auth_failure(exc, proxy_used=self.tiers.enabled):
                 await self._pause_for_proxy_auth()
