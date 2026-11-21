@@ -217,7 +217,8 @@ class JobManager:
         self.wake()
 
     # ================================================================== creation
-    async def create(self, body: dict, idem_key: str, recollect_of: dict | None = None) -> tuple[int, dict]:
+    async def create(self, body: dict, idem_key: str, recollect_of: dict | None = None,
+                     sitemap_retry: dict | None = None) -> tuple[int, dict]:
         svc = self.svc
         config, profile, platform = body["config"], body["profile"], body["platform"]
         fp = fingerprint(config, platform)
@@ -289,6 +290,9 @@ class JobManager:
             if recollect_of:
                 doc["recollect_of"] = recollect_of
             runtime = {"needs_secrets": needs_proxy_or_solver_secrets(fixed, profile), "templates": {}, "restarts": [], "running_seconds": 0.0}
+            if sitemap_retry is not None:
+                runtime.update(sitemap_traversal=sitemap_retry["traversal"],
+                               sitemap_retry_urls=sitemap_retry["urls"], sitemap_retry_roots=sitemap_retry["roots"])
             # templates active at the start
             for s in sites:
                 for m in svc.mappings.active_mappings(s):
@@ -311,8 +315,10 @@ class JobManager:
 
     # ================================================================== re-collect (README 4.10)
     async def recollect(self, parent_id: str, body: dict, idem_key: str) -> tuple[int, dict]:
-        """A new run over the parent's unextracted URLs only: the parent's config (url_list mode,
-        no mapping rebuild), the site's active mappings, the caller's profile and platform."""
+        """A linked run retries failed documents and unfinished sitemap source cursors.
+
+        The finished parent stays immutable; active mappings and a fresh profile apply.
+        """
         row = self._row(parent_id)
         if row["state"] not in ("completed", "failed"):
             raise ApiError("run_not_finished", "only a finished run can be re-collected", details={"state": row["state"]})
@@ -335,7 +341,11 @@ class JobManager:
             if d.get("source_key"):
                 entry["key"] = d["source_key"]
             urls.append(entry)
-        if not urls and existing is None:
+        from app.jobs.discovery import sitemap_report, sitemap_retry_state
+
+        traversal = (loads(row["runtime"]) or {}).get("sitemap_traversal") or {}
+        retry_sources = bool(traversal) and not sitemap_report(traversal)["complete"]
+        if not urls and not retry_sources and existing is None:
             counts = {r["reason"]: int(r["n"]) for r in self.svc.db.all("SELECT reason, COUNT(*) AS n FROM unextracted WHERE run_id=? GROUP BY reason", (parent_id,))}
             raise ApiError("nothing_to_recollect", "the run has no unextracted URLs with these reasons",
                            details={"reasons": reasons, "unextracted_by_reason": counts})
@@ -345,7 +355,17 @@ class JobManager:
         config["rebuild_mapping"] = False
         config["sitemap_url"] = None
         link = {"run_id": parent_id, "reasons": reasons, "url_count": len(urls), "by_reason": by_reason}
-        return await self.create({"config": config, "profile": body["profile"], "platform": body["platform"]}, idem_key, recollect_of=link)
+        retry = None
+        if retry_sources:
+            # Seed atomically in create(), before the manager can start the new run.
+            config["discovery_mode"] = "sitemap"
+            config["urls"] = []
+            config["sitemap_url"] = next(iter(traversal["sources"]), None)
+            link["source_count"] = sum(e.get("status") in ("pending", "failed") for e in traversal["sources"].values()) + int(bool(traversal.get("pending_root")))
+            retry = {"traversal": sitemap_retry_state(traversal), "urls": urls,
+                     "roots": (loads(row["runtime"]) or {}).get("sitemap_retry_roots") or (loads(row["runtime"]) or {}).get("sitemaps") or list(traversal["sources"])}
+        return await self.create({"config": config, "profile": body["profile"], "platform": body["platform"]}, idem_key,
+                                 recollect_of=link, sitemap_retry=retry)
 
     # ================================================================== reading
     def _row(self, run_id: str):
@@ -417,6 +437,10 @@ class JobManager:
         # completeness, the previous comparable run, a plain sentence
         from app.jobs.report import comparison, completeness, explanation
 
+        if rt.get("sitemap_traversal"):
+            from app.jobs.discovery import sitemap_report
+
+            doc["sitemap_discovery"] = sitemap_report(rt["sitemap_traversal"])
         cur = completeness(db, run_id, doc)
         doc["completeness"] = cur
         cmp = comparison(db, run_id, doc, cur, self.svc.settings.compare_drop_share)
@@ -482,6 +506,8 @@ class JobManager:
 
             snap = completeness(self.svc.db, row["run_id"], dict(doc, state=row["state"]))
         comp = {k: snap[k] for k in keys}
+        if snap.get("sitemap_discovery"):
+            comp["sitemap_discovery"] = snap["sitemap_discovery"]
         if row["state"] not in ("completed", "failed") and snap.get("progress"):
             comp["progress"] = snap["progress"]
         item["completeness"] = comp
@@ -628,10 +654,15 @@ class JobManager:
         names = run_file_names(site, run_id)
         csv_info = self._write_result_csv(run_id, results_dir / names["result_csv"])
         ts = now()
+        if rt.get("sitemap_traversal"):
+            from app.jobs.discovery import sitemap_report
+
+            doc["sitemap_discovery"] = sitemap_report(rt["sitemap_traversal"])
+            rt["sitemap_partial"] = not doc["sitemap_discovery"]["complete"]
         templates_failed = any(t.get("status") == "failed" for t in (rt.get("templates") or {}).values())
         # outcome-neutral entries: not_found, and sitemap URLs refused by robots.txt or the private rule
         non_neutral = int(svc.db.scalar("SELECT COUNT(*) FROM unextracted WHERE run_id=? AND neutral=0", (run_id,)) or 0)
-        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0 and not rt.get("navigation_partial")) else "partial"
+        outcome = "complete" if (stop_reason in ("finished", "max_records", "max_pages") and not templates_failed and non_neutral == 0 and not rt.get("navigation_partial") and not rt.get("sitemap_partial") and not rt.get("discovery_partial")) else "partial"
         result = {
             "run_id": run_id,
             "format": "jsonl",
@@ -664,6 +695,8 @@ class JobManager:
 
             snap = completeness(svc.db, run_id, dict(doc, state="completed"))
             doc["completeness"] = {k: snap[k] for k in ("target_pages_found", "pages_collected", "records", "not_collected", "not_collected_by_reason")}
+            if snap.get("sitemap_discovery"):
+                doc["completeness"]["sitemap_discovery"] = snap["sitemap_discovery"]
         except Exception:
             pass
         tl = doc.setdefault("timeline", [])

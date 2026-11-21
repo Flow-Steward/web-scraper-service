@@ -332,9 +332,9 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
 * **One run per site, watchdog:** a second start of a busy site is skipped by default
   (`when_site_busy`, see below); a run with no progress for `WSS_STALL_SECONDS` raises
   `stalled`, then stops (contract README 4.13, 4.14).
-* **Re-collect:** `POST /v1/runs/{id}/recollect` starts a new linked run over only a finished
-  run's unextracted URLs (by reason), with the parent's config in `url_list` mode and its own
-  result (contract README 4.10).
+* **Re-collect:** `POST /v1/runs/{id}/recollect` starts a new linked run over a finished
+  run's selected unextracted URLs and unfinished sitemap sources, preserving per-source
+  progress with its own result (contract README 4.10).
 * **Events:** journal in SQLite, HMAC-SHA256 signing, delivery with the contract's
   back-off across restarts, claim/stage/complete/resend.
 
@@ -532,3 +532,24 @@ fallback prioritizes the product's local region and following content before
 large preceding menus. Section comments still name the original DOM paths; no
 supplier-specific selectors are built into this fallback. Unsupported layouts
 and truncated evidence still require review before declaring optional fields absent.
+
+Sitemap source coverage is reported in `sitemap_discovery` and
+`completeness.sitemap_discovery`. A missing, inaccessible, empty-body or malformed
+sitemap is a failed source, while a valid empty `<urlset>` or `<sitemapindex>` (or
+URLs all excluded by the configured filters) can be complete. Source failures and
+the total 100,000-location or 500-source-file limits make the result partial even
+when no failed product URL is known. The location budget counts all locations,
+before product filters, and stays spent across a service restart. Source report
+URLs omit user information, queries and fragments; failure reasons do not contain
+raw upstream errors. Private-address refusals remain explicit and outcome-neutral.
+
+Use `POST /v1/runs/{id}/recollect` with a fresh profile to retry unfinished sitemap
+sources and selected failed document URLs. This creates a linked run with a fresh
+discovery budget and retained per-source offsets, including an index's remaining
+children. It does not rewrite the finished parent's result. Completed source
+entries are skipped and previously completed ancestor document URLs are not fetched
+again if a retried source repeats them. Cursors are committed only after their
+queue batch commits, so a crash can safely replay a batch through queue deduplication.
+As with offset-based sitemap traversal generally, changing or reordering the source
+file between retries can change which positions its saved cursor refers to; use a
+fresh full run when a complete new inventory of a changing sitemap is required.

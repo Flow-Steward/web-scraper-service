@@ -19,8 +19,8 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from app.core.errors import ApiError
-from app.core.netguard import url_is_private
-from app.core.urls import absolute, canonical_url, site_key
+from app.core.netguard import host_is_private, url_is_private
+from app.core.urls import absolute, canonical_url, host_of, site_key
 from app.core.url_patterns import UrlPattern, compile_patterns, matches_any, url_batch, url_pattern_budget
 from app.fetching.oneoff import Fetched, PrivateAddress, gunzip_capped, http_get
 
@@ -124,6 +124,10 @@ def parse_sitemap(body: bytes, base_url: str, *, strict: bool = False) -> tuple[
             return pages, nested
         if strict and (not isinstance(root.tag, str) or root.tag.rsplit("}", 1)[-1].lower() not in ("urlset", "sitemapindex")):
             raise ValueError("not a sitemap document")
+        if strict:
+            expected = "url" if root.tag.rsplit("}", 1)[-1].lower() == "urlset" else "sitemap"
+            if any(isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1].lower() != expected for child in root):
+                raise ValueError("invalid sitemap entries")
         for el in root.iter():
             if not isinstance(el.tag, str):
                 continue
@@ -140,9 +144,13 @@ def parse_sitemap(body: bytes, base_url: str, *, strict: bool = False) -> tuple[
                 elif ctag == "lastmod" and child.text:
                     lastmod = child.text.strip()
             if not loc:
+                if strict:
+                    raise ValueError("sitemap entry has no location")
                 continue
             full = absolute(base_url, loc)
             if not full:
+                if strict:
+                    raise ValueError("invalid sitemap location")
                 continue
             if tag == "sitemap":
                 nested.append(full)
@@ -153,6 +161,8 @@ def parse_sitemap(body: bytes, base_url: str, *, strict: bool = False) -> tuple[
         line = line.strip()
         if re.match(r"^https?://\S+$", line):
             pages.append((line, None))
+        elif strict and line:
+            raise ValueError("invalid sitemap text location")
     if strict and not pages:
         raise ValueError("empty or invalid sitemap text")
     return pages, nested
@@ -162,8 +172,11 @@ def sitemap_report(state: dict) -> dict:
     """Public, bounded discovery coverage; never expose exception text or URL credentials/query."""
     sources = state.get("sources") or {}
     def item(url, entry):
-        p = urlsplit(url)
-        safe = urlunsplit((p.scheme, p.netloc.rsplit("@", 1)[-1], p.path, "", ""))
+        try:
+            p = urlsplit(url)
+            safe = urlunsplit((p.scheme, p.netloc.rsplit("@", 1)[-1], p.path, "", ""))
+        except ValueError:
+            safe = "invalid sitemap source"
         return {"url": safe, "reason": entry.get("reason") or "pending"}
     failed = [item(u, e) for u, e in sources.items() if e.get("status") == "failed"]
     pending = [item(u, e) for u, e in sources.items() if e.get("status") == "pending"]
@@ -231,7 +244,16 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
         entry.update(status="pending")
         entry.pop("reason", None)
         if await url_is_private(url):
-            entry.update(status="refused", reason="private_address_refused")
+            # The guard also refuses unresolvable hosts. Keep that refusal,
+            # but report DNS failure as incomplete rather than a neutral policy.
+            try:
+                private = await host_is_private(host_of(url))
+            except ValueError:
+                private = None
+            if private is None:
+                entry.update(status="failed", reason="fetch_failed")
+            else:
+                entry.update(status="refused", reason="private_address_refused")
             continue
         try:
             fetched = await fetch(url)

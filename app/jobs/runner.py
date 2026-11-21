@@ -1042,6 +1042,8 @@ class JobRunner:
         )
 
     async def _feed(self) -> None:
+        from app.fetching.proxy_auth import ProxyAuthenticationRequired
+
         cfg = self.config
         mode = self.doc["resolved"].get("discovery_mode")
         try:
@@ -1062,45 +1064,85 @@ class JobRunner:
                     await self.enqueue([{"url": cfg["site_url"], "source": "start"}], feed=("start_fed", 1))
             if mode in ("sitemap", "sitemap_and_crawl") and not cfg.get("single_page"):
                 await self._feed_sitemaps()
+            if self.state == "waiting_for_credentials":
+                return
             with self.svc.db.tx():
                 self.rt["feeder_done"] = True
                 self._persist()
         except asyncio.CancelledError:
             raise
+        except ProxyAuthenticationRequired:
+            return  # waiting_for_credentials: retain the committed feeder cursor
         except UrlPatternError as exc:
             await self._url_pattern_failed(exc)
         except Exception as exc:
             log.exception("feeder of %s failed", self.run_id)
             with self.svc.db.tx():
+                self.rt["discovery_partial"] = True
                 self.add_error("internal_error", f"discovery failed ({type(exc).__name__})", severity="warning")
                 self.rt["feeder_done"] = True
                 self._persist()
 
     async def _feed_sitemaps(self) -> None:
-        """Streams the sitemaps (fetched through the crawler) into the queue; a restart skips the
-        URLs already fed instead of counting them again as duplicates."""
-        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps
+        """Commit per-source cursors only after their queue batch commits.
 
-        urls = list(self.rt.get("sitemaps") or [])
+        The iterator mutates a private copy: a supervisor checkpoint while enqueue
+        awaits must never contain a cursor for URLs the queue has not accepted.
+        Legacy sitemap_fed offsets are deliberately replayed through normal dedup.
+        """
+        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps, sitemap_report, _origin
+
+        urls = list(self.rt.get("sitemap_retry_roots") or self.rt.get("sitemaps") or [])
         if not urls:
-            return
-        skip = int(self.rt.get("sitemap_fed", 0))
-        seen = 0
-        batch: list[dict] = []
-        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch):
+            urls = [self.config.get("sitemap_url") or _origin(self.config["site_url"]) + "/sitemap.xml"]
+        state = copy.deepcopy(self.rt.get("sitemap_traversal") or {})
+
+        def checkpoint():
+            with self.svc.db.tx():
+                self.rt["sitemap_traversal"] = copy.deepcopy(state)
+                report = sitemap_report(state)
+                self.doc["sitemap_discovery"] = report
+                self.rt["sitemap_partial"] = not report["complete"]
+                self._persist()
+
+        # Recollect retries failed document URLs as well as failed source files.
+        retry_urls = self.rt.get("sitemap_retry_urls") or []
+        done = int(self.rt.get("sitemap_retry_fed", 0))
+        for i in range(done, len(retry_urls), 100):
             if self._cut_or_stopping():
                 return
-            seen += 1
-            if seen > SITEMAP_CAP:
-                break
-            if seen <= skip:
-                continue
+            chunk = retry_urls[i:i + 100]
+            await self.enqueue([dict(e, source="list", source_key=e.get("key")) for e in chunk],
+                               feed=("sitemap_retry_fed", len(chunk)))
+
+        async def enqueue_source_batch(entries):
+            parent_id = (self.doc.get("recollect_of") or {}).get("run_id")
+            if parent_id:
+                marks = ",".join("?" for _ in entries)
+                prior = self.svc.db.all(
+                    "WITH RECURSIVE ancestors(run_id) AS (SELECT ? UNION SELECT runs.parent_run_id "
+                    "FROM runs JOIN ancestors ON runs.run_id=ancestors.run_id WHERE runs.parent_run_id IS NOT NULL) "
+                    "SELECT url FROM urls WHERE status='done' AND run_id IN (SELECT run_id FROM ancestors) "
+                    f"AND url IN ({marks})", (parent_id, *(e["url"] for e in entries)))
+                completed = {r["url"] for r in prior}
+                entries = [e for e in entries if e["url"] not in completed]
+            if entries:
+                await self.enqueue(entries, feed=("sitemap_fed", len(entries)))
+
+        batch: list[dict] = []
+        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state, max_entries=SITEMAP_CAP):
+            if self._cut_or_stopping():
+                return
             batch.append({"url": loc, "source": "sitemap"})
             if len(batch) >= 100:
-                await self.enqueue(batch, feed=("sitemap_fed", len(batch)))
+                await enqueue_source_batch(batch)
+                checkpoint()
                 batch = []
-        if batch and not self._cut_or_stopping():
-            await self.enqueue(batch, feed=("sitemap_fed", len(batch)))
+        if self._cut_or_stopping():
+            return
+        if batch:
+            await enqueue_source_batch(batch)
+        checkpoint()
 
     def _cut_or_stopping(self) -> bool:
         return self.doc["progress"]["discovery"] == "cut" or self.state == "stopping" or self._shutdown

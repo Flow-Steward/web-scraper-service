@@ -748,28 +748,45 @@ products") or found but not collected ("the scraper missed them").
 ### 4.10 Re-collect the missed pages (added 2026-11-14)
 
 `POST /v1/runs/{run_id}/recollect` with `{profile, platform, reasons?}` and an
-`Idempotency-Key` starts a **new run** over only the parent's unextracted URLs:
+`Idempotency-Key` starts a **new run** over the parent's unextracted URLs and unfinished sitemap sources:
 
 - the parent must be `completed` or `failed` (else `409 run_not_finished`);
 - URLs: the parent's unextracted entries whose `reason` is in `reasons`
   (default `fetch_failed`, `blocked`, `incomplete`, `no_template`,
   `template_failed`, `stopped`; `not_found` and the refusals only when asked),
   each once, as requested (`requested_url` when it differs), with its
-  `source_key` kept as the entry's `key`; none → `409 nothing_to_recollect`;
+  `source_key` kept as the entry's `key`; none and no unfinished sitemap source → `409 nothing_to_recollect`;
 - config: the parent's `config` with `discovery_mode: url_list`, those `urls`,
   `rebuild_mapping: false`, `sitemap_url: null`; everything else (limits,
   fetch mode, browser, protection flags) as the parent's. It is validated
   again like `POST /v1/runs` (e.g. more URLs than `max_url_list_entries` →
   `422`);
+- unfinished sources: when `sitemap_discovery.complete` is false, the linked
+  run retries failed/pending source files with retained per-source page and child
+  offsets. It uses sitemap mode, also queues the selected failed document URLs,
+  and gets a fresh 100,000-location / 500-source-file budget. Completed source
+  entries and completed ancestor documents are skipped; a restart retains the
+  same run's spent budget. A source-only retry is valid with `url_count: 0`;
 - mappings: the site's active mappings when the new run starts (a repair
   made during the parent counts);
 - secrets: the parent's are gone, so `profile` is sent again;
 - the new run has its own result file. Its summary carries `recollect_of`
-  (`run_id`, `reasons`, `url_count`, `by_reason`); the parent's summary lists
+  (`run_id`, `reasons`, `url_count`, `by_reason`, optional `source_count`); the parent's summary lists
   its re-collect runs in `recollected_by` (`run_id`, `state`, `created_at`).
   Its `run_completed` event carries `parent_run_id`;
 - a re-collect run has no `comparison` (4.9) and is never the "previous run"
   of a later run's `comparison`.
+
+Sitemap source coverage is exposed as `sitemap_discovery` on the run and its
+completeness report. Missing, inaccessible, empty-body and invalid sources yield
+`complete: false` and `outcome: partial`, even with zero records. Valid empty XML
+sitemaps and completely filtered inventories can be complete. `capped` and
+`cap_reason` distinguish `entry_limit` from `source_file_limit`; the entry budget
+counts all locations before filtering. Failed and pending source URLs omit user
+information, queries and fragments and include fixed failure reasons. Private
+address refusals are listed separately and remain outcome-neutral. A changed or
+reordered source can alter the meaning of saved offsets; start a fresh full run
+when a new inventory is required. Finished parent results are never rewritten.
 
 The same key with the same parent and reasons → `200` with the run created
 first (section 5).
