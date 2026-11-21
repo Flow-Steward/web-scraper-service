@@ -70,3 +70,55 @@ async def test_native_cdp_allowed_identity_cookies_headers_static_resources(nati
         assert guard.errors == []
     finally:
         await guard.close()
+
+
+@pytest.mark.parametrize("private_frame", [False, True])
+async def test_native_cdp_public_challenge_frame_and_private_redirect_boundary(native_page, monkeypatch, private_frame):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from urllib.parse import urlsplit
+
+    hits = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append((self.headers["Host"], self.path))
+            if self.path == "/frame/start":
+                self.send_response(302)
+                self.send_header("Location", f"http://localhost:{self.server.server_port}/frame/final")
+                self.end_headers()
+                return
+            body = (b'<iframe src="/frame/start"></iframe>' if self.path == "/list"
+                    else b'<main>Public challenge frame</main>')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = f"http://127.0.0.1:{server.server_port}"
+    async def is_private(url):
+        return private_frame and urlsplit(url).hostname == "localhost"
+    monkeypatch.setattr("app.fetching.oneoff.url_is_private", is_private)
+    monkeypatch.setattr("app.fetching.chromium_destinations.url_is_private", is_private)
+    guard = await ChromiumDocumentGuard(native_page, origin + "/list", destination_policy=lambda u: False).start()
+    await native_page.route("**/*", private_route_guard(None, guard.request))
+    try:
+        response = await native_page.goto(origin + "/list", timeout=5000)
+        assert response.status == 200
+        final_hits = [path for _, path in hits if path == "/frame/final"]
+        assert len(final_hits) == (0 if private_frame else 1)
+        if private_frame:
+            from app.fetching.oneoff import PrivateAddress
+            assert isinstance(guard.errors[0], PrivateAddress)
+        else:
+            assert guard.errors == []
+    finally:
+        await guard.close()
+        server.shutdown()
+        server.server_close()
+        thread.join()
