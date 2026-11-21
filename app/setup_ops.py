@@ -131,6 +131,9 @@ class SetupFetch:
 
         self.svc = svc
         self.config = config
+        self._destination_site_url = config.get("site_url") or next(
+            (entry["url"] for entry in config.get("urls") or [] if entry.get("url")), None
+        )
         # the job's page timeout for every fetch of the call (HTTP and browser navigation)
         self.page_timeout = int(config.get("page_timeout_seconds") or 45)
         self.proxy, self.tier = _first_tier_proxy(config, profile)
@@ -184,10 +187,65 @@ class SetupFetch:
             max(floor, config.get("delay_max_seconds", 0)),
         )
 
+    async def _aux_destination_allowed(self, url: str, *, site_url: str | None = None) -> bool:
+        """Auxiliary files keep their scope/file exemptions, with safe redirects."""
+        from app.core.linkrules import enabled_rules
+        from app.fetching.destinations import document_destination_allowed
+
+        return await document_destination_allowed(
+            url,
+            site_url=site_url or self._destination_site_url or url,
+            rules=enabled_rules(self.config) & {"sensitive_path", "action_params"},
+            cancelled=lambda: bool(asyncio.current_task().cancelling()),
+        )
+
+    async def _destination_allowed(self, url: str, *, site_url: str | None = None, admitted_url: str | None = None) -> bool:
+        """The same document destination rules for listing actions and redirects."""
+        from app.core.linkrules import enabled_rules
+        from app.core.scope import crawl_patterns
+        from app.core.url_patterns import url_pattern_budget
+        from app.core.urls import host_of
+        from app.fetching.destinations import document_destination_allowed
+        from app.jobs.discovery import _origin
+
+        async def robots_allowed(destination):
+            if not self.config.get("respect_robots", True):
+                return True
+            origin = _origin(destination)
+            if origin not in self._navigation_robots:
+                self._navigation_robots[origin] = await _robots(destination, self.http)
+            robots = self._navigation_robots[origin]
+            if robots is None:
+                return True
+            self._navigation_throttle.set_crawl_delay(host_of(destination), robots.get_crawl_delay())
+            return robots.is_allowed(destination)
+
+        with url_pattern_budget():
+            if matches_any(compile_patterns(self.config.get("url_exclude") or [], "url_exclude"), _url_key(url)):
+                return False
+            store = getattr(self.svc, "mappings", None)
+            mappings = [entry["mapping"] for entry in store.active_mappings(site_key(site_url or self._destination_site_url or url))] if store else []
+            targets = target_patterns(mappings, self.config.get("url_include") or [])
+            scope = crawl_patterns(self.config)
+            if scope and self.config.get("discovery_mode") != "url_list" and (admitted_url is None or _url_key(url) != _url_key(admitted_url)):
+                scope = [*scope, *targets]
+            else:
+                scope = []
+            rules = enabled_rules(self.config)
+            if matches_any(targets, _url_key(url)):
+                rules = rules - {"facet_params"}  # target variants may use color/size as identity
+            return await document_destination_allowed(
+                url,
+                site_url=site_url or self._destination_site_url or url,
+                rules=rules,
+                scope=scope,
+                robots_allowed=robots_allowed,
+                cancelled=lambda: bool(asyncio.current_task().cancelling()),
+            )
+
     async def discover_links(self, url: str, page: Page | None = None):
         """Observe listing states while retaining the originally fetched document."""
         from app.fetching.navigation import NavigationLimits
-        from app.jobs.discovery import _origin
         from app.core.urls import host_of
 
         key = _url_key(url)
@@ -209,34 +267,13 @@ class SetupFetch:
                     100, int(self.config.get("max_pages") or 12)
                 ):
                     return False
-                from app.core.linkrules import enabled_rules, url_skip
-                from app.core.scope import crawl_patterns, in_scope
+                from app.core.linkrules import enabled_rules
 
                 if (
                     getattr(action, "nofollow", False)
                     and "nofollow" in enabled_rules(self.config)
-                ) or url_skip(action.url, enabled_rules(self.config)):
+                ) or not await self._destination_allowed(action.url, site_url=url, admitted_url=url):
                     return False
-                scope = crawl_patterns(self.config)
-                if (
-                    scope
-                    and not in_scope(scope, action.url)
-                    and _url_key(action.url) != key
-                ):
-                    return False
-                if self.config.get("respect_robots", True):
-                    origin = _origin(action.url)
-                    if origin not in self._navigation_robots:
-                        self._navigation_robots[origin] = await _robots(
-                            action.url, self.http
-                        )
-                    robots = self._navigation_robots[origin]
-                    if robots is not None:
-                        throttle.set_crawl_delay(
-                            host_of(action.url), robots.get_crawl_delay()
-                        )
-                        if not robots.is_allowed(action.url):
-                            return False
                 if not document:
                     await throttle.wait(host_of(action.url))
                     self._navigation_actions += 1
@@ -275,14 +312,15 @@ class SetupFetch:
         Cloudflare host), else one plain HTTP request through the profile's first tier."""
         if await url_is_private(url):
             return None
+        self._destination_site_url = self._destination_site_url or url
         try:
             if self.needs_browser(url) and self._session is not None:
-                resp = await self._session.context.request.get(url, timeout=30000, headers={"Accept": "application/json"})
-                return json.loads(await resp.text()) if resp.status < 400 else None
+                fetched = await self._session.raw(url, destination_policy=lambda destination: self._aux_destination_allowed(destination, site_url=url), headers={"Accept": "application/json"})
+                return json.loads(fetched.text) if fetched is not None and fetched.status and fetched.status < 400 and not fetched.error else None
             if self.needs_browser(url):
                 return None
             fetched = await http_get(url, proxy=self.proxy, headers={**(self.headers or {}), "Accept": "application/json"},
-                                     timeout=float(self.page_timeout))
+                                     timeout=float(self.page_timeout), destination_policy=lambda destination: self._aux_destination_allowed(destination, site_url=url))
             return json.loads(fetched.text) if fetched.status and fetched.status < 400 else None
         except (ValueError, PrivateAddress):
             return None
@@ -373,12 +411,20 @@ class SetupFetch:
 
     async def http(self, url: str) -> Fetched:
         """One HTTP load per URL and request (never load a URL twice in one call)."""
+        self._destination_site_url = self._destination_site_url or url
         key = _url_key(url)
         hit = self._http.get(key)
         if hit is None:
             from app.core.urls import host_of
             await self._navigation_throttle.wait(host_of(url))
-            hit = await http_get(url, proxy=self.proxy, headers=self.headers, timeout=float(self.page_timeout))
+            hit = await http_get(
+                url, proxy=self.proxy, headers=self.headers, timeout=float(self.page_timeout),
+                destination_policy=(
+                    (lambda destination: self._destination_allowed(destination, site_url=url))
+                    if _is_document(url)
+                    else (lambda destination: self._aux_destination_allowed(destination, site_url=url))
+                ),
+            )
             self._http[key] = hit
         return hit
 
@@ -388,6 +434,7 @@ class SetupFetch:
     async def browser_get(self, url: str, *, wait_ms: int = 0, settle: bool = False):
         """One browser load per URL and request, in the request's single tab: the start page
         loaded (and cleared) for discovery is the same page a sample takes, never loaded again."""
+        self._destination_site_url = self._destination_site_url or url
         key = _url_key(url)
         hit = self._browser.get(key)
         if hit is not None:
@@ -494,7 +541,7 @@ class SetupFetch:
                         ),
                     )
                 session = await self.session()
-                result = await session.raw(url) if session else fetched
+                result = await session.raw(url, destination_policy=lambda destination: self._aux_destination_allowed(destination, site_url=url)) if session else fetched
                 if session is not None and session.is_closed:
                     await self._abort_browser(RuntimeError("browser closed during auxiliary fetch"))
                 return result
