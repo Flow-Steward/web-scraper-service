@@ -35,14 +35,15 @@ def test_heading_region_prioritizes_plain_div_product_and_its_tabs(wrapper):
     assert "div.detail-region" in text
 
 
-def test_direct_body_heading_keeps_following_attribute_blocks_and_tail_text():
+@pytest.mark.parametrize("max_bytes", [1200, 200000])
+def test_direct_body_heading_keeps_following_attribute_blocks_and_tail_text(max_bytes):
     html = (
         menu()
         + "<h1>Example product</h1>Raw format 6 × 75<table><tr><td>OEM 0000123</td></tr></table><div>Fitment 2011–2017</div>"
     )
-    text, _ = distill(html, 1200)
+    text, _ = distill(html, max_bytes)
     assert "OEM 0000123" in text and "Fitment 2011–2017" in text
-    assert "Raw format 6 × 75" in text
+    assert text.count("Raw format 6 × 75") == 1
     assert text.index("Example product") < text.index("Catalogue category")
 
 

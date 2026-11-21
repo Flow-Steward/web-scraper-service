@@ -60,11 +60,11 @@ def _serialise(el) -> str:
     return etree.tostring(el, encoding="unicode", method="html", with_tail=False)
 
 
-def _swap_out(el, note: str):
+def _swap_out(el, note: str, *, tail_already_given: bool = False):
     """Replaces ``el`` by a comment for one serialisation; returns a function that puts it back."""
     parent = el.getparent()
     marker = etree.Comment(f" {note} ")
-    marker.tail, keep_tail = el.tail, el.tail
+    marker.tail, keep_tail = (None if tail_already_given else el.tail), el.tail
     parent.replace(el, marker)
 
     def restore() -> None:
@@ -188,7 +188,10 @@ def distill(html: str, max_bytes: int, pointers: dict[str, str] | None = None) -
         given = fallback or [el for el in (main, summary) if el is not None]
         if main is not None and summary is not None and main in summary.iterancestors():
             given = [main]
-        restores = [_swap_out(el, "wss: section given above") for el in given]
+        restores = [
+            _swap_out(el, "wss: section given above", tail_already_given=bool(fallback))
+            for el in given
+        ]
         rest = [body.text or ""] + [etree.tostring(child, encoding="unicode", method="html") for child in body]
         for restore in reversed(restores):
             restore()
