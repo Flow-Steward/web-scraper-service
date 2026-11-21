@@ -52,3 +52,20 @@ def test_existing_content_occurrence_still_outweighs_menu_occurrence():
     assert stats["hrefs"] == 2
     assert groups[0]["links"] == 1
     assert groups[0]["in_menus"] == 0.0
+
+
+def test_policy_validated_deferred_pagination_remains_a_sample_candidate():
+    origin = "https://catalogue.example.test"
+    page = Page(
+        '<a href="/list?page=2">Next</a><a href="/list?sort=price">Sort</a>',
+        origin + "/list",
+        extra_links=[origin + "/list?page=2"],
+        deferred_links=[origin + "/list?page=2"],
+    )
+
+    groups, stats = link_groups(page, "catalogue.example.test")
+
+    assert [url for group in groups for url in group["urls"]] == [
+        origin + "/list?page=2"
+    ]
+    assert stats["variants_skipped"] == 1

@@ -109,12 +109,14 @@ class Page:
         *,
         extra_links: list[str] | None = None,
         extra_anchors: list[tuple[str, str | None, bool]] | None = None,
+        deferred_links: list[str] | None = None,
     ) -> None:
         self.html = html or ""
         self.url = url
         self.status = status
         self.extra_links = list(extra_links or [])
         self.extra_anchors = [tuple(anchor) for anchor in extra_anchors or []]
+        self.deferred_links = list(deferred_links or [])
 
     @cached_property
     def selector(self) -> Selector:

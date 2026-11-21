@@ -149,6 +149,9 @@ def link_groups(page, site: str, exclude: list | None = None, include: list | No
         if key is not None and key not in observed:
             flags.append((href, False, False))
             observed.add(key)
+    deferred = {
+        observed_key(href) for href in getattr(page, "deferred_links", [])
+    }
     for href, chrome, card in flags:
         stats["hrefs"] += 1
         resolved = absolute(page.base_url, href)
@@ -163,7 +166,7 @@ def link_groups(page, site: str, exclude: list | None = None, include: list | No
             continue
         if c == start or any(p.search(c) for p in exclude or []):
             continue
-        if is_variant(c) and not any(p.search(c) for p in include or []):
+        if is_variant(c) and c not in deferred and not any(p.search(c) for p in include or []):
             stats["variants_skipped"] += 1
             continue
         cur = info.get(c)

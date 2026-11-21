@@ -195,6 +195,7 @@ class SetupFetch:
         if page is not None and result is not None:
             page.extra_links = list(result.links)
             page.extra_anchors = list(result.anchors)
+            page.deferred_links = list(getattr(result, "deferred_links", []))
         return result
 
     def failure_for(self, url: str) -> dict | None:
@@ -1112,7 +1113,11 @@ async def _start_link_groups(site_url: str, fetch, exclude: list[str], ex: Expla
         ex.page(redact(site_url), loaded, "failed", f"start page: HTTP {status}" if status else "start page not loaded", status=status)
         ex.discovery["start_page"] = {"url": redact(site_url), "status": status, "loaded": loaded}
         return []
-    page = Page(fetched.text, fetched.final_url or site_url, fetched.status, extra_links=fetched.extra_links, extra_anchors=fetched.extra_anchors)
+    page = Page(
+        fetched.text, fetched.final_url or site_url, fetched.status,
+        extra_links=fetched.extra_links, extra_anchors=fetched.extra_anchors,
+        deferred_links=(fetched.navigation or {}).get("deferred_links", []),
+    )
     groups, stats = link_groups(page, site_key(site_url), [re.compile(p) for p in exclude], [re.compile(p) for p in config.get("url_include") or []])
     selector = config.get("target_page_selector")
     ex.page(redact(site_url), loaded, "start", None, status=fetched.status, links=stats["in_site"],
