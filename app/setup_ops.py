@@ -1161,7 +1161,16 @@ async def _start_link_groups(site_url: str, fetch, exclude: list[str], ex: Expla
     ):
         from app.extraction.sampling import url_shape
 
-        groups.insert(0, {"shape": url_shape(site_url), "urls": [site_url], "links": 1, "in_menus": 0.0})
+        shape = url_shape(site_url)
+        own = next((group for group in groups if group["shape"] == shape), None)
+        if own is None:
+            own = {"shape": shape, "urls": [], "links": 0, "in_menus": 0.0}
+        else:
+            groups.remove(own)
+        if site_url not in own["urls"]:
+            own["urls"].insert(0, site_url)
+            own["links"] += 1
+        groups.insert(0, own)
     return groups
 
 

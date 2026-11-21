@@ -93,6 +93,17 @@ async def test_redirected_start_uses_loaded_final_url_for_target_admission(tmp_p
     assert requests == [requested]
 
 
+async def test_start_candidate_shares_the_existing_product_url_shape(tmp_path, monkeypatch):
+    origin = "https://supplier.test"
+    content = '<main class="sheet"><h1>Original</h1></main><a href="/p/2">Related</a>'
+    answer, requests = await sample_graph(tmp_path, monkeypatch,
+        {"/p/1": content, "/p/2": '<main class="sheet"><h1>Related</h1></main>'},
+        {"site_url": origin + "/p/1", "target_page_selector": ".sheet"})
+    assert [sample["url"] for sample in answer["samples"]] == [origin + "/p/1"]
+    assert answer["explanation"]["discovery"]["shapes"] == 1
+    assert requests == [origin + "/p/1"]
+
+
 async def test_backlinks_do_not_reprobe_the_already_observed_start_page(tmp_path, monkeypatch):
     origin = "https://supplier.test"
     item = '<script type="application/ld+json">' + json.dumps({"@type": "Product", "name": "Item"}) + '</script><h1>Item</h1><a href="/catalogue">Back</a><a href="/details/deeper">Details</a>'
