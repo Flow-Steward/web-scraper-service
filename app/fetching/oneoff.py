@@ -377,6 +377,9 @@ class BrowserSession:
             raise HostStopped(stopped)
         self._refused.clear()
         if self.is_closed:
+            # A read-only native command preserves TargetClosedError instead
+            # of replacing the transport failure with a guard RuntimeError.
+            await self.page.title()
             raise RuntimeError("browser session is closed")
         from app.fetching.destinations import resolved
         from app.fetching.document_policy import bind_document_policy

@@ -56,7 +56,7 @@ async def test_closed_browser_after_auxiliary_fetch_is_not_a_selector_failure(
 
     session = BrowserSession("chromium")
     session.page = SimpleNamespace(
-        is_closed=lambda: state["page_closed"], goto=closed_goto
+        is_closed=lambda: state["page_closed"], goto=closed_goto, title=closed_goto
     )
     session._browser = SimpleNamespace(
         is_connected=lambda: state["browser_connected"], close=close
@@ -85,6 +85,7 @@ async def test_closed_browser_after_auxiliary_fetch_is_not_a_selector_failure(
             await _samples(svc, {"config": config, "urls": []}, config, 1, sf)
         assert failure.value.status == 503
         assert failure.value.details["reason"] == "browser_unavailable"
+        assert failure.value.details["exception_type"] == "Error"
         assert "browser" in failure.value.message.lower()
         assert "selector" not in failure.value.message.lower()
         assert "secret-" not in str(failure.value.body("test-request"))
