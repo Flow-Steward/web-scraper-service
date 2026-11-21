@@ -1088,7 +1088,9 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         ex.discovery["links"] = sum(len(g["urls"]) for g in groups)
         # A loaded start page can itself be the requested record. Intermediate
         # links must not displace it merely because they now remain traversable.
-        if _url_looks_target(canonical_url(site_url), config, mappings):
+        if _url_looks_target(canonical_url(site_url), config, mappings) and filter_urls(
+            [canonical_url(site_url)], [], config.get("url_exclude") or []
+        ):
             from app.extraction.sampling import url_shape
 
             shape = url_shape(site_url)
@@ -1097,8 +1099,9 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
                 own = {"shape": shape, "urls": [], "links": 0, "in_menus": 0.0}
             else:
                 groups.remove(own)
-            own["urls"].insert(0, site_url)
-            own["links"] += 1
+            if site_url not in own["urls"]:
+                own["urls"].insert(0, site_url)
+                own["links"] += 1
             groups.insert(0, own)
     if groups and (sitemap_groups or preferred):
         ex.discovery["source"] = "start_page+sitemap"
@@ -1145,6 +1148,20 @@ async def _start_link_groups(site_url: str, fetch, exclude: list[str], ex: Expla
         "shapes": [{"shape": g["shape"], "links": g["links"], "in_menus": g["in_menus"]}
                    for g in sorted(groups, key=lambda g: -g["links"])[:12]],
     }
+    # Fresh suppliers have no mapping or URL pattern yet. Preserve the loaded
+    # target as a candidate without counting a manufactured self-link in stats.
+    if (
+        passes_target_selector(page, config)
+        and looks_like_target(page, config, False)
+        and filter_urls(
+            [canonical_url(page.url)],
+            config.get("url_include") or [],
+            config.get("url_exclude") or [],
+        )
+    ):
+        from app.extraction.sampling import url_shape
+
+        groups.insert(0, {"shape": url_shape(site_url), "urls": [site_url], "links": 1, "in_menus": 0.0})
     return groups
 
 

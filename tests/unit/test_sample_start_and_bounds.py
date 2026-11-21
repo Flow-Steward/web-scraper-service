@@ -3,6 +3,8 @@
 import json
 from urllib.parse import urlsplit
 
+import pytest
+
 from app.core.config import merge_layers
 from app.fetching.oneoff import Fetched
 from app.service import Service
@@ -11,7 +13,7 @@ from tests.conftest import profile
 from tests.unit.test_logic import settings
 
 
-async def sample_graph(tmp_path, monkeypatch, pages, config):
+async def sample_graph(tmp_path, monkeypatch, pages, config, final_urls=None):
     svc = Service(settings(data_dir=str(tmp_path), secrets_key="test-key-012345678901234567"))
     monkeypatch.setattr("app.settings._settings", svc.settings)
     config, _ = merge_layers({"fetch_mode": "http", "discovery_mode": "crawl", "fields": ["title"],
@@ -25,7 +27,7 @@ async def sample_graph(tmp_path, monkeypatch, pages, config):
     async def fetch(url, **kwargs):
         requests.append(url)
         html = pages.get(urlsplit(url).path)
-        return Fetched(url, url, 200 if html is not None else 404, (html or "Missing").encode())
+        return Fetched(url, (final_urls or {}).get(url, url), 200 if html is not None else 404, (html or "Missing").encode())
 
     monkeypatch.setattr("app.setup_ops.url_is_private", public)
     monkeypatch.setattr("app.setup_ops.http_get", fetch)
@@ -47,6 +49,48 @@ async def test_matching_start_page_is_sampled_before_nonmatching_listing_links(t
     assert [sample["url"] for sample in answer["samples"]] == [origin + "/p/1"]
     assert "Original item" in answer["samples"][0]["distilled_html"]
     assert requests == [origin + "/p/1"]  # discovery and extraction share the fetched body
+
+
+@pytest.mark.parametrize("target_hint", ["structured", "selector"])
+async def test_fresh_target_start_is_sampled_without_url_patterns(tmp_path, monkeypatch, target_hint):
+    origin = "https://supplier.test"
+    content = '<main class="sheet"><h1>Original item</h1></main><nav><a href="/contact">Contact</a></nav>'
+    config = {"site_url": origin + "/item"}
+    if target_hint == "structured":
+        content += '<script type="application/ld+json">' + json.dumps({"@type": "Product", "name": "Original item"}) + '</script>'
+    else:
+        config["target_page_selector"] = ".sheet"
+    answer, requests = await sample_graph(tmp_path, monkeypatch,
+        {"/item": content, "/contact": "<h1>Contact</h1>"}, config)
+    assert [sample["url"] for sample in answer["samples"]] == [origin + "/item"]
+    assert "Original item" in answer["samples"][0]["distilled_html"]
+    assert requests == [origin + "/item"]
+    start = answer["explanation"]["discovery"]["start_page"]
+    assert start["hrefs"] == start["in_site"] == 1
+    assert start["shapes"] == [{"shape": "/contact", "links": 1, "in_menus": 1.0}]
+
+
+@pytest.mark.parametrize("policy", [{"target_page_selector": ".missing"}, {"url_include": [r"/other$"]}, {"target_page_selector": ".sheet", "url_exclude": [r"/item$"]}, {"url_include": [r"/item$"], "url_exclude": [r"/item$"]}])
+async def test_start_target_evidence_does_not_override_explicit_admission_policy(tmp_path, monkeypatch, policy):
+    origin = "https://supplier.test"
+    content = '<main class="sheet"><h1>Item</h1></main><a href="/contact">Contact</a><script type="application/ld+json">' + json.dumps({"@type": "Product", "name": "Item"}) + '</script>'
+    answer, requests = await sample_graph(tmp_path, monkeypatch,
+        {"/item": content, "/contact": "<h1>Contact</h1>"}, {"site_url": origin + "/item", **policy})
+    assert answer["samples"] == []
+    assert all(page["url"] != origin + "/item" for page in answer["explanation"]["pages"] if page["outcome"] != "start")
+    assert requests.count(origin + "/item") == 1
+
+
+async def test_redirected_start_uses_loaded_final_url_for_target_admission(tmp_path, monkeypatch):
+    origin = "https://supplier.test"
+    requested, final = origin + "/entry", origin + "/item"
+    content = '<main class="sheet"><h1>Original item</h1></main><a href="/contact">Contact</a>'
+    answer, requests = await sample_graph(tmp_path, monkeypatch,
+        {"/entry": content, "/contact": "<h1>Contact</h1>"},
+        {"site_url": requested, "target_page_selector": ".sheet", "url_include": [r"/item$"]},
+        final_urls={requested: final})
+    assert [sample["url"] for sample in answer["samples"]] == [final]
+    assert requests == [requested]
 
 
 async def test_backlinks_do_not_reprobe_the_already_observed_start_page(tmp_path, monkeypatch):
