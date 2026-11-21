@@ -48,7 +48,7 @@ browser.webRequest.onBeforeRequest.addListener(async details => {
   }
   try {
     const result = await call("/policy", {
-      tabId: details.tabId, ...binding, url: details.url, frameKind: details.type,
+      tabId: details.tabId, ...binding, url: details.url, frameKind: details.type, method: details.method,
       requestId: details.requestId, redirects: requests.get(details.requestId),
     });
     return {cancel: !(result.allow === true && result.generation === binding.generation && tabs.get(details.tabId) === binding)};

@@ -21,7 +21,7 @@ async def test_bridge_rejects_wrong_token_and_unknown_tab():
         assert (await call(bridge, "/ready", {"privateAccess": True})).status_code == 200
         response = await call(bridge, "/policy", {
             "tabId": 7, "storeId": "private-1", "generation": "unknown", "url": "https://shop.test/list",
-            "frameKind": "main_frame", "requestId": "r1", "redirects": 0,
+            "frameKind": "main_frame", "method": "GET", "requestId": "r1", "redirects": 0,
         })
         assert response.json()["allow"] is False
     finally:
@@ -31,7 +31,7 @@ async def test_bridge_rejects_wrong_token_and_unknown_tab():
 async def test_nonce_is_one_use_and_tab_generation_cannot_cross_context():
     bridge = await FirefoxPolicyBridge().start()
     seen = []
-    async def policy(url, frame_kind, redirects):
+    async def policy(url, frame_kind, redirects, method):
         seen.append(url)
         return True
     guard = SimpleNamespace(page=SimpleNamespace(context=object()), generation="gen-1", active=True,
@@ -46,7 +46,7 @@ async def test_nonce_is_one_use_and_tab_generation_cannot_cross_context():
         await enrolled
         assert (await call(bridge, "/enroll", payload)).json()["allow"] is False
         base = {"tabId": 4, "storeId": "private-1", "generation": "gen-1", "url": "https://shop.test/list",
-                "frameKind": "main_frame", "requestId": "r1", "redirects": 0}
+                "frameKind": "main_frame", "method": "GET", "requestId": "r1", "redirects": 0}
         assert (await call(bridge, "/policy", {**base, "tabId": 5})).json()["allow"] is False
         assert (await call(bridge, "/policy", {**base, "storeId": "private-2"})).json()["allow"] is False
         assert (await call(bridge, "/policy", {**base, "generation": "gen-old"})).json()["allow"] is False
@@ -97,7 +97,7 @@ async def bound_guard(bridge, policy):
     await call(bridge, "/bound", {"tabId": 1, "storeId": "private-1", "generation": "current"})
     await enrolled
     return guard, {"tabId": 1, "storeId": "private-1", "generation": "current", "url": "https://shop.test/list",
-                   "frameKind": "main_frame", "requestId": "chain-1", "redirects": 0}
+                   "frameKind": "main_frame", "method": "GET", "requestId": "chain-1", "redirects": 0}
 
 
 async def test_revoke_during_policy_never_releases_old_document():
@@ -144,6 +144,7 @@ async def test_close_cancels_paused_policy_and_removes_addon_listener_tasks():
 
 @pytest.mark.parametrize("change", [
     {"frameKind": "script"}, {"redirects": True}, {"redirects": -1},
+    {"method": []}, {"method": "GET\r\nX: bad"}, {"method": ""}, {"method": "X" * 33},
     {"url": "x" * 8193}, {"requestId": []}, {"unexpected": "data"},
 ])
 async def test_bridge_schema_failure_does_not_invoke_policy(change):
@@ -340,14 +341,14 @@ globalThis.browser = {
 };
 globalThis.fetch = async (url, options) => {
   const payload = JSON.parse(options.body);
-  if (payload.frameKind) observed.push(payload.redirects);
+  if (payload.frameKind) observed.push([payload.redirects, payload.method]);
   return {ok: true, json: async () => ({allow: true, generation: payload.generation})};
 };
 '''
     cases = r'''
 (async () => {
   tabs.set(5, {storeId:"private-1", generation:"current"});
-  const details = {tabId:5,type:"main_frame",requestId:"chain-1",url:"https://shop.test/list"};
+  const details = {tabId:5,type:"main_frame",method:"GET",requestId:"chain-1",url:"https://shop.test/list"};
   await callbacks.onBeforeRequest(details);
   callbacks.onBeforeRedirect({...details,statusCode:0,redirectUrl:details.url});
   await callbacks.onBeforeRequest(details);
@@ -358,4 +359,35 @@ globalThis.fetch = async (url, options) => {
 '''
     node = shutil.which("node") or str(Path(playwright.__file__).parent / "driver" / "node")
     result = subprocess.run([node, "-"], input=harness + source + cases, text=True, capture_output=True, check=True, timeout=10)
-    assert json.loads(result.stdout) == [0, 0, 1]
+    assert json.loads(result.stdout) == [[0, "GET"], [0, "GET"], [1, "GET"]]
+
+
+@pytest.mark.parametrize("path", ["/list", "/list/update"])
+async def test_guard_rejects_main_post_before_original_admission(monkeypatch, path):
+    from app.fetching import firefox_policy
+    async def public(url):
+        return False
+    monkeypatch.setattr(firefox_policy, "url_is_private", public)
+    guard = firefox_policy.FirefoxDocumentGuard(SimpleNamespace(context=SimpleNamespace(browser=None)), "https://shop.test/list")
+    guard.active = True
+    assert not await guard.decide("https://shop.test" + path, "main_frame", 0, "POST")
+    assert isinstance(guard.errors[0], firefox_policy.DestinationDenied)
+    assert await guard.decide("https://shop.test/list", "main_frame", 0, "GET")
+    assert await guard.decide("https://challenge.test/frame", "sub_frame", 0, "POST")
+
+
+async def test_bridge_requires_method_and_passes_exact_method_to_guard():
+    bridge = await FirefoxPolicyBridge().start()
+    calls = []
+    async def policy(*args):
+        calls.append(args)
+        return False
+    try:
+        _, payload = await bound_guard(bridge, policy)
+        missing = {key: value for key, value in payload.items() if key != "method"}
+        assert (await call(bridge, "/policy", missing)).status_code == 400
+        assert calls == []
+        assert (await call(bridge, "/policy", {**payload, "method": "POST"})).json()["allow"] is False
+        assert calls == [("https://shop.test/list", "main_frame", 0, "POST")]
+    finally:
+        await bridge.close()

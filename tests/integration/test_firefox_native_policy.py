@@ -34,6 +34,14 @@ def native_documents():
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        def do_POST(self):
+            # Record actual POST handling, independently of do_GET, so an unsafe
+            # method escaping the native guard cannot disappear as an HTTP501.
+            hits.append((self.path, {**dict(self.headers), "X-Fixture-Method": "POST"}))
+            self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 16384))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         def log_message(self, *args):
             pass
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -196,5 +204,44 @@ async def test_camoufox_native_original_admission_not_rejected_by_route_restart(
         assert response.status == 200
         assert "/list/original" in [path for path, _ in hits]
         assert calls == [] and guard.errors == []
+    finally:
+        await guard.close()
+
+
+async def test_native_fixture_records_real_post_handler_hits(native_documents):
+    import httpx
+    origin, _, _, hits = native_documents
+    async with httpx.AsyncClient(trust_env=False) as client:
+        response = await client.post(origin + "/handler-control", data={"fixture": "control"})
+    assert response.status_code == 200
+    assert [(path, headers["X-Fixture-Method"]) for path, headers in hits] == [("/handler-control", "POST")]
+
+
+@pytest.mark.parametrize("target_path", ["/list/form", "/list/update"])
+async def test_camoufox_native_form_post_attempt_has_zero_target_post_hits(native_browser, native_documents, target_path):
+    origin, _, documents, hits = native_documents
+    documents["/list/form"] = '<main>Native GET form fixture</main>'
+    page, guard = await guarded_page(native_browser, origin + "/list/form")
+    try:
+        response = await page.goto(origin + "/list/form", timeout=10000)
+        assert response.status == 200
+        target = origin + target_path
+        async with page.expect_event("requestfailed", predicate=lambda request: request.method == "POST" and request.is_navigation_request(), timeout=5000) as failure:
+            attempted = await page.evaluate('''async target => {
+                const form = document.createElement("form");
+                form.method = "POST";
+                form.action = target;
+                const input = document.createElement("input");
+                input.name = "fixture"; input.value = "unsafe-method-control";
+                form.append(input); document.body.append(form);
+                await fetch("/submission-attempted");
+                HTMLFormElement.prototype.submit.call(form);
+                return true;
+            }''', target)
+        request = await failure.value
+        assert attempted is True and request.url == target and request.method == "POST"
+        assert "/submission-attempted" in [path for path, _ in hits]
+        assert all(headers.get("X-Fixture-Method") != "POST" for _, headers in hits)
+        assert any(isinstance(exc, DestinationDenied) for exc in guard.errors)
     finally:
         await guard.close()

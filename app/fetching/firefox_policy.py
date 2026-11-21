@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import re
 import secrets
 import tempfile
 from dataclasses import dataclass
@@ -192,14 +193,15 @@ class FirefoxPolicyBridge:
             return {"allow": True, "generation": generation}
         if path != "/policy" or not binding.bound:
             return {"allow": False}
-        if set(payload) != {"tabId", "storeId", "generation", "url", "frameKind", "requestId", "redirects"}:
+        if set(payload) != {"tabId", "storeId", "generation", "url", "frameKind", "requestId", "redirects", "method"}:
             raise ValueError("invalid policy object")
-        url, kind, request_id, redirects = (payload[k] for k in ("url", "frameKind", "requestId", "redirects"))
+        url, kind, request_id, redirects, method = (payload[k] for k in ("url", "frameKind", "requestId", "redirects", "method"))
         if (not isinstance(url, str) or not 0 < len(url) <= 8192 or kind not in ("main_frame", "sub_frame")
                 or not isinstance(request_id, str) or not 0 < len(request_id) <= 128
-                or type(redirects) is not int or not 0 <= redirects <= 1000):
+                or type(redirects) is not int or not 0 <= redirects <= 1000
+                or not isinstance(method, str) or re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}", method) is None):
             raise ValueError("invalid policy fields")
-        allowed = await binding.guard.decide(url, kind, redirects)
+        allowed = await binding.guard.decide(url, kind, redirects, method)
         # A verdict arriving after revoke/rebind can never release the old document.
         valid = (not self._closed and self._tabs.get(tab_id) is binding and binding.guard.active
                  and binding.guard.generation == generation)
@@ -286,7 +288,7 @@ class FirefoxDocumentGuard:
             self._revoke()
             raise
 
-    async def decide(self, url, frame_kind, redirects):
+    async def decide(self, url, frame_kind, redirects, method="GET"):
         generation = self.generation
         try:
             async with asyncio.timeout(self.timeout_s):
@@ -295,6 +297,8 @@ class FirefoxDocumentGuard:
                 if await url_is_private(url):
                     from app.fetching.oneoff import PrivateAddress
                     raise PrivateAddress(url)
+                if frame_kind == "main_frame" and method != "GET":
+                    raise DestinationDenied(url)
                 if redirects > self.max_redirects:
                     raise DestinationDenied(url, "too_many_redirects")
                 if (frame_kind == "main_frame" and (redirects > 0 or url != self.initial_url)
