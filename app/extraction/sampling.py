@@ -131,7 +131,24 @@ def link_groups(page, site: str, exclude: list | None = None, include: list | No
     info: "OrderedDict[str, dict]" = OrderedDict()
     stats = {"hrefs": 0, "in_site": 0, "other_hosts": 0, "variants_skipped": 0}
     flags = anchor_flags(page)
-    flags.extend((u, False, False) for u in getattr(page, "extra_links", []))
+
+    def observed_key(href: str) -> str | None:
+        resolved = absolute(page.base_url, href)
+        if not resolved:
+            return None
+        try:
+            return canonical_url(resolved.split("#", 1)[0])
+        except ValueError:
+            return resolved.split("#", 1)[0]
+
+    # The browser collector also observes the initial DOM. Supplement it with
+    # new URLs only: re-adding a menu link as unmarked content loses its flags.
+    observed = {observed_key(href) for href, _, _ in flags}
+    for href in getattr(page, "extra_links", []):
+        key = observed_key(href)
+        if key is not None and key not in observed:
+            flags.append((href, False, False))
+            observed.add(key)
     for href, chrome, card in flags:
         stats["hrefs"] += 1
         resolved = absolute(page.base_url, href)
