@@ -83,3 +83,22 @@ def test_runtime_renders_scripted_listings_despite_fresh_static_navigation(
     assert {record["source_url"] for record in records} == expected_urls(mode)
     if mode == "http":
         assert run["counters"]["browser_fetches"] == 0
+
+
+def test_runtime_paced_pagination_finishes_beyond_one_page_timeout(service, fixture_world):
+    ensure_mappings(service, "variants.test:8602", MAPPING)
+    cfg = merged_config(service, {
+        "site_url": BASE + "/v/paced-listing/category",
+        "discovery_mode": "crawl", "fetch_mode": "browser", "browser": "chromium",
+        "url_include": ["/v/plain-item/"], "max_pages": 30,
+        "page_timeout_seconds": 10, "max_duration_minutes": 5,
+        "delay_min_seconds": 3, "delay_max_seconds": 3,
+        "max_concurrency": 1, "max_requests_per_minute": 60,
+    })
+    run = service.wait_run(start(service, cfg, "paced-runtime-pagination").json()["run_id"])
+    assert run["state"] == "completed" and run["outcome"] == "complete", run.get("errors")
+    records = [json.loads(line) for line in service.get(run["result"]["download_path"]).text.splitlines()]
+    assert {r["source_url"] for r in records} == {
+        BASE + f"/v/plain-item/paced-{index}" for index in range(5)
+    }
+    assert not any(e["code"] == "navigation_partial" for e in run.get("errors", []))

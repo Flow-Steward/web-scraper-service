@@ -491,6 +491,7 @@ def make_shop(with_sitemap: bool) -> Starlette:
             "listing": vp.dynamic_listing,
             "shell-listing": vp.shell_listing,
             "productive-shell": vp.productive_shell_listing,
+            "paced-listing": vp.paced_listing,
             "nested-editions": vp.nested_editions,
             "plain-item": vp.plain_item,
         }.get(kind)

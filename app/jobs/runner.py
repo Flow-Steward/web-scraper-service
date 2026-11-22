@@ -687,6 +687,14 @@ class JobRunner:
         nav = page_timeout + int(cfg["delay_max_seconds"]) + 5
         handler_timeout = (nav + int(self.settings.challenge_wait_seconds) * 2 + 60 + (150 if self.solver else 0)
                            + cfg["wait_for_selector_ms"] // 1000 + cfg["wait_after_load_ms"] // 1000 + int(ADMISSION_WAIT_SECONDS))
+        walks_links = cfg["discovery_mode"] == "auto" or (
+            self.doc["resolved"].get("discovery_mode") or cfg["discovery_mode"]
+        ) in ("crawl", "sitemap_and_crawl")
+        if cfg["fetch_mode"] != "http" and browser and not cfg.get("single_page") and walks_links:
+            # One browser handler can walk many same-URL listing states. Each
+            # transition has its own deadline; the job's supervisor bounds the
+            # whole traversal rather than another page-sized handler timeout.
+            handler_timeout = max(handler_timeout, cfg["max_duration_minutes"] * 60 + nav)
         concurrency = ConcurrencySettings(
             min_concurrency=1,
             max_concurrency=cfg["max_concurrency"],
@@ -2200,6 +2208,7 @@ class JobRunner:
         def cancelled():
             return (
                 bool(self.rt.get("stop_reason"))
+                or getattr(self, "_shutdown", False)
                 or self.state in ("stopping", "completed", "failed", "waiting_for_credentials")
                 or self.running_seconds() >= self.config["max_duration_minutes"] * 60
             )
@@ -2226,13 +2235,8 @@ class JobRunner:
                 return False
             if not await self.robots_allowed(action.url):
                 return False
-            while time.monotonic() < self.paused_until:
-                if cancelled():
-                    return False
-                await asyncio.sleep(0.2)
             if document:
                 return not cancelled()
-            await self.throttle.wait(host_of(action.url))
             if cancelled() or self.pages_started + int(self.rt.get("navigation_actions", 0)) >= self.config["max_pages"]:
                 return False
             self.rt["navigation_actions"] = (
@@ -2240,16 +2244,37 @@ class JobRunner:
             )
             return True
 
+        async def pace(action):
+            while time.monotonic() < self.paused_until:
+                if cancelled():
+                    return
+                await asyncio.sleep(0.2)
+            if not cancelled():
+                await self.throttle.wait(host_of(action.url))
+
+        def progress():
+            self.last_progress = time.monotonic()
+
+        remaining = self.config["max_duration_minutes"] * 60 - self.running_seconds()
+        if remaining <= 0:
+            self._cut("max_duration")
+            return
+
         result = await collect_listing_links(
             ctx.page,
             site_url=self.config["site_url"],
             limits=NavigationLimits(
-                max_steps=min(100, int(self.config.get("max_pages") or 12)),
+                max_steps=max(0, int(self.config["max_pages"]) - self.pages_started - int(self.rt.get("navigation_actions", 0))),
                 max_seconds=int(self.config.get("page_timeout_seconds") or 45),
+                max_total_seconds=remaining,
             ),
             before_action=allowed,
             cancelled=cancelled,
+            pace_action=pace,
+            on_progress=progress,
         )
+        if result.stop_reason == "total_time_limit":
+            self._cut("max_duration")
         if self.state == "waiting_for_credentials":
             self._defer(ctx.request, "upstream proxy authentication requires Resume")
         page.extra_links = result.links
