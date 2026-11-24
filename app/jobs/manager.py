@@ -223,10 +223,13 @@ class JobManager:
 
     # ================================================================== creation
     async def create(self, body: dict, idem_key: str, recollect_of: dict | None = None,
-                     sitemap_retry: dict | None = None) -> tuple[int, dict]:
+                     sitemap_retry: dict | None = None, queue_retry: list[dict] | None = None) -> tuple[int, dict]:
         svc = self.svc
         config, profile, platform = body["config"], body["profile"], body["platform"]
-        fp = fingerprint(config, platform)
+        fingerprint_config = config
+        if recollect_of is not None:
+            fingerprint_config = {"config": config, "recollect": {"run_id": recollect_of["run_id"], "reasons": recollect_of["reasons"]}}
+        fp = fingerprint(fingerprint_config, platform)
         async with self._create_lock:
             row = svc.db.one("SELECT run_id, fingerprint FROM runs WHERE idempotency_key=?", (idem_key,))
             if row is not None:
@@ -298,6 +301,8 @@ class JobManager:
             if sitemap_retry is not None:
                 runtime.update(sitemap_traversal=sitemap_retry["traversal"],
                                sitemap_retry_urls=sitemap_retry["urls"], sitemap_retry_roots=sitemap_retry["roots"])
+            if queue_retry is not None:
+                runtime.update(recollect_pending=queue_retry, start_fed=True)
             # templates active at the start
             for s in sites:
                 for m in svc.mappings.active_mappings(s):
@@ -330,22 +335,77 @@ class JobManager:
         existing = self.svc.db.one("SELECT run_id FROM runs WHERE idempotency_key=?", (idem_key,))
         parent = loads(row["doc"])
         reasons = list(body.get("reasons") or DEFAULT_RECOLLECT_REASONS)
+        if existing is not None:
+            prior = loads(self._row(existing["run_id"])["doc"])
+            intent = prior.get("recollect_of") or {}
+            if (intent.get("run_id") != parent_id or intent.get("reasons") != reasons
+                    or _canon_numbers(prior.get("platform")) != _canon_numbers(body["platform"])):
+                raise ApiError("idempotency_key_reused", "the Idempotency-Key was used with another recovery request",
+                               details={"run_id": existing["run_id"]}, headers={"Location": f"/v1/runs/{existing['run_id']}"})
+            return 200, self.summary(existing["run_id"])
         marks = ",".join("?" for _ in reasons)
         urls: list[dict] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str | None]] = set()
         by_reason: dict[str, int] = {}
+        recovery_entries: list[dict] = []
+
+        def add_url(url, key, reason, source="list"):
+            identity = (url, key or None)
+            if identity in seen:
+                return
+            limit = self.svc.settings.limits["max_url_list_entries"]
+            if len(urls) >= limit:
+                raise validation_failed([field_error("urls", "limit_exceeded", f"more than {limit} recovery URLs", limit)])
+            seen.add(identity)
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            entry = {"url": url}
+            if key:
+                entry["key"] = key
+            urls.append(entry)
+            recovery_entries.append({"url": url, "source": source if source in ("list", "link", "sitemap", "start") else "list",
+                                     "source_key": key})
+
         for r in self.svc.db.all(f"SELECT url, reason, doc FROM unextracted WHERE run_id=? AND reason IN ({marks}) ORDER BY url, url_key",
                                  (parent_id, *reasons)):
             d = loads(r["doc"])
             url = d.get("requested_url") or r["url"]
-            if url in seen:
-                continue
-            seen.add(url)
-            by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
-            entry = {"url": url}
-            if d.get("source_key"):
-                entry["key"] = d["source_key"]
-            urls.append(entry)
+            add_url(url, d.get("source_key"), r["reason"])
+        recover_queue = row["state"] == "failed" and "stopped" in reasons
+        if recover_queue:
+            # Source cursors can already be committed while admitted work is
+            # still queued. Read durable work in bounded batches, never replay
+            # completed requests or mutate the failed parent.
+            after = ""
+            while True:
+                batch = self.svc.db.all("SELECT unique_key,url,source,source_key FROM urls WHERE run_id=? AND status='queued' AND unique_key>? ORDER BY unique_key LIMIT 500",
+                                        (parent_id, after))
+                if not batch:
+                    break
+                for pending in batch:
+                    add_url(pending["url"], pending["source_key"], "stopped", pending["source"])
+                after = batch[-1]["unique_key"]
+            after_seq = 0
+            while True:
+                batch = self.svc.db.all("SELECT b.seq,b.url,b.source,b.source_key FROM link_backlog b WHERE b.run_id=? AND b.seq>? "
+                                        "AND (b.source='refetch' OR NOT EXISTS (SELECT 1 FROM urls u WHERE u.run_id=b.run_id AND u.status='done' AND u.url=b.url AND COALESCE(u.source_key,'')=COALESCE(b.source_key,''))) "
+                                        "ORDER BY b.seq LIMIT 500", (parent_id, after_seq))
+                if not batch:
+                    break
+                for pending in batch:
+                    add_url(pending["url"], pending["source_key"], "stopped", pending["source"])
+                after_seq = batch[-1]["seq"]
+            # Stored pages still await extraction/repair. Admitted refetches
+            # live here and in Crawlee, rather than in queued URL-table rows.
+            after_page = ""
+            while True:
+                batch = self.svc.db.all("SELECT page_key,doc FROM stored_pages WHERE run_id=? AND page_key>? ORDER BY page_key LIMIT 500",
+                                        (parent_id, after_page))
+                if not batch:
+                    break
+                for pending in batch:
+                    page = loads(pending["doc"])
+                    add_url(page.get("requested_url") or page["url"], page.get("source_key"), "stopped")
+                after_page = batch[-1]["page_key"]
         from app.jobs.discovery import sitemap_coverage, sitemap_retry_state
 
         parent_runtime = loads(row["runtime"]) or {}
@@ -360,18 +420,22 @@ class JobManager:
         config["urls"] = urls
         config["rebuild_mapping"] = False
         config["sitemap_url"] = None
+        parent_mode = (parent.get("resolved") or {}).get("discovery_mode") or parent["config"]["discovery_mode"]
+        follow_links = parent_mode in ("crawl", "sitemap_and_crawl") and not config.get("single_page")
+        if recover_queue and follow_links:
+            config.update(discovery_mode="crawl", urls=[])
         link = {"run_id": parent_id, "reasons": reasons, "url_count": len(urls), "by_reason": by_reason}
         retry = None
         if retry_sources:
             # Seed atomically in create(), before the manager can start the new run.
-            config["discovery_mode"] = "sitemap"
+            config["discovery_mode"] = "sitemap_and_crawl" if recover_queue and follow_links else "sitemap"
             config["urls"] = []
             config["sitemap_url"] = next(iter(traversal["sources"]), None)
             link["source_count"] = sum(e.get("status") in ("pending", "failed") for e in traversal["sources"].values()) + int(bool(traversal.get("pending_root")))
-            retry = {"traversal": sitemap_retry_state(traversal), "urls": urls,
+            retry = {"traversal": sitemap_retry_state(traversal), "urls": [] if recover_queue else urls,
                      "roots": parent_runtime.get("sitemap_retry_roots") or parent_runtime.get("sitemaps") or list(traversal["sources"])}
         return await self.create({"config": config, "profile": body["profile"], "platform": body["platform"]}, idem_key,
-                                 recollect_of=link, sitemap_retry=retry)
+                                 recollect_of=link, sitemap_retry=retry, queue_retry=recovery_entries if recover_queue else None)
 
     # ================================================================== reading
     def _row(self, run_id: str):

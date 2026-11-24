@@ -843,6 +843,23 @@ class JobRunner:
             return False
         return ud.get("src") in ("link", "start") and not matches_any(self.include, canonical)
 
+    def _completed_ancestor_keys(self, entries: list[dict]) -> set[tuple[str, str | None]]:
+        parent = (self.doc.get("recollect_of") or {}).get("run_id")
+        if not parent:
+            return set()
+        urls = sorted({e["url"] for e in entries if e.get("source") in ("link", "sitemap")})
+        completed = set()
+        for i in range(0, len(urls), 500):
+            chunk = urls[i:i + 500]
+            marks = ",".join("?" for _ in chunk)
+            rows = self.svc.db.all(
+                "WITH RECURSIVE ancestors(run_id) AS (SELECT ? UNION SELECT runs.parent_run_id "
+                "FROM runs JOIN ancestors ON runs.run_id=ancestors.run_id WHERE runs.parent_run_id IS NOT NULL) "
+                "SELECT url,source_key FROM urls WHERE status='done' AND run_id IN (SELECT run_id FROM ancestors) "
+                f"AND url IN ({marks})", (parent, *chunk))
+            completed.update((r["url"], r["source_key"] or None) for r in rows)
+        return completed
+
     async def enqueue(self, entries: list[dict], *, forefront: bool = False, backlog_seqs: list[int] | None = None,
                       feed: tuple[str, int] | None = None) -> int:
         """entries: {url, source (start|sitemap|link|list|refetch), source_key?, unique_key? (refetch)}.
@@ -855,6 +872,7 @@ class JobRunner:
         if self.state == "waiting_for_credentials":
             raise ProxyAuthenticationRequired()
         job_site = self.doc["site"]
+        completed_recovery = self._completed_ancestor_keys(entries) if "recollect_pending" in self.rt else set()
         decisions: list[tuple] = []
         new_requests = []
         seen_now: set[str] = set()
@@ -863,6 +881,9 @@ class JobRunner:
             with url_pattern_batch(batch):
                 url = entry["url"]
                 source = entry["source"]
+                if source in ("link", "sitemap") and (url, entry.get("source_key") or None) in completed_recovery:
+                    decisions.append(("duplicate",))
+                    continue
                 try:
                     canonical = canonical_url(url)
                     site = site_key(url)
@@ -1146,6 +1167,13 @@ class JobRunner:
         cfg = self.config
         mode = self.doc["resolved"].get("discovery_mode")
         try:
+            pending = self.rt.get("recollect_pending") or []
+            done = int(self.rt.get("recollect_pending_fed", 0))
+            for i in range(done, len(pending), 100):
+                if self._cut_or_stopping():
+                    return
+                chunk = pending[i:i + 100]
+                await self.enqueue(chunk, feed=("recollect_pending_fed", len(chunk)))
             if cfg.get("single_page"):
                 await self.enqueue([{"url": cfg["site_url"], "source": "start"}])
             elif mode == "url_list":
@@ -1216,16 +1244,8 @@ class JobRunner:
                                feed=("sitemap_retry_fed", len(chunk)))
 
         async def enqueue_source_batch(entries):
-            parent_id = (self.doc.get("recollect_of") or {}).get("run_id")
-            if parent_id:
-                marks = ",".join("?" for _ in entries)
-                prior = self.svc.db.all(
-                    "WITH RECURSIVE ancestors(run_id) AS (SELECT ? UNION SELECT runs.parent_run_id "
-                    "FROM runs JOIN ancestors ON runs.run_id=ancestors.run_id WHERE runs.parent_run_id IS NOT NULL) "
-                    "SELECT url FROM urls WHERE status='done' AND run_id IN (SELECT run_id FROM ancestors) "
-                    f"AND url IN ({marks})", (parent_id, *(e["url"] for e in entries)))
-                completed = {r["url"] for r in prior}
-                entries = [e for e in entries if e["url"] not in completed]
+            completed = self._completed_ancestor_keys(entries)
+            entries = [e for e in entries if (e["url"], e.get("source_key") or None) not in completed]
             if entries:
                 await self.enqueue(entries, feed=("sitemap_fed", len(entries)))
 

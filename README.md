@@ -344,7 +344,12 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
   `stalled`, then stops (contract README 4.13, 4.14).
 * **Re-collect:** `POST /v1/runs/{id}/recollect` starts a new linked run over a finished
   run's selected unextracted URLs and unfinished sitemap sources, preserving per-source
-  progress with its own result (contract README 4.10).
+  progress with its own result (contract README 4.10). For a failed parent, the default
+  `stopped` selection also recovers durable queued/backlog work and pages still awaiting
+  extraction or refetch. It preserves source keys and category traversal, skips completed
+  ancestor identities for newly discovered links, and leaves the parent unchanged.
+  Recovery seeds obey `max_url_list_entries`; changed parent/reason intent with an existing
+  idempotency key is refused rather than silently reusing a different recovery run.
 * **Events:** journal in SQLite, HMAC-SHA256 signing, delivery with the contract's
   back-off across restarts, claim/stage/complete/resend.
 

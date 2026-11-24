@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 SERVICE_NAME = "web-scraper-service"
-SERVICE_VERSION = "0.2.2-dev.16"
+SERVICE_VERSION = "0.2.2-dev.17"
 
 # name -> (default, contract ceiling)
 LIMIT_DEFAULTS: dict[str, tuple[int, int]] = {

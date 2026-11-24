@@ -216,6 +216,7 @@ def fake_runner(bodies, rt=None):
         aux_fetch=fetcher(bodies),
     )
     runner.rt.setdefault('sitemaps', [ROOT])
+    runner._completed_ancestor_keys = lambda entries: JobRunner._completed_ancestor_keys(runner, entries)
     async def feed():
         await JobRunner._feed_sitemaps(runner)
     runner.feed = feed
