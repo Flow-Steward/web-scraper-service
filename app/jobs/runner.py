@@ -1571,6 +1571,8 @@ class JobRunner:
         policy = await bind_document_policy(
             page, self.browser or "chromium", url, destination_policy=destination_allowed,
             proxy_auth=proxy_auth,
+            challenge_post_allowed=bool(self.browser == "camoufox" and self.config.get("challenge_click")
+                                        and self.settings.challenge_click_allowed and self.route_budget().click_usable()),
             on_proxy_auth_required=lambda: request.user_data.__setitem__("_wss_proxy_auth_failed", True),
             timeout_s=min(3.0, float(self.config.get("page_timeout_seconds") or 45)),
         )

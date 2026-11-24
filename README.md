@@ -180,7 +180,7 @@ Environment variables, all optional except the first:
 | `WSS_SECRETS_KEY` | unset | Key that encrypts job secrets at rest (AES-256-GCM): 32 bytes URL-safe base64, or a passphrase ≥ 16 chars. Without it `POST /v1/runs` and resume answer `503 secrets_key_unavailable`. A changed key puts running jobs into `waiting_for_credentials` until Resume. Explicit upstream proxy authentication rejection also pauses for Resume after credentials or IP allow-list approval, preserving pending work and budgets |
 | `WSS_DATA_DIR` | `/data` | The one volume: `service.sqlite3`, `jobs/<run_id>/crawlee` (Crawlee storage per job), `results/`, `samples/`, `identities.json` |
 | `WSS_PORT`, `WSS_HOST` | `8080`, `0.0.0.0` | Listen address |
-| `WSS_ALLOW_CHALLENGE_CLICK` | `0` | Allow the model-free checkbox click (route step `click`) |
+| `WSS_ALLOW_CHALLENGE_CLICK` | `0` | Allow the model-free checkbox click and the bounded native Camoufox challenge form described under Protection; the run must also request `challenge_click` |
 | `WSS_ALLOW_SOLVERS` | `0` | Allow paid challenge solvers (route step `solver`) |
 | `WSS_ALLOW_ROBOTS_OVERRIDE` | `0` | Allow `respect_robots: false` |
 | `WSS_LIMIT_<NAME>` | contract defaults | Every limit of `GET /health` → `limits`, e.g. `WSS_LIMIT_MAX_PAGES_PER_JOB`, `WSS_LIMIT_MAX_CONCURRENT_JOBS`, `WSS_LIMIT_MAX_RESULT_BYTES` (default 103,809,024 = 99 MiB). Values above the contract ceilings are refused at start |
@@ -476,6 +476,18 @@ vertical middle, ±3 px), then the page is polled for up to
 `WSS_CHALLENGE_CLICK_WAIT_SECONDS`; with Camoufox one `mouse.move` lets its `humanize`
 draw the path. `POST /v1/analyze` and `POST /v1/samples` run the same route (one browser
 session per request, the config's flags and caps), so a protected site gets samples.
+With that same explicit server-and-run permission, Camoufox can also submit one
+native opaque verification form to the exact HTTPS page being loaded. The allowance
+requires its native GET response to be HTTP 403 with unambiguous `server: cloudflare`,
+`cf-mitigated: challenge` and `cf-ray` headers. It expires after 45 seconds and cannot
+be re-armed in that page generation. Only 1–8 unique lowercase hexadecimal field names
+of length 64, one bounded printable ASCII value each, are accepted. The native addon
+checks the URL-encoded wire Content-Type and exact body length (at most 64 KiB) before
+sending; values stay in the browser. Destination, private-address, scope and robots
+checks still apply. Replays, other forms, changed URLs and POST-preserving redirects
+are blocked. The headers and form shape are heuristics, not proof of vendor identity
+or of an origin's behavior: enabling the permission authorizes this one POST as part
+of protection handling. Chromium retains its existing document POST denial.
 If that browser closes or fails to start, setup returns HTTP 503 with
 `error.details.reason: browser_unavailable`. It closes and discards the failed session;
 it does not relaunch automatically or substitute an HTTP challenge for the browser failure.

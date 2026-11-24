@@ -4,6 +4,16 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
+## 0.2.2-dev.9 (unreleased)
+
+- Camoufox can complete one bounded native opaque challenge form when both the
+  service and run permit protection handling. Native response, body, final header,
+  expiry, generation and destination checks preserve the denial of ordinary forms,
+  replays and POST-preserving redirects. Setup and full crawls use the same rule;
+  Chromium keeps its existing document POST denial.
+- Added native HTTPS fixtures with real POST handlers and regression checks for
+  final-release revocation and repeated interception of a single Firefox request.
+
 ## 0.2.1
 
 First published release. Release notes: `release-notes/v0.2.1.md`.

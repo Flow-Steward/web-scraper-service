@@ -40,8 +40,10 @@ class NativeDocumentPolicy:
 
 
 async def bind_document_policy(page, browser, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10,
-                               proxy_auth=None, on_proxy_auth_required=None):
+                               proxy_auth=None, on_proxy_auth_required=None, challenge_post_allowed=False):
     auth_options = {"proxy_auth": proxy_auth, "on_proxy_auth_required": on_proxy_auth_required} if browser == "chromium" else {}
+    if browser == "camoufox":
+        auth_options["challenge_post_allowed"] = bool(challenge_post_allowed)
     existing = getattr(page, "_wss_native_document_policy", None)
     if existing is not None:
         await existing.rebind(initial_url, destination_policy, **auth_options)
