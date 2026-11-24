@@ -256,6 +256,8 @@ class SetupFetch:
 
     async def discover_links(self, url: str, page: Page | None = None):
         """Observe listing states while retaining the originally fetched document."""
+        if self.config.get("single_page"):
+            return None
         from app.fetching.navigation import NavigationLimits
         from app.core.urls import host_of
 
@@ -883,15 +885,21 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
     ex = Explain()
     candidates: list[tuple[str, str | None]] = []
     explicit = bool(body.get("urls"))
+    single = not explicit and bool(config.get("single_page") and config.get("site_url"))
     if explicit:
         candidates = [(u, None) for u in body["urls"]]
         ex.discovery.update(source="urls", candidates=len(candidates))
+    elif single:
+        count = 1
+        if filter_urls([config["site_url"]], [], config.get("url_exclude") or []):
+            candidates = [(config["site_url"], None)]
+        ex.discovery.update(source="single_page", candidates=len(candidates))
     elif config.get("discovery_mode") == "url_list" and config.get("urls"):
         candidates = [(e["url"], e.get("key")) for e in config["urls"][: count * 4]]
         ex.discovery.update(source="url_list", candidates=len(candidates))
-    listed = not explicit and config.get("discovery_mode") == "url_list" and bool(config.get("urls"))
+    listed = not explicit and not single and config.get("discovery_mode") == "url_list" and bool(config.get("urls"))
     plan: ProbePlan | None = None
-    if not explicit and not listed:
+    if not explicit and not listed and not single:
         plan = await _discover_candidates(config, mappings, count, sf.fetch, ex)
 
     selector = config.get("target_page_selector")
@@ -1048,7 +1056,7 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
         await _attach_variant_sources(svc, sample, page, sf, ex)
         svc.samples.save(sample, page.html, page.url)
         out.append(sample)
-    if not out and not explicit and _no_target_hints(config, mappings) and config.get("site_url") and sf.failure_for(config["site_url"]) is None:
+    if not out and not explicit and not single and _no_target_hints(config, mappings) and config.get("site_url") and sf.failure_for(config["site_url"]) is None:
         guessed = await _guessed_samples(svc, config, sf, count, taken, warnings, ex)
         out += guessed
     requested = count if not explicit else len(body["urls"])

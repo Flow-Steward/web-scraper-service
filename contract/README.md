@@ -504,6 +504,11 @@ patterns of the site's active mappings and `url_include`) that the sitemap
 contains. `single_page: true` skips discovery (`resolved.discovery_mode`
 stays `null`).
 
+`POST /v1/samples` also honours `single_page`: without explicit sample `urls`,
+it considers only `site_url` and reports `requested_count: 1`. It does not discover
+sitemaps, operate listing controls or guess sibling targets. Target selectors and
+URL filters still apply. Explicit sample `urls` take precedence as usual.
+
 `url_include` / `url_exclude` are Python `re` patterns searched in the
 canonical URL; include first (when non-empty), then exclude.
 `url_exclude` keeps a URL out of the queue in every mode. **`url_include`

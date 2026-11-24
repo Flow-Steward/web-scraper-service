@@ -77,7 +77,7 @@
         "summary",
         "counts"
       ],
-      "description": "Added 2026-11-13. What the call tried, for the operator: `summary` in plain words with the next hint; `discovery` (`start_page`: `hrefs`, `in_site`, `other_hosts`, `variants_skipped`, `shapes` [{`shape`, `links`, `in_menus`}]; source `urls` | `url_list` | `sitemap` | `crawl` | `start_page` | `start_page+sitemap`, `sitemap_urls`, `sitemap_capped`, `sitemap_matching`, `links`, `candidates`, `start_is_deep`); `counts`; URL-shape `groups`; up to 60 `pages` with how each was loaded and what came of it; `seconds`; `hints`; `guess` when the URL-shape guess ran. The service also logs one INFO line per call with the same counts.",
+      "description": "Added 2026-11-13. What the call tried, for the operator: `summary` in plain words with the next hint; `discovery` (`start_page`: `hrefs`, `in_site`, `other_hosts`, `variants_skipped`, `shapes` [{`shape`, `links`, `in_menus`}]; source `urls` | `url_list` | `single_page` | `sitemap` | `crawl` | `start_page` | `start_page+sitemap`, `sitemap_urls`, `sitemap_capped`, `sitemap_matching`, `links`, `candidates`, `start_is_deep`); `counts`; URL-shape `groups`; up to 60 `pages` with how each was loaded and what came of it; `seconds`; `hints`; `guess` when the URL-shape guess ran. The service also logs one INFO line per call with the same counts.",
       "properties": {
         "summary": {
           "type": "string",

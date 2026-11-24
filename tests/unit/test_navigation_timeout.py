@@ -13,6 +13,19 @@ from tests.unit.test_logic import settings
 URL = "https://catalogue.example.test/list"
 
 
+async def test_single_page_setup_does_not_follow_listing_controls():
+    async def collect(**kwargs):
+        raise AssertionError("single_page must not operate listing controls")
+
+    sf = SetupFetch(
+        SimpleNamespace(settings=settings(), samples=None),
+        {"site_url": URL, "browser": "chromium", "single_page": True}, {},
+    )
+    sf._session = SimpleNamespace(page=SimpleNamespace(url=URL), discover_links=collect, is_closed=False)
+    sf._browser[URL] = (200, "<main>Product with related items</main>", URL, None)
+    assert await sf.discover_links(URL) is None
+
+
 @pytest.mark.parametrize("seconds", [120, 15])
 async def test_setup_listing_navigation_honors_selected_page_timeout(seconds):
     captured = {}

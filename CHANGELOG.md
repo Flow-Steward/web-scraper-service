@@ -4,7 +4,13 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
-## 0.2.2-dev.9 (unreleased)
+## 0.2.2-dev.10 (unreleased)
+
+- Fetch samples now respects `single_page`: it samples only `site_url`, requests
+  one sample, and skips sitemap, sibling-target guessing and listing controls.
+  Explicit sample URLs retain their existing behaviour; target filters still apply.
+
+## 0.2.2-dev.9
 
 - Camoufox can complete one bounded native opaque challenge form when both the
   service and run permit protection handling. Native response, body, final header,
