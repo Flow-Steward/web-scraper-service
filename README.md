@@ -591,6 +591,20 @@ queue/ancestor deduplication; replay spends the current run's remaining location
 budget and stays partial when exhausted. Completed sources are not re-polled; use
 a fresh full run when a complete new inventory is required.
 
+A category page may show only recent or featured products until a vehicle, model,
+or other catalogue context is selected. Crawling that view does not establish
+full category coverage. Use advertised sitemap sources as well as category links
+when available, and continue incomplete sources through linked Re-collect runs
+until their reported coverage is complete. A bounded sample or a run stopped at
+`max_records` proves extraction, not a complete catalogue. Category page counts
+are a useful cross-check, but repeated fitments and canonical aliases mean their
+position totals need not equal unique extracted records.
+
+Listing navigation warnings remain visible when a browser action fails or a
+document navigation is deferred to normal fetching. Check the ordinary queue's
+pagination URLs and the final source coverage before claiming completeness. A
+warning does not itself discard the links already found or abort product work.
+
 `auto` retains its initial source inspection in `sitemap_probe`, including failed
 sources and caps, even when it falls back to crawling. These remain partial-run
 provenance if a later source body changes. Probe offsets are reset before feeding;
