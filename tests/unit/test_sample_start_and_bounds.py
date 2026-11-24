@@ -86,6 +86,36 @@ async def test_explicit_sample_urls_take_precedence_over_single_page(tmp_path, m
     assert requests == urls
 
 
+@pytest.mark.parametrize("mode", ["sitemap", "sitemap_and_crawl"])
+async def test_sitemap_sampling_follows_links_only_when_crawling_enabled(tmp_path, monkeypatch, mode):
+    origin = "https://supplier.test"
+    answer, requests = await sample_graph(tmp_path, monkeypatch,
+        {"/sitemap.xml": '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>' + origin + '/p/1</loc></url></urlset>',
+         "/p/1": '<h1>Not a target</h1><a href="/p/2">Related page</a>',
+         "/p/2": '<main class="sheet"><h1>Outside the sitemap</h1></main>'},
+        {"site_url": origin + "/", "sitemap_url": origin + "/sitemap.xml",
+         "discovery_mode": mode, "target_page_selector": ".sheet"})
+    assert origin + "/p/1" in requests
+    if mode == "sitemap":
+        assert answer["samples"] == []
+        assert origin + "/p/2" not in requests
+    else:
+        assert [sample["url"] for sample in answer["samples"]] == [origin + "/p/2"]
+
+
+async def test_empty_sitemap_does_not_fall_back_to_start_page_links(tmp_path, monkeypatch):
+    origin = "https://supplier.test"
+    answer, requests = await sample_graph(tmp_path, monkeypatch,
+        {"/sitemap.xml": '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"/>',
+         "/": '<a href="/p/1">Outside the sitemap</a>',
+         "/p/1": '<main class="sheet"><h1>Outside the sitemap</h1></main>'},
+        {"site_url": origin + "/", "sitemap_url": origin + "/sitemap.xml",
+         "discovery_mode": "sitemap", "target_page_selector": ".sheet"})
+    assert answer["samples"] == []
+    assert origin + "/" not in requests
+    assert origin + "/p/1" not in requests
+
+
 async def test_matching_start_page_is_sampled_before_nonmatching_listing_links(tmp_path, monkeypatch):
     origin = "https://supplier.test"
     original = '<h1>Original item</h1><a href="/p/2">Related</a><a href="/p/3">Related</a>'

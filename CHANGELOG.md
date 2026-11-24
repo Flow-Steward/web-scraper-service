@@ -4,7 +4,13 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
-## 0.2.2-dev.10 (unreleased)
+## 0.2.2-dev.11 (unreleased)
+
+- Sitemap-only sampling now stays within the published map, skips listing
+  controls, and does not fall back to crawling or sibling-target guessing when
+  a map is empty. Crawl and combined sitemap-and-crawl modes keep link discovery.
+
+## 0.2.2-dev.10
 
 - Fetch samples now respects `single_page`: it samples only `site_url`, requests
   one sample, and skips sitemap, sibling-target guessing and listing controls.

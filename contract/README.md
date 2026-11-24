@@ -509,6 +509,11 @@ it considers only `site_url` and reports `requested_count: 1`. It does not disco
 sitemaps, operate listing controls or guess sibling targets. Target selectors and
 URL filters still apply. Explicit sample `urls` take precedence as usual.
 
+Without explicit sample URLs, `POST /v1/samples` in `sitemap` mode samples only
+the sitemap candidates: it does not operate listing controls, follow page links
+or guess sibling targets. An empty map yields no samples. `sitemap_and_crawl`
+and `auto` retain their documented link-discovery fallbacks.
+
 `url_include` / `url_exclude` are Python `re` patterns searched in the
 canonical URL; include first (when non-empty), then exclude.
 `url_exclude` keeps a URL out of the queue in every mode. **`url_include`
