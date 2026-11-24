@@ -6,6 +6,12 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 
 ## 0.2.2-dev.15 (unreleased)
 
+- Failed-run recollection recovers durable queued, backlog and stored work,
+  including an unadmitted recovery seed suffix after a linked run also fails.
+  Request keys, navigation scope, URL-list limits and completed prefixes are
+  preserved without changing the finished parent.
+- URL regex budgets charge thread CPU time rather than scheduling pauses, and
+  browser response history is scoped to the current document during long runs.
 - Explicit target URL filters take precedence over broad mapping patterns and
   learned URL shapes when ranking links or allowing targets outside crawl scope.
   Category navigation inside the configured scope and explicitly selected products

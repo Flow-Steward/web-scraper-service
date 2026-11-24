@@ -227,3 +227,67 @@ async def test_same_recovery_intent_replays_legacy_fingerprint_and_rotated_profi
     svc.db.execute("UPDATE runs SET fingerprint='legacy-fingerprint' WHERE run_id=?", (first["run_id"],))
     status, again = await svc.jobs.recollect(pid, dict(body, profile=profile("rotated")), "legacy-child")
     assert status == 200 and again["run_id"] == first["run_id"]
+
+
+@pytest.mark.parametrize("fed,queued_prefix", [(0, False), (100, False), (100, True)])
+async def test_failed_recovery_preserves_unadmitted_seed_suffix(parent, monkeypatch, fed, queued_prefix):
+    svc, pid = parent
+    for i in range(10, 256):
+        url, key = SITE + f"/selected/item-{i}", str(i)
+        svc.db.execute("INSERT INTO urls(run_id,unique_key,url,source,source_key,status) VALUES (?,?,?,?,?,?)",
+                       (pid, page_key(url, key), url, "sitemap", key, "queued"))
+    _, child = await svc.jobs.recollect(pid, {"profile": profile(), "platform": platform("interrupted-child")}, "interrupted-child")
+    row = svc.jobs._row(child["run_id"])
+    doc, rt = json.loads(row["doc"]), json.loads(row["runtime"])
+    seed = rt["recollect_pending"]
+    assert len(seed) == 250
+    for i, entry in enumerate(seed[:fed]):
+        svc.db.execute("INSERT INTO urls(run_id,unique_key,url,source,source_key,status) VALUES (?,?,?,?,?,?)",
+                       (child["run_id"], page_key(entry["url"], entry.get("source_key")), entry["url"], entry["source"],
+                        entry.get("source_key"), "queued" if queued_prefix and i == fed - 1 else "done"))
+    rt["recollect_pending_fed"] = fed
+    doc["state"] = "failed"
+    svc.db.execute("UPDATE runs SET state='failed',doc=?,runtime=? WHERE run_id=?", (dumps(doc), dumps(rt), child["run_id"]))
+    original = dict(svc.jobs._row(child["run_id"]))
+    _, grandchild = await svc.jobs.recollect(child["run_id"], {"profile": profile(), "platform": platform("grandchild")}, "grandchild")
+    expected = seed[fed:] + ([seed[fed - 1]] if queued_prefix else [])
+    assert grandchild["recollect_of"]["url_count"] == len(expected)
+    assert grandchild["config"]["discovery_mode"] == "crawl"
+    runner = JobRunner(svc, grandchild["run_id"])
+
+    class Queue:
+        async def add_requests(self, requests, **kwargs):
+            pass
+
+    async def public(url):
+        return False
+
+    runner.rq = Queue()
+    monkeypatch.setattr("app.jobs.runner.url_is_private", public)
+    await runner._feed()
+    queued = svc.db.all("SELECT url,source,source_key FROM urls WHERE run_id=?", (grandchild["run_id"],))
+    assert {(r["url"], r["source"], r["source_key"]) for r in queued} == {
+        (e["url"], e["source"], e.get("source_key")) for e in expected}
+    assert dict(svc.jobs._row(child["run_id"])) == original
+
+
+async def test_unadmitted_recovery_seed_keeps_url_budget(parent):
+    svc, pid = parent
+    _, child = await svc.jobs.recollect(pid, {"profile": profile(), "platform": platform("unfed-child")}, "unfed-child")
+    svc.db.execute("UPDATE runs SET state='failed' WHERE run_id=?", (child["run_id"],))
+    svc.settings.limits["max_url_list_entries"] = 3
+    with pytest.raises(ApiError) as caught:
+        await svc.jobs.recollect(child["run_id"], {"profile": profile(), "platform": platform("limited-grandchild")}, "limited-grandchild")
+    assert caught.value.code == "validation_failed"
+    assert caught.value.fields[0]["code"] == "limit_exceeded"
+    assert svc.db.scalar("SELECT COUNT(*) FROM runs") == 2
+
+
+async def test_explicit_reasons_can_exclude_unadmitted_recovery_seed(parent):
+    svc, pid = parent
+    _, child = await svc.jobs.recollect(pid, {"profile": profile(), "platform": platform("unfed-child")}, "unfed-child")
+    svc.db.execute("UPDATE runs SET state='failed' WHERE run_id=?", (child["run_id"],))
+    with pytest.raises(ApiError) as caught:
+        await svc.jobs.recollect(child["run_id"], {"profile": profile(), "platform": platform("filtered-grandchild"),
+                                                "reasons": ["fetch_failed"]}, "filtered-grandchild")
+    assert caught.value.code == "nothing_to_recollect"

@@ -585,6 +585,9 @@ children. It does not rewrite the finished parent's result. Completed source
 entries are skipped and previously completed ancestor document URLs are not fetched
 again if a retried source repeats them. Cursors are committed only after their
 queue batch commits, so a crash can safely replay a batch through queue deduplication.
+If a linked recovery itself fails before admitting its full seed, the next linked
+run also recovers the unadmitted suffix using the saved admission cursor. Completed
+prefix requests stay skipped; all recovered work shares the normal URL-list limit.
 Each incomplete source cursor retains a private body fingerprint. If its body changes
 or an older cursor has no fingerprint, that source replays from the start through
 queue/ancestor deduplication; replay spends the current run's remaining location

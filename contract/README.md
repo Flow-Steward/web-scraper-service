@@ -777,17 +777,28 @@ products") or found but not collected ("the scraper missed them").
   (default `fetch_failed`, `blocked`, `incomplete`, `no_template`,
   `template_failed`, `stopped`; `not_found` and the refusals only when asked),
   each once, as requested (`requested_url` when it differs), with its
-  `source_key` kept as the entry's `key`; none and no unfinished sitemap source → `409 nothing_to_recollect`;
-- config: the parent's `config` with `discovery_mode: url_list`, those `urls`,
-  `rebuild_mapping: false`, `sitemap_url: null`; everything else (limits,
+  `source_key` kept as the entry's `key`;
+- unfinished work: for a failed parent with `stopped` among `reasons`, also
+  recover queued requests, pending link/refetch backlog and stored pages, plus
+  any recovery seed suffix not yet admitted by that parent. Request source/key
+  identity is retained and repeated entries are deduplicated. Already admitted
+  seed prefixes are represented by their durable work rows, so completed prefix
+  requests are not replayed. No document work and no unfinished sitemap source
+  → `409 nothing_to_recollect`;
+- config: normally the parent's `config` with `discovery_mode: url_list`, those
+  `urls`, `rebuild_mapping: false`, `sitemap_url: null`. Failed crawl recovery
+  retains category navigation in `crawl` mode (or `sitemap_and_crawl` when sources
+  also need retrying), feeding recovered work before following new links.
+  Everything else (limits,
   fetch mode, browser, protection flags) as the parent's. It is validated
   again like `POST /v1/runs` (e.g. more URLs than `max_url_list_entries` →
   `422`);
 - unfinished sources: when `sitemap_discovery.complete` is false, the linked
   run retries failed/pending source files with retained per-source page and child
-  offsets. It uses sitemap mode, also queues the selected failed document URLs,
+  offsets. It uses sitemap mode unless combined crawl recovery applies, also queues the selected failed document URLs,
   and gets a fresh 100,000-location / 500-source-file budget. Completed source
-  entries and completed ancestor documents are skipped; a restart retains the
+  entries and completed ancestor request identities encountered through links or
+  sitemaps are skipped; explicit failed/refetch retries remain eligible. A restart retains the
   same run's spent budget. A source-only retry is valid with `url_count: 0`;
 - mappings: the site's active mappings when the new run starts (a repair
   made during the parent counts);

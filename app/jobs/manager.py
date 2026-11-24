@@ -348,6 +348,7 @@ class JobManager:
         seen: set[tuple[str, str | None]] = set()
         by_reason: dict[str, int] = {}
         recovery_entries: list[dict] = []
+        parent_runtime = loads(row["runtime"]) or {}
 
         def add_url(url, key, reason, source="list"):
             identity = (url, key or None)
@@ -406,9 +407,15 @@ class JobManager:
                     page = loads(pending["doc"])
                     add_url(page.get("requested_url") or page["url"], page.get("source_key"), "stopped")
                 after_page = batch[-1]["page_key"]
+            # A recovery can fail before its seed reaches the URL queue. The
+            # feeder commits its cursor with admission; only its unadmitted
+            # suffix still needs recovery, in addition to queued prefix work.
+            pending = parent_runtime.get("recollect_pending") or []
+            fed = max(0, int(parent_runtime.get("recollect_pending_fed", 0)))
+            for entry in pending[fed:]:
+                add_url(entry["url"], entry.get("source_key"), "stopped", entry.get("source", "list"))
         from app.jobs.discovery import sitemap_coverage, sitemap_retry_state
 
-        parent_runtime = loads(row["runtime"]) or {}
         traversal = parent_runtime.get("sitemap_traversal") or {}
         retry_sources = bool(traversal) and not sitemap_coverage(parent_runtime)["complete"]
         if not urls and not retry_sources and existing is None:
