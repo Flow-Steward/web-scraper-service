@@ -308,8 +308,10 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
   with keys; robots.txt honoured by our own check (counts `urls_skipped.robots`).
   Configured URL patterns retain Python regular-expression syntax, including lookaround
   and backreferences. Matching is limited to 20 ms per pattern, 50 ms per URL-policy
-  evaluation and 2 seconds of matching work per synchronous bulk operation. Parsing
-  and network time do not consume the regex budget. A limit raises `pattern_timeout`
+  evaluation and 2 seconds of matching work per synchronous bulk operation. Wrapper
+  allowances use the matching thread's CPU time; process scheduling pauses, parsing
+  and network time do not consume them. The engine's search timeout remains enabled.
+  A limit raises `pattern_timeout`
   with the configuration field and pattern identifier; a running job fails explicitly
   instead of silently omitting URLs. These limits do not cover extraction transforms.
 * **Job record and SQLite:** the follower applies page outcomes in one synchronous

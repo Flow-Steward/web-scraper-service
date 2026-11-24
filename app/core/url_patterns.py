@@ -21,7 +21,10 @@ from app.core.errors import ApiError, field_error
 SEARCH_SECONDS = 0.020
 URL_SECONDS = 0.050
 BATCH_SECONDS = 2.0
-_clock = time.monotonic
+# A successful search must not fail because this process was descheduled while
+# another browser/process used the CPU. The engine retains its own timeout;
+# wrapper allowances charge only this thread's matching work.
+_clock = time.thread_time
 _url_budget: ContextVar[float | None] = ContextVar("url_regex_budget", default=None)
 _batch_budget: ContextVar[float | None] = ContextVar("url_regex_batch_budget", default=None)
 

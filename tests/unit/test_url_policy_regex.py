@@ -90,6 +90,29 @@ def timed_pattern(policy, pattern, clock, seconds):
     return replace(pattern, _compiled=TimedSearch())
 
 
+@pytest.mark.parametrize("pause_before_search", [True, False])
+def test_scheduling_pause_does_not_consume_matching_budget(pause_before_search):
+    from app.core import url_patterns as policy
+
+    pattern = policy.compile_patterns([r"/product/\d+$"], "url_include")[0]
+    original = pattern._compiled
+
+    class PausedSearch:
+        def search(self, *args, **kwargs):
+            # A process can be descheduled on either side of the C engine call.
+            # Keep a real engine search and its normal timeout in this regression.
+            if pause_before_search:
+                time.sleep(0.06)
+            result = original.search(*args, **kwargs)
+            if not pause_before_search:
+                time.sleep(0.06)
+            return result
+
+    paused = replace(pattern, _compiled=PausedSearch())
+    with policy.url_pattern_batch():
+        assert policy.matches_any([paused], "https://catalogue.example.test/product/123")
+
+
 def test_shared_url_budget_is_not_reset_between_policy_checks(monkeypatch):
     from app.core import url_patterns as policy
 
