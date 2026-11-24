@@ -1650,6 +1650,9 @@ class JobRunner:
                 # still loading ("Loading https://…") is not a challenge; Crawlee retries the request
                 raise PageNotLoaded("the page did not finish loading within 20 s")
             raise_document_policy_error(ctx)
+            policy = getattr(ctx.page, "_wss_native_document_policy", None)
+            if policy is not None:
+                status = policy.document_status(status)
             verdict = await detect_page(ctx.page, status)
         else:
             body = await ctx.http_response.read()
@@ -1898,6 +1901,9 @@ class JobRunner:
         if not await settle(ctx.page, 20.0):
             raise PageNotLoaded("the page did not finish loading within 20 s")
         raise_document_policy_error(ctx)
+        policy = getattr(ctx.page, "_wss_native_document_policy", None)
+        if policy is not None:
+            status = policy.document_status(status)
         verdict = await detect_page(ctx.page, status)
         if verdict.is_block:
             self.prot()["hard_blocks"] += 1
@@ -1916,10 +1922,16 @@ class JobRunner:
             session = ctx.session
             if session is not None:
                 session.user_data["cleared_usage"] = session.usage_count
-        # the raw bytes through the page's context: its cookies (clearance) and its proxy
+        # Prefer the actual native response, including a clearance reload. The
+        # context HTTP client has a different transport and may still be gated.
         if self.state == "waiting_for_credentials":
             self._defer(request, "upstream proxy authentication requires Resume")
         try:
+            policy = getattr(ctx.page, "_wss_native_document_policy", None)
+            native = await policy.read_document(url) if policy is not None else None
+            if native is not None:
+                self._aux_done(request, native)
+                return
             from app.fetching.destinations import document_destination_allowed
             from app.fetching.oneoff import context_get
 

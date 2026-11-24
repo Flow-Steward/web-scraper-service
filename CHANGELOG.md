@@ -4,7 +4,16 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
-## 0.2.2-dev.12 (unreleased)
+## 0.2.2-dev.13 (unreleased)
+
+- Browser setup and runtime discovery retain native main-document GET bytes after
+  protection clearance instead of rereading them through a separately gated HTTP
+  client. Response ownership follows binding, request and document commit; reads
+  have a finite timeout and discard bytes if the document changes while reading.
+- Protection detection uses the current committed document's HTTP status after an
+  automatic clearance reload, avoiding a stale initial 403 on a successful page.
+
+## 0.2.2-dev.12
 
 - Product/Offer jobs inspect clearly product/item-named sitemap documents before
   unrelated sources, in analysis, samples and full discovery. This changes order
