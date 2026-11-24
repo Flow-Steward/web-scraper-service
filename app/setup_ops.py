@@ -41,6 +41,7 @@ from app.jobs.discovery import (  # noqa: E402
     find_sitemaps,
     http_fetcher,
     iter_sitemaps,
+    prefer_product_sitemaps,
     robots_from,
     sitemap_report,
     target_patterns,
@@ -80,6 +81,7 @@ async def _sitemap_metadata(site_url, config, robots, fetch):
             async with aclosing(iter_sitemaps(
                 sitemaps, bounded_fetch, max_files=SITEMAP_METADATA_FILE_CAP,
                 max_entries=SITEMAP_METADATA_URL_CAP, state=traversal,
+                prefer_products=prefer_product_sitemaps(config),
             )) as entries:
                 async for loc, lastmod in entries:
                     urls.append(loc)
@@ -1250,7 +1252,8 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         robots = await _robots(site_url, fetch)
         sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, fetch)
         if sitemaps:
-            urls, capped, _ = await collect_sitemap_urls(sitemaps, cap=5000, fetch=fetch)
+            urls, capped, _ = await collect_sitemap_urls(sitemaps, cap=5000, fetch=fetch,
+                                                        prefer_products=prefer_product_sitemaps(config))
             ex.discovery.update(sitemap_urls=len(urls), sitemap_capped=capped)
             with url_pattern_batch():
                 matching = filter_urls(urls, include, exclude)

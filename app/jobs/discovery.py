@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from app.core.errors import ApiError
 from app.core.netguard import host_is_private, url_is_private
@@ -211,12 +212,33 @@ def sitemap_retry_state(state: dict) -> dict:
     for entry in sources.values():
         entry.update(status="pending")
         entry.pop("reason", None)
-    return {"sources": sources, "entries_seen": 0, "capped": False, "cap_reason": None,
-            "root_offset": int(state.get("root_offset", 0)), "pending_root": state.get("pending_root")}
+    retry = {"sources": sources, "entries_seen": 0, "capped": False, "cap_reason": None,
+             "root_offset": int(state.get("root_offset", 0)), "pending_root": state.get("pending_root")}
+    for key in ("root_order", "root_list_sha256"):
+        if key in state:
+            retry[key] = state[key]
+    return retry
+
+
+def prefer_product_sitemaps(config: dict) -> bool:
+    return any(str(t).rsplit("/", 1)[-1] in ("Product", "Offer", "AggregateOffer")
+               for t in config.get("structured_data_types") or [])
+
+
+def _product_source_rank(url: str) -> int:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return 1  # the normal destination guard records malformed sources
+    tokens = set(re.split(r"[^a-z0-9]+", unquote(parsed.path + "?" + parsed.query).lower()))
+    return 0 if tokens & {"product", "products", "item", "items"} and not tokens & {
+        "category", "categories", "cat", "tag", "tags", "oem",
+    } else 1
 
 
 async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int = MAX_SITEMAP_FILES,
-                        state: dict | None = None, max_entries: int | None = None):
+                        state: dict | None = None, max_entries: int | None = None,
+                        prefer_products: bool = False):
     """Breadth-first source traversal with optional per-source, caller-owned cursors.
 
     ``state`` MUST be a private copy: a cursor is advanced before yielding its URL,
@@ -237,8 +259,17 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
     # roots must be partial and retry from the next root, never silently complete.
     if state["capped"] and state["cap_reason"] == "entry_limit":
         return
-    for offset in range(int(state.get("root_offset", 0)), len(sitemaps)):
-        url = sitemaps[offset]
+    order = "products-first-v1" if prefer_products else "original"
+    roots = sorted(sitemaps, key=_product_source_rank) if prefer_products else list(sitemaps)
+    root_hash = hashlib.sha256(json.dumps(roots, separators=(",", ":")).encode()).hexdigest()
+    if state.get("root_order") != order or state.get("root_list_sha256") != root_hash:
+        # Root ordinals also belong to one exact list and ordering policy. An
+        # upgrade or changed robots roots conservatively replays admission.
+        state["root_offset"] = 0
+        state.pop("pending_root", None)
+    state.update(root_order=order, root_list_sha256=root_hash)
+    for offset in range(int(state.get("root_offset", 0)), len(roots)):
+        url = roots[offset]
         if url not in sources:
             if len(sources) >= max_files:
                 state.update(capped=True, cap_reason="source_file_limit", pending_root=url)
@@ -249,6 +280,8 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
     queue = deque(u for u, e in sources.items() if e["status"] in ("pending", "failed"))
     attempted = set()
     while queue:
+        if prefer_products:
+            queue = deque(sorted(queue, key=_product_source_rank))
         url = queue.popleft()
         if url in attempted:
             continue
@@ -291,6 +324,16 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
             # Replay through caller dedup, spending the same run's entry budget.
             entry.update(page_offset=0, nested_offset=0)
         entry["body_sha256"] = fingerprint
+        if nested:
+            # Bump the policy id if ranking changes. Legacy or changed ordering
+            # replays index admission through caller dedup instead of interpreting
+            # an old ordinal as a position in a differently ordered index.
+            order = "products-first-v1" if prefer_products else "original"
+            if entry.get("nested_order", "original") != order:
+                entry["nested_offset"] = 0
+            entry["nested_order"] = order
+        if prefer_products:
+            nested = sorted(nested, key=_product_source_rank)
         for offset in range(int(entry["page_offset"]), len(pages)):
             if max_entries is not None and state["entries_seen"] >= max_entries:
                 entry["reason"] = "entry_limit"
@@ -314,12 +357,13 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
 
 
 async def collect_sitemap_urls(sitemaps: list[str], cap: int = SITEMAP_CAP, fetch: Fetcher | None = None,
-                               *, state: dict | None = None) -> tuple[list[str], bool, Any]:
+                               *, state: dict | None = None, prefer_products: bool = False) -> tuple[list[str], bool, Any]:
     """Inspect source URLs up to the total enumeration cap, optionally retaining coverage."""
     urls: list[str] = []
     latest = None
     state = {} if state is None else state
-    async for loc, lastmod in iter_sitemaps(sitemaps, fetch or http_fetcher(), state=state, max_entries=cap):
+    async for loc, lastmod in iter_sitemaps(sitemaps, fetch or http_fetcher(), state=state, max_entries=cap,
+                                          prefer_products=prefer_products):
         urls.append(loc)
         if lastmod is not None and (latest is None or lastmod > latest):
             latest = lastmod
@@ -403,7 +447,8 @@ async def start_page_links(site_url: str, fetch: Fetcher | None = None) -> tuple
 async def decide_discovery(runner, sitemaps: list[str], fetch: Fetcher | None = None) -> tuple[str, list[str]]:
     cfg = runner.config
     probe_state: dict = {}
-    urls, _capped, _ = await collect_sitemap_urls(sitemaps, cap=SITEMAP_CAP, fetch=fetch, state=probe_state) if sitemaps else ([], False, None)
+    urls, _capped, _ = await collect_sitemap_urls(sitemaps, cap=SITEMAP_CAP, fetch=fetch, state=probe_state,
+                                               prefer_products=prefer_product_sitemaps(cfg)) if sitemaps else ([], False, None)
     if probe_state:
         report = sitemap_report(probe_state)
         runner.rt["sitemap_probe"] = report

@@ -514,6 +514,12 @@ the sitemap candidates: it does not operate listing controls, follow page links
 or guess sibling targets. An empty map yields no samples. `sitemap_and_crawl`
 and `auto` retain their documented link-discovery fallbacks.
 
+For configured Product/Offer targets, analysis, samples and full discovery inspect
+clearly product/item-named sitemap files first. This filename heuristic affects
+order only; it does not exclude unknown files or establish complete coverage.
+Changing a saved index's ordering policy conservatively replays its admission
+through normal queue deduplication rather than reinterpreting an older ordinal.
+
 `url_include` / `url_exclude` are Python `re` patterns searched in the
 canonical URL; include first (when non-empty), then exclude.
 `url_exclude` keeps a URL out of the queue in every mode. **`url_include`

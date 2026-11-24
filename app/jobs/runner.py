@@ -1188,7 +1188,7 @@ class JobRunner:
         awaits must never contain a cursor for URLs the queue has not accepted.
         Legacy sitemap_fed offsets are deliberately replayed through normal dedup.
         """
-        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps, sitemap_report, _origin
+        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps, sitemap_report, prefer_product_sitemaps, _origin
 
         urls = list(self.rt.get("sitemap_retry_roots") or self.rt.get("sitemaps") or [])
         if not urls:
@@ -1229,7 +1229,8 @@ class JobRunner:
                 await self.enqueue(entries, feed=("sitemap_fed", len(entries)))
 
         batch: list[dict] = []
-        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state, max_entries=SITEMAP_CAP):
+        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state, max_entries=SITEMAP_CAP,
+                                               prefer_products=prefer_product_sitemaps(self.config)):
             if self._cut_or_stopping():
                 return
             batch.append({"url": loc, "source": "sitemap"})

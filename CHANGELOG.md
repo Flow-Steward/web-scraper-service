@@ -4,7 +4,14 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
-## 0.2.2-dev.11 (unreleased)
+## 0.2.2-dev.12 (unreleased)
+
+- Product/Offer jobs inspect clearly product/item-named sitemap documents before
+  unrelated sources, in analysis, samples and full discovery. This changes order
+  only: other documents and completeness limits remain in force. Versioned index
+  ordering safely replays admission when older saved cursors used another order.
+
+## 0.2.2-dev.11
 
 - Sitemap-only sampling now stays within the published map, skips listing
   controls, and does not fall back to crawling or sibling-target guessing when

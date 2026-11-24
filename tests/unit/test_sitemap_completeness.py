@@ -98,6 +98,113 @@ async def test_complete_root_and_nested_child_controls():
     assert discovery.sitemap_report(state)['complete'] is True
 
 
+async def test_changed_source_order_replays_an_incomplete_index_without_skipping_children():
+    import hashlib
+
+    product_map = 'https://supplier.example/sitemap-products-0.xml'
+    item_a, item_b = 'https://supplier.example/a', 'https://supplier.example/p/1'
+    root_body = index(A, product_map)
+    # Persisted by an older version: the first source in original order was
+    # admitted, then the source-file cap left the index unfinished.
+    state = {'sources': {
+        ROOT: {'status': 'pending', 'page_offset': 0, 'nested_offset': 1,
+               'body_sha256': hashlib.sha256(root_body).hexdigest()},
+        A: {'status': 'complete', 'page_offset': 1, 'nested_offset': 0},
+    }, 'root_offset': 1}
+    urls, state = await collect({ROOT: root_body, A: urlset(item_a), product_map: urlset(item_b)},
+                                state, prefer_products=True)
+    assert urls == [item_b]
+    assert discovery.sitemap_report(state)['complete'] is True
+
+
+async def test_product_preference_changes_order_without_dropping_other_sources():
+    product_map = 'https://supplier.example/sitemap-products-0.xml'
+    item_a, item_b = 'https://supplier.example/a', 'https://supplier.example/p/1'
+    bodies = {ROOT: index(A, product_map), A: urlset(item_a), product_map: urlset(item_b)}
+    assert (await collect(bodies))[0] == [item_a, item_b]
+    urls, state = await collect(bodies, prefer_products=True)
+    assert urls == [item_b, item_a]
+    assert discovery.sitemap_report(state)['complete'] is True
+
+
+async def test_product_file_admission_keeps_other_children_retryable():
+    product_map = 'https://supplier.example/sitemap-products-0.xml'
+    item_a, item_b = 'https://supplier.example/a', 'https://supplier.example/p/1'
+    bodies = {ROOT: index(A, product_map), A: urlset(item_a), product_map: urlset(item_b)}
+    urls, state = await collect(bodies, prefer_products=True, max_files=2)
+    assert urls == [item_b]
+    assert discovery.sitemap_report(state)['complete'] is False
+    retry = discovery.sitemap_retry_state(state)
+    urls, retry = await collect(bodies, retry, prefer_products=True, max_files=2)
+    assert urls == [item_a]
+    assert discovery.sitemap_report(retry)['complete'] is True
+
+
+async def test_changed_preference_in_both_directions_cannot_skip_an_unseen_source():
+    product_map = 'https://supplier.example/sitemap-products-0.xml'
+    item_a, item_b = 'https://supplier.example/a', 'https://supplier.example/p/1'
+    bodies = {ROOT: index(A, product_map), A: urlset(item_a), product_map: urlset(item_b)}
+    urls, state = await collect(bodies, prefer_products=True, max_files=2)
+    assert urls == [item_b]
+    retry = discovery.sitemap_retry_state(state)
+    urls, retry = await collect(bodies, retry, prefer_products=False, max_files=3)
+    assert item_a in urls
+    assert discovery.sitemap_report(retry)['complete'] is True
+
+
+async def test_malformed_root_cannot_stop_a_valid_product_source_during_ranking():
+    product_map = 'https://supplier.example/sitemap-products-0.xml'
+    item = 'https://supplier.example/p/1'
+    urls = [u async for u, _ in discovery.iter_sitemaps(
+        ['https://[invalid/sitemap.xml', product_map], fetcher({product_map: urlset(item)}),
+        prefer_products=True)]
+    assert urls == [item]
+
+
+async def test_product_roots_are_prioritized_before_file_admission_and_retry_does_not_replay():
+    product_map = 'https://supplier.example/sitemap-products-0.xml'
+    item_a, item_b = 'https://supplier.example/a', 'https://supplier.example/p/1'
+    bodies = {A: urlset(item_a), product_map: urlset(item_b)}
+    state = {}
+    urls = [u async for u, _ in discovery.iter_sitemaps(
+        [A, product_map], fetcher(bodies), state=state, prefer_products=True, max_files=1)]
+    assert urls == [item_b]
+    assert discovery.sitemap_report(state)['complete'] is False
+    retry = discovery.sitemap_retry_state(state)
+    urls = [u async for u, _ in discovery.iter_sitemaps(
+        [A, product_map], fetcher(bodies), state=retry, prefer_products=True, max_files=1)]
+    assert urls == [item_a]
+    assert discovery.sitemap_report(retry)['complete'] is True
+
+
+async def test_legacy_root_ordinal_cannot_skip_newly_prioritized_product_map():
+    product_map = 'https://supplier.example/sitemap-products-0.xml'
+    item_a, item_b = 'https://supplier.example/a', 'https://supplier.example/p/1'
+    state = {'sources': {A: {'status': 'complete', 'page_offset': 1, 'nested_offset': 0}},
+             'root_offset': 1, 'pending_root': product_map}
+    urls = [u async for u, _ in discovery.iter_sitemaps(
+        [A, product_map], fetcher({A: urlset(item_a), product_map: urlset(item_b)}),
+        state=state, prefer_products=True)]
+    assert urls == [item_b]
+    assert discovery.sitemap_report(state)['complete'] is True
+
+
+async def test_changed_root_list_replays_admission_instead_of_skipping_new_front_root():
+    c = 'https://supplier.example/c.xml'
+    item_a, item_b, item_c = ('https://supplier.example/a', 'https://supplier.example/b',
+                              'https://supplier.example/c')
+    bodies = {A: urlset(item_a), B: urlset(item_b), c: urlset(item_c)}
+    state = {}
+    urls = [u async for u, _ in discovery.iter_sitemaps(
+        [A, B], fetcher(bodies), state=state, max_files=1)]
+    assert urls == [item_a]
+    retry = discovery.sitemap_retry_state(state)
+    urls = [u async for u, _ in discovery.iter_sitemaps(
+        [c, A, B], fetcher(bodies), state=retry, max_files=3)]
+    assert item_c in urls and item_b in urls
+    assert discovery.sitemap_report(retry)['complete'] is True
+
+
 def fake_runner(bodies, rt=None):
     from app.jobs.runner import JobRunner
     runner = SimpleNamespace(

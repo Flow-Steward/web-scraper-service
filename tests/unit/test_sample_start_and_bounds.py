@@ -116,6 +116,24 @@ async def test_empty_sitemap_does_not_fall_back_to_start_page_links(tmp_path, mo
     assert origin + "/p/1" not in requests
 
 
+async def test_product_sampling_reaches_product_maps_before_unrelated_map_exhausts_budget(tmp_path, monkeypatch):
+    origin = "https://supplier.test"
+    index = '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(
+        '<sitemap><loc>' + origin + path + '</loc></sitemap>'
+        for path in ('/sitemap-oem-0.xml', '/sitemap-products-0.xml')) + '</sitemapindex>'
+    metadata = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(
+        f'<url><loc>{origin}/oem/{i}</loc></url>' for i in range(5000)) + '</urlset>'
+    answer, requests = await sample_graph(tmp_path, monkeypatch,
+        {"/sitemap.xml": index, "/sitemap-oem-0.xml": metadata,
+         "/sitemap-products-0.xml": '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>' + origin + '/p/1</loc></url></urlset>',
+         "/p/1": '<main class="sheet"><h1>Product</h1></main>'},
+        {"site_url": origin + "/", "sitemap_url": origin + "/sitemap.xml",
+         "discovery_mode": "sitemap", "structured_data_types": ["Product"],
+         "url_include": [r"/p/"], "target_page_selector": ".sheet"})
+    assert [sample["url"] for sample in answer["samples"]] == [origin + "/p/1"]
+    assert requests.index(origin + "/sitemap-products-0.xml") < requests.index(origin + "/sitemap-oem-0.xml")
+
+
 async def test_matching_start_page_is_sampled_before_nonmatching_listing_links(tmp_path, monkeypatch):
     origin = "https://supplier.test"
     original = '<h1>Original item</h1><a href="/p/2">Related</a><a href="/p/3">Related</a>'
