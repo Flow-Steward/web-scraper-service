@@ -418,7 +418,9 @@ judged before extraction: `empty` (no text), `truncated` (the HTML stops early w
 of the same URL shape end properly), `error_page` (error or maintenance wording in the
 title or first heading, in about 12 languages, on a small page), `too_small` (under 10 % of
 the usual size of its URL shape) and, after extraction, `lost_template` (a URL shape that
-was always a target page lost its template's marks). Such an answer is retried like a
+was always a target page lost its template's marks). Explicit URL filters keep
+navigation-only pages in a separate response history from selected pages, even when
+their collapsed URL shapes coincide. Such an answer is retried like a
 server error (same route, growing back-off, `max_retries`), counts in the host's breaker
 and slow-down, and is counted in `counters.soft_errors` / `soft_errors_by_reason` (first one
 in the timeline as `soft_error`). After the retries the page is `fetch_failed` with

@@ -182,7 +182,8 @@ class JobRunner:
         self.job_dir = Path(self.settings.data_dir) / "jobs" / run_id
         rate_floor = 60 / float(self.config.get("max_requests_per_minute") or 60000)
         self.throttle = HostThrottle(max(rate_floor, self.config["delay_min_seconds"]), max(rate_floor, self.config["delay_max_seconds"]))
-        self._shape_stats: dict[str, softerror.ShapeStats] = {}  # what normal pages of a URL shape look like
+        # Explicit navigation-only URLs can share a collapsed shape with products.
+        self._shape_stats: dict[tuple[str, bool], softerror.ShapeStats] = {}
         self.tiers = TierPlan([], self.rt.get("host_level"))
         self.solver = None
         self.browser = self.doc["resolved"].get("browser")
@@ -2369,7 +2370,9 @@ class JobRunner:
         from app.extraction.sampling import url_shape
 
         shape = url_shape(canonical)
-        stats = self._shape_stats.get(shape)
+        outside_include = self._outside_include(canonical, ud)
+        history_key = (shape, outside_include)
+        stats = self._shape_stats.get(history_key)
         soft = softerror.judge(html, stats)
         if soft is not None and soft[0] in ("empty", "too_small") and (html or "").strip() and not browser_run \
                 and self.config["fetch_mode"] == "auto" and self.browser:
@@ -2379,7 +2382,7 @@ class JobRunner:
         page = Page(html, final_url, status)
         from_list = ud.get("src") == "list"
         mappings = self.mappings_for(site)
-        outside = self._outside_include(canonical, ud)
+        outside = outside_include
         # a page without target_page_selector is not a target page even when a template
         # matches it by URL (pages the operator listed in `urls` are exempt)
         if not outside and not from_list and not passes_target_selector(page, self.config):
@@ -2509,7 +2512,7 @@ class JobRunner:
         self._observe(host, True, elapsed)
         self._host_ok(host)
         target = True if out["page_class"] in ("extracted", "incomplete") else (False if out["page_class"] == "not_target" else None)
-        self._shape_stats.setdefault(shape, softerror.ShapeStats()).add(len(html), softerror.is_closed(html), target)
+        self._shape_stats.setdefault(history_key, softerror.ShapeStats()).add(len(html), softerror.is_closed(html), target)
         if out["page_class"] in ("extracted", "incomplete", "no_template"):
             self._target_shapes.add(url_shape(canonical))
         # static -> browser fall-through for pages that may need JavaScript
