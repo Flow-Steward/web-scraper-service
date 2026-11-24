@@ -136,7 +136,8 @@ async def launch_camoufox(playwright, *, headless: Any, variant: Variant | None 
 
     variant = variant or Variant()
     options: dict[str, Any] = dict(headless=headless, humanize=2.0, disable_coop=True, i_know_what_im_doing=True,
-                                   canvas_noise=variant.noise_arg(), os=variant.os_name(), window=WINDOW, enable_cache=True)
+                                   canvas_noise=variant.noise_arg(), os=variant.os_name(), window=WINDOW, enable_cache=True,
+                                   main_world_eval=True)
     options.update(overrides)
     from app.fetching.firefox_policy import FirefoxPolicyBridge
 

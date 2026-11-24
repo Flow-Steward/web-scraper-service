@@ -4,7 +4,14 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
-## 0.2.2-dev.13 (unreleased)
+## 0.2.2-dev.14 (unreleased)
+
+- Solver token delivery chooses a page callback before form fallback, preventing
+  a competing form navigation from cancelling asynchronous verification. Camoufox
+  explicitly invokes that callback in the page's main world; ordinary evaluations
+  remain isolated. Route permissions and solve budgets still gate the action.
+
+## 0.2.2-dev.13
 
 - Browser setup and runtime discovery retain native main-document GET bytes after
   protection clearance instead of rereading them through a separately gated HTTP

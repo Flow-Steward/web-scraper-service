@@ -319,11 +319,14 @@ INJECT_TOKEN_JS = """
 (token) => {
   const fields = document.querySelectorAll('[name="cf-turnstile-response"], [name="g-recaptcha-response"], input[name*="turnstile"]');
   fields.forEach((f) => { f.value = token; });
-  if (typeof window.turnstileCallback === 'function') { try { window.turnstileCallback(token); } catch (e) {} }
+  const hasCallback = typeof window.turnstileCallback === 'function';
+  if (hasCallback) { try { window.turnstileCallback(token); } catch (e) {} }
   if (window.cf_challenge_response !== undefined) { window.cf_challenge_response = token; }
-  document.querySelectorAll('form').forEach((form) => {
-    if (form.querySelector('[name*="turnstile"]')) { try { form.submit(); } catch (e) {} }
-  });
+  if (!hasCallback) {
+    document.querySelectorAll('form').forEach((form) => {
+      if (form.querySelector('[name*="turnstile"]')) { try { form.submit(); } catch (e) {} }
+    });
+  }
   return fields.length;
 }
 """
@@ -357,7 +360,11 @@ async def inject_token(page, token: str) -> None:
     from playwright.async_api import Error as PlaywrightError
 
     try:
-        await page.evaluate(INJECT_TOKEN_JS, token)
+        browser = getattr(getattr(page, "context", None), "browser", None)
+        # Camoufox's ordinary evaluations remain isolated. Only this explicit
+        # solver action needs the page-owned callback in the main world.
+        script = ("mw:" if getattr(browser, "_wss_firefox_policy_bridge", None) is not None else "") + INJECT_TOKEN_JS
+        await page.evaluate(script, token)
     except PlaywrightError as exc:  # the callback or the form submit may navigate away mid-evaluate
         log.debug("token injection ended with %s", type(exc).__name__)
 
