@@ -548,6 +548,12 @@ not followed. Links left out by the scope are counted in
 `counters.urls_skipped.scope`. Samples respect the same scope when target pages
 can be told by URL. Sitemap URLs are pages to extract and are not affected.
 
+When `url_include` is nonempty, only its matching URLs qualify as target hints
+for leaving `crawl_include`/`stay_in_section` navigation scope. A broader mapping
+pattern or learned URL shape cannot widen that explicit product selection.
+Navigation within the walk scope is still allowed, as are explicitly selected
+product URLs outside it.
+
 ### 4.5 Page classes and the unextracted list
 
 Every fetched page gets one `page_class`

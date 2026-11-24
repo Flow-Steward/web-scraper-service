@@ -390,11 +390,12 @@ def filter_urls(urls: list[str], include: list[str], exclude: list[str]) -> list
 
 
 def target_patterns(mappings: list[dict], include: list[str]) -> list[UrlPattern]:
+    if include:
+        return compile_patterns(include, "url_include")
     pats = []
     for m in mappings:
         field = f"mappings.{m.get('template_id', 'unknown')}.match.url_patterns"
         pats.extend(compile_patterns((m.get("match") or {}).get("url_patterns") or [], field))
-    pats.extend(compile_patterns(include, "url_include"))
     return pats
 
 

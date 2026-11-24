@@ -1413,6 +1413,10 @@ class JobRunner:
             site = site_key(url)
         except ValueError:
             return False
+        if self.include:
+            # An explicit target selection outranks broad mapping/learned hints,
+            # including when a target is allowed outside the navigation scope.
+            return matches_any(self.include, canonical)
         pats = self._target_patterns.get(site)
         if pats is None:
             from app.jobs.discovery import target_patterns
@@ -1429,8 +1433,10 @@ class JobRunner:
 
     def _targetish(self, url: str) -> bool:
         """Whether a link likely leads to a target page, for the trap budget and the backlog order:
-        by the URL shapes of pages that turned out to be targets once there are some (a mapping's
-        url_patterns may be broad, e.g. a selector-only template), else by ``_looks_like_target_url``."""
+        explicit selection first, then learned target shapes (a mapping's url_patterns may be
+        broad, e.g. a selector-only template), else ``_looks_like_target_url``."""
+        if self.include:
+            return self._looks_like_target_url(url)
         if self._target_shapes:
             from app.extraction.sampling import url_shape
 

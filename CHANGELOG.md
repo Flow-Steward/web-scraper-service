@@ -4,7 +4,14 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
-## 0.2.2-dev.14 (unreleased)
+## 0.2.2-dev.15 (unreleased)
+
+- Explicit target URL filters take precedence over broad mapping patterns and
+  learned URL shapes when ranking links or allowing targets outside crawl scope.
+  Category navigation inside the configured scope and explicitly selected products
+  outside it remain reachable; unrelated sections no longer qualify as targets.
+
+## 0.2.2-dev.14
 
 - Solver token delivery chooses a page callback before form fallback, preventing
   a competing form navigation from cancelling asynchronous verification. Camoufox
