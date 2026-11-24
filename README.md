@@ -600,6 +600,16 @@ until their reported coverage is complete. A bounded sample or a run stopped at
 are a useful cross-check, but repeated fitments and canonical aliases mean their
 position totals need not equal unique extracted records.
 
+Category membership also need not match a product URL's directory. A listing can
+link to products whose canonical addresses live in another section. Explicit
+`url_include` filters still apply to those addresses; a successful visit to every
+listing page does not prove that every listed product passed the selection.
+Compare actual listing links with the extracted source URLs. Keep `crawl_include`
+focused on the relevant listing pages and include any verified alternate product
+URL shapes in `url_include`, rather than maintaining a fixed product URL list or
+removing selection constraints. Links on product pages outside the walk scope
+are not followed.
+
 Listing navigation warnings remain visible when a browser action fails or a
 document navigation is deferred to normal fetching. Check the ordinary queue's
 pagination URLs and the final source coverage before claiming completeness. A
