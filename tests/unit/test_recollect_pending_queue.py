@@ -291,3 +291,159 @@ async def test_explicit_reasons_can_exclude_unadmitted_recovery_seed(parent):
         await svc.jobs.recollect(child["run_id"], {"profile": profile(), "platform": platform("filtered-grandchild"),
                                                 "reasons": ["fetch_failed"]}, "filtered-grandchild")
     assert caught.value.code == "nothing_to_recollect"
+
+
+@pytest.mark.parametrize("lane", ["url_list", "sitemap_retry"])
+async def test_failed_feeder_preserves_other_unadmitted_inputs(parent, monkeypatch, lane):
+    svc, pid = parent
+    svc.db.execute("DELETE FROM urls WHERE run_id=?", (pid,))
+    svc.db.execute("DELETE FROM link_backlog WHERE run_id=?", (pid,))
+    doc = json.loads(svc.jobs._row(pid)["doc"])
+    entries = [{"url": SITE + f"/selected/item-{2000+i}", "key": f"{i:04d}"} for i in range(250)]
+    root, leaf = SITE + "/sitemap.xml", SITE + "/other-pages.xml"
+    if lane == "url_list":
+        raw = entries.copy()
+        raw.insert(150, dict(entries[0], url=entries[0]["url"].replace("catalogue.example.test", "CATALOGUE.EXAMPLE.TEST")))
+        raw.insert(1, entries[0].copy())
+        doc["config"].update(discovery_mode="url_list", urls=raw)
+        rt = {"list_fed": 100}
+    else:
+        doc["config"].update(discovery_mode="sitemap", urls=[], sitemap_url=root)
+        rt = {"sitemap_retry_urls": entries, "sitemap_retry_fed": 100, "sitemap_retry_roots": [root],
+              "sitemap_traversal": {"sources": {root: {"status": "complete", "page_offset": 0, "nested_offset": 1},
+                                                 leaf: {"status": "pending", "page_offset": 0, "nested_offset": 0}},
+                                    "root_offset": 1, "entries_seen": 0}}
+    doc["resolved"]["discovery_mode"] = doc["config"]["discovery_mode"]
+    svc.db.execute("UPDATE runs SET doc=?,runtime=? WHERE run_id=?", (dumps(doc), dumps(rt), pid))
+    for e in entries[:100]:
+        svc.db.execute("INSERT INTO urls(run_id,unique_key,url,source,source_key,status) VALUES (?,?,?,?,?,'done')",
+                       (pid, page_key(e["url"], e["key"]), e["url"], "list", e["key"]))
+    original = dict(svc.jobs._row(pid))
+    _, child = await svc.jobs.recollect(pid, {"profile": profile(), "platform": platform("input-child")}, "input-child")
+    assert child["recollect_of"]["url_count"] == 150
+    if lane == "sitemap_retry":
+        assert child["recollect_of"]["source_count"] == 1
+    runner = JobRunner(svc, child["run_id"])
+    runner.doc["resolved"]["discovery_mode"] = child["config"]["discovery_mode"]
+    requests = []
+
+    class Queue:
+        async def add_requests(self, batch, **kwargs):
+            requests.extend(batch)
+
+    async def public(url):
+        return False
+
+    async def empty_source(url):
+        assert url in (root, leaf)
+        return Fetched(url, url, 200, b"<urlset/>")
+
+    runner.rq = Queue()
+    monkeypatch.setattr("app.jobs.runner.url_is_private", public)
+    monkeypatch.setattr("app.jobs.discovery.url_is_private", public)
+    monkeypatch.setattr(runner, "aux_fetch", empty_source)
+    await runner._feed()
+    queued = svc.db.all("SELECT url,source,source_key FROM urls WHERE run_id=?", (child["run_id"],))
+    assert {(x["url"], x["source"], x["source_key"]) for x in queued} == {
+        (e["url"], "list", e["key"]) for e in entries[100:]}
+    assert len(requests) == 150
+    assert runner.counters()["urls_skipped"]["duplicate"] == 0
+    assert dict(svc.jobs._row(pid)) == original
+
+
+@pytest.mark.parametrize("explicit_failure", [False, True])
+async def test_overlapping_seed_and_url_list_keep_completed_work_skipped(parent, explicit_failure):
+    svc, pid = parent
+    _, child = await svc.jobs.recollect(pid, {"profile": profile(), "platform": platform("overlap-child")}, "overlap-child")
+    row = svc.jobs._row(child["run_id"])
+    doc, rt = json.loads(row["doc"]), json.loads(row["runtime"])
+    seed = rt["recollect_pending"]
+    doc["config"].update(discovery_mode="url_list", urls=[{"url": e["url"], "key": e.get("source_key")} for e in seed])
+    doc["resolved"]["discovery_mode"] = "url_list"
+    rt.update(recollect_pending_fed=len(seed), list_fed=0)
+    for e in seed:
+        svc.db.execute("INSERT INTO urls(run_id,unique_key,url,source,source_key,status) VALUES (?,?,?,?,?,'done')",
+                       (child["run_id"], page_key(e["url"], e.get("source_key")), e["url"], e["source"], e.get("source_key")))
+    svc.db.execute("UPDATE runs SET state='failed',doc=?,runtime=? WHERE run_id=?", (dumps(doc), dumps(rt), child["run_id"]))
+    if explicit_failure:
+        write_unextracted(svc.db, child["run_id"], PENDING, PENDING, "a", "catalogue.example.test", "fetch_failed", None, 500, 1)
+        _, grandchild = await svc.jobs.recollect(child["run_id"], {"profile": profile(), "platform": platform("overlap-grandchild")}, "overlap-grandchild")
+        assert grandchild["recollect_of"]["url_count"] == 1
+        assert grandchild["config"]["urls"] == [{"url": PENDING, "key": "a"}]
+    else:
+        with pytest.raises(ApiError) as caught:
+            await svc.jobs.recollect(child["run_id"], {"profile": profile(), "platform": platform("overlap-grandchild")}, "overlap-grandchild")
+        assert caught.value.code == "nothing_to_recollect"
+
+
+async def test_feeder_failure_preserves_follower_backlog_for_recovery(parent, monkeypatch):
+    """Real task lifecycle: admission spans a feeder failure before supervisor teardown."""
+    from app.core.url_patterns import UrlPatternError
+
+    svc, pid = parent
+    _, child = await svc.jobs.recollect(pid, {"profile": profile(), "platform": platform("racing-child")}, "racing-child")
+    runner = JobRunner(svc, child["run_id"])
+    admission_started, failed, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    for i in range(501):
+        url = SITE + f"/selected/item-{1000+i}"
+        svc.db.execute("INSERT INTO link_backlog(run_id,url,source,unique_key,forefront) VALUES (?,?, 'link',?,0)",
+                       (runner.run_id, url, page_key(url, None)))
+
+    class Queue:
+        async def add_requests(self, requests, **kwargs):
+            admission_started.set()
+            await failed.wait()
+
+    class Crawler:
+        async def run(self, requests):
+            await failed.wait()
+
+        def stop(self, *args):
+            failed.set()
+
+    async def prepare():
+        runner.doc["state"] = "running"
+        runner.rt["discovery_resolved"] = True
+        runner._persist()
+
+    async def empty_items(offset, limit):
+        return []
+
+    async def public(url):
+        return False
+
+    enqueue, drain = runner.enqueue, runner._drain_backlog
+
+    async def controlled_enqueue(entries, **kwargs):
+        if kwargs.get("feed", (None,))[0] == "recollect_pending_fed":
+            await admission_started.wait()
+            raise UrlPatternError("url_include", "fixture", "pattern_timeout")
+        return await enqueue(entries, **kwargs)
+
+    async def observed_drain():
+        await drain()
+        if runner.state == "failed":
+            drained.set()
+
+    runner.rq = Queue()
+    monkeypatch.setattr(runner, "_prepare", prepare)
+    monkeypatch.setattr(runner, "_read_items", empty_items)
+    monkeypatch.setattr(runner, "_build_crawler", Crawler)
+    monkeypatch.setattr(runner, "enqueue", controlled_enqueue)
+    monkeypatch.setattr(runner, "_drain_backlog", observed_drain)
+    monkeypatch.setattr(svc.settings, "supervisor_interval_seconds", 5.0)
+    monkeypatch.setattr("app.jobs.runner.url_is_private", public)
+    runner.task = asyncio.create_task(runner._main())
+    svc.jobs.runners[runner.run_id] = runner
+    try:
+        await asyncio.wait_for(drained.wait(), 3)
+        assert runner.state == "failed"
+        assert svc.db.scalar("SELECT COUNT(*) FROM link_backlog WHERE run_id=?", (runner.run_id,)) == 1
+    finally:
+        runner.task.cancel()
+        await asyncio.gather(runner.task, return_exceptions=True)
+    assert all(t is None or t.done() for t in (runner.feeder_task, runner.follower_task, runner.crawler_task))
+    original = dict(svc.jobs._row(runner.run_id))
+    _, grandchild = await svc.jobs.recollect(runner.run_id, {"profile": profile(), "platform": platform("racing-grandchild")}, "racing-grandchild")
+    assert grandchild["recollect_of"]["url_count"] == 505  # 500 queued + 1 backlog + 4 seed entries
+    assert dict(svc.jobs._row(runner.run_id)) == original

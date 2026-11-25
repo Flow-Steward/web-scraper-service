@@ -10,6 +10,9 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
   including an unadmitted recovery seed suffix after a linked run also fails.
   Request keys, navigation scope, URL-list limits and completed prefixes are
   preserved without changing the finished parent.
+- Original URL-list and explicit source-retry inputs retain their unadmitted
+  suffixes too; mirrored recovery lists are fed once. Pending follower links
+  survive feeder failure and teardown for subsequent recollection.
 
 ## 0.2.2-dev.16
 

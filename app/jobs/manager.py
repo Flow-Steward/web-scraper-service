@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from app.core.config import apply_rules, needs_proxy_or_solver_secrets, profile_summary, secret_part, selected_tiers
+from app.core.config import apply_rules, dedupe_url_list, needs_proxy_or_solver_secrets, profile_summary, secret_part, selected_tiers
 from app.core.db import dumps, loads
 from app.core.errors import ApiError, field_error, validation_failed
 from app.core.ids import new_id
@@ -349,6 +349,7 @@ class JobManager:
         by_reason: dict[str, int] = {}
         recovery_entries: list[dict] = []
         parent_runtime = loads(row["runtime"]) or {}
+        parent_mode = (parent.get("resolved") or {}).get("discovery_mode") or parent["config"]["discovery_mode"]
 
         def add_url(url, key, reason, source="list"):
             identity = (url, key or None)
@@ -407,13 +408,22 @@ class JobManager:
                     page = loads(pending["doc"])
                     add_url(page.get("requested_url") or page["url"], page.get("source_key"), "stopped")
                 after_page = batch[-1]["page_key"]
-            # A recovery can fail before its seed reaches the URL queue. The
-            # feeder commits its cursor with admission; only its unadmitted
-            # suffix still needs recovery, in addition to queued prefix work.
-            pending = parent_runtime.get("recollect_pending") or []
-            fed = max(0, int(parent_runtime.get("recollect_pending_fed", 0)))
+            # Each input lane commits its cursor with admission. A recovery's
+            # private seed is authoritative: config.urls merely mirrors it and
+            # must not replay completed/refused work through a second lane.
+            pending, cursor, key_name = [], "list_fed", "key"
+            if "recollect_pending" in parent_runtime:
+                pending = parent_runtime["recollect_pending"] or []
+                cursor, key_name = "recollect_pending_fed", "source_key"
+            elif not parent["config"].get("single_page"):
+                if parent_mode == "url_list":
+                    pending = dedupe_url_list(parent["config"].get("urls") or [])
+                elif parent_mode in ("sitemap", "sitemap_and_crawl"):
+                    pending = parent_runtime.get("sitemap_retry_urls") or []
+                    cursor = "sitemap_retry_fed"
+            fed = max(0, int(parent_runtime.get(cursor, 0)))
             for entry in pending[fed:]:
-                add_url(entry["url"], entry.get("source_key"), "stopped", entry.get("source", "list"))
+                add_url(entry["url"], entry.get(key_name), "stopped", entry.get("source", "list"))
         from app.jobs.discovery import sitemap_coverage, sitemap_retry_state
 
         traversal = parent_runtime.get("sitemap_traversal") or {}
@@ -427,7 +437,6 @@ class JobManager:
         config["urls"] = urls
         config["rebuild_mapping"] = False
         config["sitemap_url"] = None
-        parent_mode = (parent.get("resolved") or {}).get("discovery_mode") or parent["config"]["discovery_mode"]
         follow_links = parent_mode in ("crawl", "sitemap_and_crawl") and not config.get("single_page")
         if recover_queue and follow_links:
             config.update(discovery_mode="crawl", urls=[])

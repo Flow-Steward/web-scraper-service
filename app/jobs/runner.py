@@ -1176,7 +1176,8 @@ class JobRunner:
                 await self.enqueue(chunk, feed=("recollect_pending_fed", len(chunk)))
             if cfg.get("single_page"):
                 await self.enqueue([{"url": cfg["site_url"], "source": "start"}])
-            elif mode == "url_list":
+            elif mode == "url_list" and "recollect_pending" not in self.rt:
+                # A recovery's config.urls mirrors its private seed above.
                 from app.core.config import dedupe_url_list
 
                 entries = [{"url": e["url"], "source": "list", "source_key": e.get("key")} for e in dedupe_url_list(cfg["urls"])]
@@ -1271,6 +1272,8 @@ class JobRunner:
     async def _drain_backlog(self) -> None:
         """Enqueues links and refetches recorded by the follower (after its transaction committed)."""
         while not self._shutdown:
+            if self.state == "failed":
+                return  # feeder failure can precede follower teardown; keep durable links
             # links that look like target pages first, wherever they are in the backlog: a crawl that
             # finds thousands of listing variants per page still reaches its products
             rows = self.svc.db.all("SELECT seq, url, source, source_key, unique_key, forefront FROM link_backlog WHERE run_id=? "

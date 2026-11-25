@@ -780,7 +780,10 @@ products") or found but not collected ("the scraper missed them").
   `source_key` kept as the entry's `key`;
 - unfinished work: for a failed parent with `stopped` among `reasons`, also
   recover queued requests, pending link/refetch backlog and stored pages, plus
-  any recovery seed suffix not yet admitted by that parent. Request source/key
+  any input suffix not yet admitted by that parent (a recovery seed, a
+  deduplicated URL list, or explicit source-retry URLs), using its committed
+  feeder cursor. A recovery seed is authoritative over its mirrored config URL
+  list. Follower links survive a concurrent feeder failure. Request source/key
   identity is retained and repeated entries are deduplicated. Already admitted
   seed prefixes are represented by their durable work rows, so completed prefix
   requests are not replayed. No document work and no unfinished sitemap source
