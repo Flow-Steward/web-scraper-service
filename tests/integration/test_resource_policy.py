@@ -30,7 +30,10 @@ def resource_proxy():
                 self.end_headers()
                 return
             kind = "text/javascript"
-            if target.path == "/robots.txt":
+            if target.path == "/ip":
+                body, kind = (json.dumps({"ip": "203.0.113.7", "country": "DE", "timezone": "Europe/Berlin",
+                                          "lat": 52.52, "lon": 13.405}).encode(), "application/json")
+            elif target.path == "/robots.txt":
                 body, kind = b"User-agent: *\nAllow: /\n", "text/plain"
             elif target.path == "/product":
                 body, kind = (b'''<!doctype html><html><head><title>Fixture product</title></head><body>
@@ -51,7 +54,7 @@ def resource_proxy():
             elif target.path == "/product.js":
                 body = b"document.querySelector('h1').textContent='External API product';"
             elif target.path == "/resource.js":
-                body = b"window.fixtureChallengeDependency=true;"
+                body = b"document.documentElement.setAttribute('data-fixture-dependency','loaded');"
             elif target.path == "/frame":
                 body, kind = b"<p>Optional widget</p>", "text/html"
             elif target.path == "/picture.png":
@@ -107,7 +110,7 @@ async def test_setup_session_filters_widgets_before_upstream(browser, enabled, s
         await session.start()
         status, html, final, _ = await session.get(f"http://{site_host}/product")
         assert status == 200 and "External API product" in html
-        assert await session.page.evaluate("window.fixtureChallengeDependency") is True
+        assert await session.page.locator("html").get_attribute("data-fixture-dependency") == "loaded"
     finally:
         await session.close()
     assert ("cdn.catalogue.test", "/product.js") in hits
@@ -141,7 +144,10 @@ def test_job_filters_widgets_and_preserves_external_product_data(service, browse
     response = start(service, cfg, f"resource-economy-{browser}-{enabled}", prof=prof)
     assert response.status_code == 201, response.text
     run = service.wait_run(response.json()["run_id"])
-    assert run["outcome"] == "complete" and run["counters"]["records_extracted"] == 1, run
+    assert run["outcome"] == "complete" and run["counters"]["records_extracted"] == 1, {
+        "outcome": run["outcome"], "errors": run["errors"], "counters": run["counters"], "upstream": hits,
+        "unextracted": service.get(f"/v1/runs/{run['run_id']}/unextracted").json(),
+    }
     records = [json.loads(line) for line in service.get(run["result"]["download_path"]).text.splitlines()]
     assert records[0]["data"]["title"] == "External API product"
     assert ("cdn.catalogue.test", "/product.js") in hits
