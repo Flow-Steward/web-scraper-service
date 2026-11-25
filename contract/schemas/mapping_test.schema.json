@@ -343,6 +343,9 @@
           "type": "boolean",
           "const": true,
           "description": "Added 2026-11-14: as in a record."
+        },
+        "table_coverage": {
+          "$ref": "mapping.schema.json#/$defs/table_coverage"
         }
       }
     },

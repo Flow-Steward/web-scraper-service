@@ -551,6 +551,64 @@
               }
             }
           }
+        },
+        "table_captures": {
+          "type": "array",
+          "maxItems": 55,
+          "items": {
+            "type": "object",
+            "required": [
+              "source_key",
+              "complete",
+              "reason",
+              "pages",
+              "rows",
+              "headers",
+              "bytes"
+            ],
+            "properties": {
+              "source_key": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 64
+              },
+              "rows": {
+                "type": "array",
+                "maxItems": 10000,
+                "items": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "headers": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4194304
+              }
+            }
+          },
+          "description": "Bounded ordered raw-cell evidence from explicitly requested tables. Partial captures remain evidence and cannot satisfy mapping extraction."
         }
       }
     },
@@ -612,6 +670,25 @@
             }
           ],
           "description": "Only pages that the active mapping of this template matches."
+        },
+        "table_sources": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "allOf": [
+              {
+                "$ref": "mapping.schema.json#/$defs/source"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "browser_table"
+                  }
+                }
+              }
+            ]
+          },
+          "description": "Explicit browser table sources to acquire before testing a proposed mapping. Captures are stored for offline mapping tests; HTTP-only requests report browser_required."
         }
       }
     },

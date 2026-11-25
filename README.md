@@ -626,3 +626,62 @@ sources and caps, even when it falls back to crawling. These remain partial-run
 provenance if a later source body changes. Probe offsets are reset before feeding;
 inspecting a URL never counts as having queued it. A default `/sitemap.xml` that
 returns 404/410 is absent; an inaccessible or invalid default is incomplete.
+
+Mappings may explicitly acquire an asynchronously loaded, paginated table with a
+`browser_table` source. This source produces cleaned HTML containing the headers
+and every observed ordered row; repeated models, month values and blank bounds
+remain unchanged. It does not interpret blank end dates as finite year ranges.
+For example, an invented product page can declare this field:
+
+```json
+{
+  "name": "fitment_raw",
+  "type": "html",
+  "sources": [{
+    "kind": "browser_table",
+    "selector": "#applications",
+    "header_selector": "thead th",
+    "row_selector": "tbody tr",
+    "cell_selector": "td",
+    "loading_selector": "#applications-processing",
+    "empty_selector": "td.empty",
+    "next_selector": "#applications-pager .next",
+    "current_page_selector": "#applications-pager .current",
+    "max_pages": 32,
+    "max_rows": 2000,
+    "max_bytes": 1048576,
+    "max_seconds": 30
+  }]
+}
+```
+
+Selectors describe the observed layout. The loading indicator must be hidden
+before rows or an explicit empty marker can settle. Paginated sources require a
+current page containing an integer, beginning at 1 and advancing by 1, and an
+explicit Next control that remains present and becomes disabled on the last page.
+Supported disabled states are the native `disabled` property/attribute,
+`aria-disabled="true"`, and a `disabled` class on the control or its ancestor.
+Supported Next names are `Next`, `Next page`, and `»`, `›`, `→` or `>`.
+A single-page source omits both pagination selectors. Each row must have ordinary
+cells without merged row or column spans. Unsupported layouts report incomplete
+coverage. The hard limits are 64 pages, 10,000 rows, 4 MiB and 120 seconds per
+source; the run's action and time budgets still apply.
+
+Acquisition uses the existing guarded browser tab and supports in-page pagination.
+Document navigation and non-GET browser requests (including fetch/XHR and beacons)
+are refused during acquisition. HTTP-only jobs
+report `browser_required`; automatic mode uses the normal browser escalation.
+Other product fields and variants continue reading the original product HTML.
+Each successful JSON Lines record includes `table_coverage` with page/row/byte
+counts. A missing, partial or differently configured capture cannot satisfy the
+mapping, even when the table field is optional or another source could supply
+specification years. Its partial rows and stop reason remain in stored evidence.
+
+To test a proposed source before activating its mapping, pass the same source
+object in `POST /v1/samples`' optional `table_sources` array (at most five), using
+explicit synthetic URLs such as `https://parts.example.test/products/mock-part`.
+Active mappings' table sources are captured automatically with their samples.
+Samples expose bounded raw-cell evidence and retain their captures privately;
+`POST /v1/mappings/test` replays those captures without new network requests.
+Changing a source requires new samples. Stored page re-extraction also retains
+its original capture and never treats an initial table page as the full result.

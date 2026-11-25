@@ -269,6 +269,8 @@ def sample_doc(
         "variant_candidates": detect_candidates(page),
         "price_on_page": page_signal(page),
     }
+    if getattr(page, "table_captures", None):
+        doc["table_captures"] = [{"source_key": key, **{name: value for name, value in captured.items() if name != "html"}} for key, captured in page.table_captures.items()]
     details = price_details(page)
     if details:
         doc["price_details"] = details

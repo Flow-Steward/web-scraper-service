@@ -88,7 +88,7 @@ TRACE_KEEP = 5  # route traces kept in a job's protection summary
 
 
 RECORD_ORDER = ["record_id", "source_url", "requested_url", "source_key", "site", "template_id", "mapping_version", "item_index", "variant",
-                "price_status", "price_max", "regular_price", "on_sale", "currency_from_default", "extracted_at", "data"]  # key order of record.schema.json
+                "price_status", "price_max", "regular_price", "on_sale", "currency_from_default", "table_coverage", "extracted_at", "data"]  # key order of record.schema.json
 
 
 class Deferred(RequestThrottledError):
@@ -2336,6 +2336,53 @@ class JobRunner:
                 severity="warning",
             )
 
+    async def _collect_tables(self, ctx, page, mapping, browser_run, out):
+        from app.extraction.tables import requested_sources, source_key, table_coverage, unavailable
+        from app.fetching.tables import collect_table
+
+        def cancelled():
+            return (self._shutdown or self._cut_or_stopping() or self.state != "running"
+                    or self.running_seconds() >= self.config["max_duration_minutes"] * 60)
+
+        async def allowed(action):
+            if cancelled() or self.pages_started + int(self.rt.get("navigation_actions", 0)) >= self.config["max_pages"]:
+                return False
+            if not await self._document_destination_allowed(page.url, action.url):
+                return False
+            self.rt["navigation_actions"] = int(self.rt.get("navigation_actions", 0)) + 1
+            return True
+
+        async def pace(action):
+            while time.monotonic() < self.paused_until and not cancelled():
+                await asyncio.sleep(.1)
+            if not cancelled():
+                await self.throttle.wait(host_of(action.url))
+
+        def progress():
+            self.last_progress = time.monotonic()
+
+        table_started = time.monotonic()
+        page_budget = float(self.config.get("page_timeout_seconds") or 45)
+        for source in requested_sources(mapping):
+            key = source_key(source)
+            if key in page.table_captures:
+                continue
+            if not browser_run:
+                captured = unavailable("browser_required")
+            else:
+                remaining = min(self.config["max_duration_minutes"] * 60 - self.running_seconds(),
+                                page_budget - (time.monotonic() - table_started))
+                if remaining <= 0:
+                    captured = unavailable("time_limit")
+                else:
+                    bounded = source | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
+                    captured = await collect_table(ctx.page, bounded, before_action=allowed,
+                                                  cancelled=cancelled, pace_action=pace, on_progress=progress)
+                    raise_document_policy_error(ctx)
+            page.table_captures[key] = captured
+        out["table_captures"] = page.table_captures
+        out["table_coverage"] = table_coverage(mapping, page)
+
     @url_policy
     def _scope_allows_link(self, scope, url: str, known: bool) -> bool:
         from app.core.scope import in_scope
@@ -2412,6 +2459,13 @@ class JobRunner:
             outside = True
         tmpl = None if outside else pick_template(mappings, page, canonical)
         out = dict(base)
+        from app.extraction.tables import requested_sources, table_failures
+
+        if tmpl and requested_sources(tmpl):
+            if not browser_run and self.config["fetch_mode"] == "auto" and self.browser:
+                ctx.request.user_data["static_rejected"] = True
+                return {"needs_browser": True}
+            await self._collect_tables(ctx, page, tmpl, browser_run, out)
         follow_links = self.doc["resolved"].get("discovery_mode") in ("crawl", "sitemap_and_crawl") and not self.config.get("single_page")
         if follow_links:
             await self._collect_navigation(ctx, page, canonical, browser_run, ud, out)
@@ -2474,6 +2528,7 @@ class JobRunner:
                     for name in record_filter_missing(tmpl, data)
                 }
             )
+            missing = sorted(set(missing) | set(table_failures(tmpl, page)))
             out["records_filtered"] = len(rows) - len(selected)
             out["template_id"] = tmpl["template_id"]
             out["mapping_version"] = tmpl["__version"]
@@ -2506,6 +2561,8 @@ class JobRunner:
                         "extracted_at": now_iso(),
                         "data": data,
                     }
+                    if out.get("table_coverage"):
+                        rec["table_coverage"] = out["table_coverage"]
                     if meta:
                         rec["variant"] = meta
                     rec.update(price_keys)
@@ -2903,6 +2960,9 @@ class JobRunner:
             "needs_reextract": False,
             "refetch_pending": False,
         }
+        if item.get("table_captures"):
+            doc["table_captures"] = item["table_captures"]
+            doc["table_coverage"] = item.get("table_coverage") or {}
         if item.get("gaps"):
             doc["gaps"] = item["gaps"]
         if item.get("missing_fields"):
@@ -3213,6 +3273,7 @@ class JobRunner:
         sid = new_id("smp")
         ts = now()
         page = Page(html, d.get("final_url") or d["url"], d.get("status") or 200)
+        page.table_captures = d.get("table_captures") or {}
         fetch = dict(d.get("fetch") or {"fetch_mode": "http", "browser": None, "proxy_tier": None})
         fetch.setdefault("passed_at_step", None)
         if fetch.get("fetch_mode") not in ("http", "browser"):
@@ -3233,6 +3294,8 @@ class JobRunner:
         if page.microdata_nodes:
             sample["microdata"] = [n for n in page.microdata_nodes if isinstance(n, dict)][:20]
         self.svc.samples.save(sample, html, page.url)
+        if page.table_captures:
+            self.svc.samples.save_extra(sid, {"table_captures": page.table_captures})
         return sample
 
     def _stored_html_sync(self, key: str) -> str | None:
@@ -3388,6 +3451,7 @@ class JobRunner:
             self.svc.db.execute("UPDATE stored_pages SET doc=? WHERE run_id=? AND page_key=?", (dumps(d), self.run_id, row["page_key"]))
             return
         page = Page(html, d.get("final_url") or d["url"], d.get("status") or 200)
+        page.table_captures = d.get("table_captures") or {}
         site = d.get("site") or self.doc["site"]
         tmpl = pick_template(self.mappings_for(site), page, d["url"])
         if tmpl is None:
@@ -3406,6 +3470,9 @@ class JobRunner:
         selected = [(index, row) for index, row in enumerate(rows) if record_matches(tmpl, row[0])]
         missing = sorted({name for _index, (data, _meta, _filled) in selected for name in required if data.get(name) is None or data.get(name) == []})
         missing = sorted(set(missing) | {name for data, _meta, _filled in rows for name in record_filter_missing(tmpl, data)})
+        from app.extraction.tables import table_failures, table_coverage
+
+        missing = sorted(set(missing) | set(table_failures(tmpl, page)))
         t = self.template(tmpl["template_id"])
         view = price_view(page, tmpl)
         gaps = (
@@ -3439,6 +3506,9 @@ class JobRunner:
                     rec.pop("source_key")
                 if not rec["variant"]:
                     rec.pop("variant")
+                coverage = table_coverage(tmpl, page)
+                if coverage:
+                    rec["table_coverage"] = coverage
                 rec.update(price_keys)
                 if not self._write_record({k: rec[k] for k in RECORD_ORDER if k in rec}, None):
                     break

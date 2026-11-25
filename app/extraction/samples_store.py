@@ -59,7 +59,13 @@ class SampleStore:
         can apply a ``shop_json`` source without fetching again; not part of the API answer."""
         import json
 
-        (self.dir / f"{sample_id}.extra.json").write_text(json.dumps(extra), "utf-8")
+        existing = self.load_extra(sample_id)
+        for key, value in extra.items():
+            if isinstance(value, dict) and isinstance(existing.get(key), dict):
+                existing[key].update(value)
+            else:
+                existing[key] = value
+        (self.dir / f"{sample_id}.extra.json").write_text(json.dumps(existing), "utf-8")
 
     def load_extra(self, sample_id: str) -> dict:
         import json

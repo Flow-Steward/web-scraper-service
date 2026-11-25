@@ -65,7 +65,7 @@
         "options"
       ],
       "additionalProperties": false,
-      "description": "Added 2026-11-13. Present on a variant's record: its position among the page's variants (`index` = `item_index`), how many the page has, the variant source kind, the option values (name → value, the shop's words) and the shop's variant id when it has one.",
+      "description": "Added 2026-11-13. Present on a variant's record: its position among the page's variants (`index` = `item_index`), how many the page has, the variant source kind, the option values (name \u2192 value, the shop's words) and the shop's variant id when it has one.",
       "properties": {
         "index": {
           "type": "integer",
@@ -102,7 +102,7 @@
     },
     "price_status": {
       "$ref": "#/$defs/price_status",
-      "description": "Added 2026-11-14. Present on every record of a template with a field of type `price` (the field named `price`, else the first `price` field): `shown` — the field has a value; `range` — the page showed a range, the field holds its lowest value and `price_max` the highest; `on_request` — no price and the page says it is given on request (an empty price block with request wording, or a schema.org offer without a price); `missing` — no price and no sign why (README 6.5)."
+      "description": "Added 2026-11-14. Present on every record of a template with a field of type `price` (the field named `price`, else the first `price` field): `shown` \u2014 the field has a value; `range` \u2014 the page showed a range, the field holds its lowest value and `price_max` the highest; `on_request` \u2014 no price and the page says it is given on request (an empty price block with request wording, or a schema.org offer without a price); `missing` \u2014 no price and no sign why (README 6.5)."
     },
     "price_max": {
       "type": "number",
@@ -110,7 +110,7 @@
     },
     "regular_price": {
       "type": "number",
-      "description": "Added 2026-11-14. Present when the page (or the variant) shows a sale: the old, struck-through or regular price; `data`'s price field holds the current price. From a variant's own regular price (WooCommerce `display_regular_price`, Shopify `compare_at_price`, Store API `regular_price`), else schema.org `priceSpecification` with `priceType` StrikethroughPrice/ListPrice, else the struck-through amount of the product's price block (`del`, `s`, `strike`, line-through, `old-price`, `price-old`, `was`, `compare-at` …) — when this record's price is the page's current price (README 6.5)."
+      "description": "Added 2026-11-14. Present when the page (or the variant) shows a sale: the old, struck-through or regular price; `data`'s price field holds the current price. From a variant's own regular price (WooCommerce `display_regular_price`, Shopify `compare_at_price`, Store API `regular_price`), else schema.org `priceSpecification` with `priceType` StrikethroughPrice/ListPrice, else the struck-through amount of the product's price block (`del`, `s`, `strike`, line-through, `old-price`, `price-old`, `was`, `compare-at` \u2026) \u2014 when this record's price is the page's current price (README 6.5)."
     },
     "on_sale": {
       "type": "boolean",
@@ -134,6 +134,10 @@
         "$ref": "#/$defs/field_value"
       },
       "description": "Every field of the template's mapping is present: `null` (or `[]` for `multiple`) when not found."
+    },
+    "table_coverage": {
+      "$ref": "mapping.schema.json#/$defs/table_coverage",
+      "description": "Coverage of explicitly mapped browser tables. Records are emitted only after each requested table is completely acquired."
     }
   },
   "$defs": {
@@ -167,7 +171,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Added 2026-11-14: a `spec_table` field (name → value)."
+          "description": "Added 2026-11-14: a `spec_table` field (name \u2192 value)."
         }
       ]
     },
