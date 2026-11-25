@@ -20,9 +20,9 @@ def resource_proxy():
         def do_GET(self):
             target = urlsplit(self.path)
             hits.append((target.hostname, target.path))
-            redirects = {"/script-redirect": "http://embed.tawk.to/redirected-widget.js",
-                         "/frame-redirect": "http://embed.tawk.to/redirected-frame",
-                         "/site-redirect": "http://tawk.to/product" if target.hostname == "catalogue.test" else "http://catalogue.test/product"}
+            widget = "embed.widget.test" if target.query == "firstparty=1" else "embed.tawk.to"
+            redirects = {"/script-redirect": f"http://{widget}/redirected-widget.js",
+                         "/frame-redirect": f"http://{widget}/redirected-frame"}
             if target.path in redirects:
                 self.send_response(302)
                 self.send_header("Location", redirects[target.path])
@@ -36,7 +36,7 @@ def resource_proxy():
                 body, kind = (b'''<!doctype html><html><head><title>Fixture product</title></head><body>
                 <main class="product"><h1>Waiting</h1><span class="sku">R-1</span></main>
                 <script src="http://cdn.catalogue.test/product.js"></script>
-                <script src="http://challenges.cloudflare.com/resource.js"></script>
+                <script src="http://challenge-dependency.test/resource.js"></script>
                 <script src="http://embed.tawk.to/widget.js"></script>
                 <script src="http://cdn-cookieyes.com/banner.js"></script>
                 <script src="http://omnisnippet1.com/launcher.js"></script>
@@ -44,6 +44,10 @@ def resource_proxy():
                 <script src="http://cdn.catalogue.test/script-redirect"></script>
                 <iframe src="http://cdn.catalogue.test/frame-redirect"></iframe>
                 <img src="http://catalogue.test/picture.png"></body></html>''', "text/html")
+                if target.hostname == "widget.test":
+                    body = body.replace(b"embed.tawk.to", b"embed.widget.test")
+                    body = body.replace(b"/script-redirect\"", b"/script-redirect?firstparty=1\"")
+                    body = body.replace(b"/frame-redirect\"", b"/frame-redirect?firstparty=1\"")
             elif target.path == "/product.js":
                 body = b"document.querySelector('h1').textContent='External API product';"
             elif target.path == "/resource.js":
@@ -77,10 +81,14 @@ def resource_proxy():
 
 @pytest.mark.parametrize("browser", ["chromium", "camoufox"])
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize("site_host", ["catalogue.test", "tawk.to"])
+@pytest.mark.parametrize("site_host", ["catalogue.test", "widget.test"])
 async def test_setup_session_filters_widgets_before_upstream(browser, enabled, site_host, resource_proxy, monkeypatch):
+    from app.fetching import resources
     from tests.unit.test_logic import settings
 
+    # Exercise the generic first-party rule using a fictional family. Real main
+    # domains may be upgraded to HTTPS before an HTTP fixture can serve them.
+    monkeypatch.setattr(resources, "_WIDGET_FAMILIES", (*resources._WIDGET_FAMILIES, "widget.test"))
     monkeypatch.setattr("app.settings._settings", settings())
 
     async def no_geo(*args, **kwargs):
@@ -103,11 +111,14 @@ async def test_setup_session_filters_widgets_before_upstream(browser, enabled, s
     finally:
         await session.close()
     assert ("cdn.catalogue.test", "/product.js") in hits
-    assert ("challenges.cloudflare.com", "/resource.js") in hits
-    for resource in [("cdn-cookieyes.com", "/banner.js"), ("omnisnippet1.com", "/launcher.js")]:
-        assert (resource in hits) is not enabled, hits
+    # A fictional dependency avoids real-domain HSTS upgrades in the HTTP-only
+    # proxy fixture. Literal Cloudflare admission is covered by the native units.
+    assert ("challenge-dependency.test", "/resource.js") in hits
+    assert (("cdn-cookieyes.com", "/banner.js") in hits) is not enabled, hits
+    assert (("omnisnippet1.com", "/launcher.js") in hits) is not enabled, hits
+    widget = "embed.widget.test" if site_host == "widget.test" else "embed.tawk.to"
     for path in ["/widget.js", "/frame", "/redirected-widget.js", "/redirected-frame"]:
-        assert (("embed.tawk.to", path) in hits) is (not enabled or site_host == "tawk.to"), hits
+        assert ((widget, path) in hits) is (not enabled or site_host == "widget.test"), hits
     assert ("cdn.catalogue.test", "/script-redirect") in hits
     assert ("cdn.catalogue.test", "/frame-redirect") in hits
     assert (("catalogue.test", "/picture.png") in hits) is not enabled
@@ -134,7 +145,7 @@ def test_job_filters_widgets_and_preserves_external_product_data(service, browse
     records = [json.loads(line) for line in service.get(run["result"]["download_path"]).text.splitlines()]
     assert records[0]["data"]["title"] == "External API product"
     assert ("cdn.catalogue.test", "/product.js") in hits
-    assert ("challenges.cloudflare.com", "/resource.js") in hits
+    assert ("challenge-dependency.test", "/resource.js") in hits
     for resource in [("cdn-cookieyes.com", "/banner.js"), ("omnisnippet1.com", "/launcher.js")]:
         assert (resource in hits) is not enabled, hits
     for path in ["/widget.js", "/frame", "/redirected-widget.js", "/redirected-frame"]:
