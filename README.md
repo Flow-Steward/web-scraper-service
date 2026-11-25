@@ -665,7 +665,12 @@ Supported Next names are `Next`, `Next page`, and `»`, `›`, `→` or `>`.
 A single-page source omits both pagination selectors. Each row must have ordinary
 cells without merged row or column spans. Unsupported layouts report incomplete
 coverage. The hard limits are 64 pages, 10,000 rows, 4 MiB and 120 seconds per
-source; the run's action and time budgets still apply.
+source. All sources on one page additionally share hard limits of 4 MiB of
+serialized retained capture evidence, 10,000 rows and 64 observed pages, including
+existing captures and proposed sample sources. Exhausted sources report an
+explicit `aggregate_byte_limit`, `aggregate_row_limit` or `aggregate_page_limit`;
+their original source fingerprints stay unchanged. The run's action and time
+budgets still apply.
 
 Acquisition uses the existing guarded browser tab and supports in-page pagination.
 Document navigation and non-GET browser requests (including fetch/XHR and beacons)

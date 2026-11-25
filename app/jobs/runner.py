@@ -2337,7 +2337,7 @@ class JobRunner:
             )
 
     async def _collect_tables(self, ctx, page, mapping, browser_run, out):
-        from app.extraction.tables import requested_sources, source_key, table_coverage, unavailable
+        from app.extraction.tables import TableCaptureBudget, requested_sources, table_coverage, unavailable
         from app.fetching.tables import collect_table
 
         def cancelled():
@@ -2361,11 +2361,16 @@ class JobRunner:
         def progress():
             self.last_progress = time.monotonic()
 
+        sources = requested_sources(mapping)
+        budget = TableCaptureBudget(page.table_captures, sources)
         table_started = time.monotonic()
         page_budget = float(self.config.get("page_timeout_seconds") or 45)
-        for source in requested_sources(mapping):
-            key = source_key(source)
-            if key in page.table_captures:
+        for source in sources:
+            if not budget.needs_capture(source):
+                continue
+            bounded, limit_reason = budget.bounds(source)
+            if bounded is None:
+                budget.retain(source, unavailable(limit_reason))
                 continue
             if not browser_run:
                 captured = unavailable("browser_required")
@@ -2375,11 +2380,11 @@ class JobRunner:
                 if remaining <= 0:
                     captured = unavailable("time_limit")
                 else:
-                    bounded = source | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
+                    bounded = bounded | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
                     captured = await collect_table(ctx.page, bounded, before_action=allowed,
                                                   cancelled=cancelled, pace_action=pace, on_progress=progress)
                     raise_document_policy_error(ctx)
-            page.table_captures[key] = captured
+            budget.retain(source, captured, bounded)
         out["table_captures"] = page.table_captures
         out["table_coverage"] = table_coverage(mapping, page)
 
@@ -3273,7 +3278,9 @@ class JobRunner:
         sid = new_id("smp")
         ts = now()
         page = Page(html, d.get("final_url") or d["url"], d.get("status") or 200)
-        page.table_captures = d.get("table_captures") or {}
+        from app.extraction.tables import restore_captures
+
+        restore_captures(page, d.get("table_captures"))
         fetch = dict(d.get("fetch") or {"fetch_mode": "http", "browser": None, "proxy_tier": None})
         fetch.setdefault("passed_at_step", None)
         if fetch.get("fetch_mode") not in ("http", "browser"):
@@ -3451,7 +3458,9 @@ class JobRunner:
             self.svc.db.execute("UPDATE stored_pages SET doc=? WHERE run_id=? AND page_key=?", (dumps(d), self.run_id, row["page_key"]))
             return
         page = Page(html, d.get("final_url") or d["url"], d.get("status") or 200)
-        page.table_captures = d.get("table_captures") or {}
+        from app.extraction.tables import restore_captures
+
+        restore_captures(page, d.get("table_captures"))
         site = d.get("site") or self.doc["site"]
         tmpl = pick_template(self.mappings_for(site), page, d["url"])
         if tmpl is None:

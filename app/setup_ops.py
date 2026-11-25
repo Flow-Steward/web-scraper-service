@@ -480,21 +480,28 @@ class SetupFetch:
 
     async def capture_tables(self, page, sources):
         """Explicit sample acquisition; never borrow cached HTML from another tab state."""
-        from app.extraction.tables import source_key, unavailable
+        from app.extraction.tables import TableCaptureBudget, unavailable
         from app.fetching.tables import collect_table
         from app.core.urls import host_of
 
         if not sources:
             return
+        budget = TableCaptureBudget(page.table_captures, sources)
         if self.config.get("fetch_mode") == "http":
-            page.table_captures.update({source_key(source): unavailable("browser_required") for source in sources})
+            for source in sources:
+                if budget.needs_capture(source):
+                    budget.retain(source, unavailable("browser_required"))
             return
         session = await self.session()
         if session is None:
-            page.table_captures.update({source_key(source): unavailable("browser_unavailable") for source in sources})
+            for source in sources:
+                if budget.needs_capture(source):
+                    budget.retain(source, unavailable("browser_unavailable"))
             return
         if self.failure_for(page.url):
-            page.table_captures.update({source_key(source): unavailable("protection_not_passed") for source in sources})
+            for source in sources:
+                if budget.needs_capture(source):
+                    budget.retain(source, unavailable("protection_not_passed"))
             return
         if session.page is None or session.page.url != page.url:
             await self._navigation_throttle.wait(host_of(page.url))
@@ -513,17 +520,22 @@ class SetupFetch:
 
         table_started = asyncio.get_running_loop().time()
         for source in sources:
-            key = source_key(source)
-            if key not in page.table_captures:
-                remaining = self.page_timeout - (asyncio.get_running_loop().time() - table_started)
-                if remaining <= 0:
-                    page.table_captures[key] = unavailable("time_limit")
-                    continue
-                bounded = source | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
-                page.table_captures[key] = await collect_table(session.page, bounded, before_action=allowed,
-                                                              pace_action=pace, cancelled=lambda: bool(asyncio.current_task().cancelling()))
-                if session._native_document_policy is not None:
-                    session._native_document_policy.raise_if_denied()
+            if not budget.needs_capture(source):
+                continue
+            bounded, limit_reason = budget.bounds(source)
+            if bounded is None:
+                budget.retain(source, unavailable(limit_reason))
+                continue
+            remaining = self.page_timeout - (asyncio.get_running_loop().time() - table_started)
+            if remaining <= 0:
+                budget.retain(source, unavailable("time_limit"))
+                continue
+            bounded = bounded | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
+            captured = await collect_table(session.page, bounded, before_action=allowed,
+                                           pace_action=pace, cancelled=lambda: bool(asyncio.current_task().cancelling()))
+            if session._native_document_policy is not None:
+                session._native_document_policy.raise_if_denied()
+            budget.retain(source, captured, bounded)
 
     def _browser_fetched(self, url, got):
         from dataclasses import asdict
@@ -1539,7 +1551,9 @@ async def mapping_test(svc, body: dict) -> dict:
     checks: dict[str, dict] = {}  # per sample, the page's price signal and variant data
     for sid, (doc, html, final_url) in loaded:
         page = Page(html, final_url, doc.get("http_status", 200))
-        page.table_captures = svc.samples.load_extra(sid).get("table_captures") or {}
+        from app.extraction.tables import restore_captures
+
+        restore_captures(page, svc.samples.load_extra(sid).get("table_captures"))
         try:
             canonical = canonical_url(final_url)
         except ValueError:
