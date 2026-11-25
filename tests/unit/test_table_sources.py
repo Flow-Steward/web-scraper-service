@@ -294,12 +294,21 @@ async def test_offline_replay_applies_aggregate_limits_to_stored_captures(sample
     assert result['samples'][0]['table_coverage']['other_fitment']['reason'] == 'aggregate_byte_limit'
 
 
-async def test_optional_table_failure_keeps_products_and_reports_partial_result(tmp_path, monkeypatch):
+@pytest.mark.parametrize('scoped_inventory', [False, True])
+async def test_optional_table_failure_keeps_products_and_reports_partial_result(tmp_path, monkeypatch, scoped_inventory):
     from app.core.db import dumps
     from tests.unit.test_proxy_auth_pause import make_run
     svc, runner = await make_run(tmp_path, monkeypatch)
     runner.rt['table_partial'] = True
     runner.doc.setdefault('errors', []).append({'code':'table_partial', 'message':'Optional table data is incomplete', 'severity':'warning', 'at':'2026-11-25T00:00:00Z'})
+    if scoped_inventory:
+        runner.rt['sitemap_feeding_started'] = True
+        runner.rt['sitemap_traversal'] = {
+            'sources': {'https://target.test/catalogue.xml': {'status': 'complete'}},
+            'source_scope': True,
+            'excluded_source_count': 1,
+            'excluded_sources': ['https://target.test/other.xml'],
+        }
     record = {'record_id':'rec_'+'0'*32, 'source_url':'https://target.test/one', 'site':'target.test', 'template_id':'product', 'mapping_version':1, 'item_index':0, 'extracted_at':'2026-11-25T00:00:00Z', 'data':{'title':'Mock part','fitment_raw':None}, 'table_coverage':{'fitment_raw':{'complete':False,'reason':'time_limit','pages':1,'row_count':1,'bytes':100}}}
     runner._write_record(record, None)
     try:
@@ -309,6 +318,9 @@ async def test_optional_table_failure_keeps_products_and_reports_partial_result(
         assert summary['completeness']['pages_collected'] == 1
         assert summary['completeness']['not_collected'] == 0
         assert 'optional table data is incomplete' in summary['completeness']['sentence'].lower()
+        if scoped_inventory:
+            assert summary['sitemap_discovery']['complete'] is True
+            assert 'configured sitemap sources, not the whole website' in summary['completeness']['sentence']
     finally:
         svc.db.close()
 

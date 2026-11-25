@@ -487,7 +487,7 @@
         "preset",
         "text"
       ],
-      "description": "Added 2026-11-14. The run's effective politeness: `preset` (`gentle`/`normal`/`fast`), `text` (\"normal: 2\u20135 s, 2 at a time, 30/min, page timeout 60 s\"), and `slowed_hosts` while the automatic slow-down has widened a host's delay: host \u2192 {`factor` (\u00d7 the configured delay), `since`, `reason`} (README 4.15).",
+      "description": "Added 2026-11-14. The run's effective politeness: `preset` (`gentle`/`normal`/`fast`), `text` (\"normal: 2–5 s, 2 at a time, 30/min, page timeout 60 s\"), and `slowed_hosts` while the automatic slow-down has widened a host's delay: host → {`factor` (× the configured delay), `since`, `reason`} (README 4.15).",
       "properties": {
         "preset": {
           "type": "string",
@@ -1685,7 +1685,7 @@
         "pending_sources",
         "refused_sources"
       ],
-      "description": "Sitemap source coverage. A capped or inaccessible source makes outcome partial even with no known missing documents. Source URLs omit credentials, queries and fragments; errors use fixed reason codes. Private-address refusals remain outcome-neutral.",
+      "description": "Sitemap source coverage. A capped or inaccessible source makes outcome partial even with no known missing documents. Source URLs omit credentials, queries and fragments; errors use fixed reason codes. Private-address refusals remain outcome-neutral. When scope is configured_sources, complete means only the declared source scope, never the whole website.",
       "properties": {
         "complete": {
           "type": "boolean"
@@ -1789,6 +1789,25 @@
               }
             }
           }
+        },
+        "scope": {
+          "enum": [
+            "configured_sources"
+          ],
+          "description": "Present when explicit child-source include/exclude filters narrow coverage."
+        },
+        "excluded_source_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of child source occurrences excluded by policy during this traversal; an index replay can observe a source again."
+        },
+        "excluded_sources": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string"
+          },
+          "description": "First twenty excluded child source occurrences, stripped of credentials, query and fragment. Descendants of an excluded index are not inspected."
         }
       }
     }

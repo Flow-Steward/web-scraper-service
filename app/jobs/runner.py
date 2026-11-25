@@ -1237,7 +1237,7 @@ class JobRunner:
                 self.rt["sitemap_feeding_started"] = True
                 report = sitemap_report(state)
                 self.doc["sitemap_discovery"] = report
-                self.rt["sitemap_partial"] = not report["complete"] or bool(self.rt.get("sitemap_probe_partial"))
+                self.rt["sitemap_partial"] = not report["complete"]
                 self._persist()
 
         # Recollect retries failed document URLs as well as failed source files.
@@ -1257,8 +1257,11 @@ class JobRunner:
                 await self.enqueue(entries, feed=("sitemap_fed", len(entries)))
 
         batch: list[dict] = []
-        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state, max_entries=SITEMAP_CAP,
-                                               prefer_products=prefer_product_sitemaps(self.config)):
+        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state,
+                                               max_entries=self.config.get("max_sitemap_entries") or SITEMAP_CAP,
+                                               prefer_products=prefer_product_sitemaps(self.config),
+                                               source_include=self.config.get("sitemap_source_include"),
+                                               source_exclude=self.config.get("sitemap_source_exclude")):
             if self._cut_or_stopping():
                 return
             batch.append({"url": loc, "source": "sitemap"})

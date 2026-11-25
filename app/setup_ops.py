@@ -82,6 +82,7 @@ async def _sitemap_metadata(site_url, config, robots, fetch):
                 sitemaps, bounded_fetch, max_files=SITEMAP_METADATA_FILE_CAP,
                 max_entries=SITEMAP_METADATA_URL_CAP, state=traversal,
                 prefer_products=prefer_product_sitemaps(config),
+                source_include=config.get("sitemap_source_include"), source_exclude=config.get("sitemap_source_exclude"),
             )) as entries:
                 async for loc, lastmod in entries:
                     urls.append(loc)
@@ -1368,7 +1369,8 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, fetch)
         if sitemaps:
             urls, capped, _ = await collect_sitemap_urls(sitemaps, cap=5000, fetch=fetch,
-                                                        prefer_products=prefer_product_sitemaps(config))
+                                                        prefer_products=prefer_product_sitemaps(config),
+                                                        source_include=config.get("sitemap_source_include"), source_exclude=config.get("sitemap_source_exclude"))
             ex.discovery.update(sitemap_urls=len(urls), sitemap_capped=capped)
             with url_pattern_batch():
                 matching = filter_urls(urls, include, exclude)

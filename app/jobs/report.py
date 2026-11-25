@@ -68,7 +68,8 @@ def completeness(db, run_id: str, doc: dict) -> dict:
                 + (f", {not_collected} not collected: {reasons}" if not_collected else ", none missing"))
     source_report = doc.get("sitemap_discovery")
     probe_report = doc.get("sitemap_probe")
-    incomplete = next((r for r in (source_report, probe_report) if r and not r["complete"]), None)
+    coverage = source_report or probe_report
+    incomplete = coverage if coverage and not coverage["complete"] else None
     if incomplete:
         sentence = sentence.replace(", none missing", "")
         sentence += "; sitemap discovery is incomplete; additional target pages may be missing"
@@ -76,6 +77,8 @@ def completeness(db, run_id: str, doc: dict) -> dict:
             sentence += " (" + (incomplete.get("cap_reason") or "limit").replace("_", " ") + ")"
     if any(error.get("code") == "table_partial" for error in doc.get("errors", [])):
         sentence += "; optional table data is incomplete"
+    if coverage and coverage.get("scope") == "configured_sources":
+        sentence += "; coverage is limited to configured sitemap sources, not the whole website"
     dups = int(((doc.get("counters") or {}).get("pages_by_class") or {}).get("duplicate", 0))
     if dups:
         sentence += f"; {dups} duplicate address{'es' if dups != 1 else ''} of pages already collected skipped"
@@ -133,7 +136,8 @@ def explanation(doc: dict, current: dict, problems: list[dict]) -> dict:
     head = STOP_WORDS.get(stop, stop.replace("_", " "))
     sentence = head[0].upper() + head[1:] + "; " + current["sentence"] + "."
     advice = ADVICE.get(stop)
-    if not advice and any(current.get(k) and not current[k]["complete"] for k in ("sitemap_discovery", "sitemap_probe")):
+    coverage = current.get("sitemap_discovery") or current.get("sitemap_probe")
+    if not advice and coverage and not coverage["complete"]:
         advice = "Check the failed or pending sitemap sources, then use recollect to retry them and failed pages in a linked run. Completed source entries are retained; each linked run receives a fresh discovery budget."
     if not advice and current["not_collected"]:
         top = max(current["not_collected_by_reason"].items(), key=lambda kv: kv[1])[0]

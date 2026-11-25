@@ -23,7 +23,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from app.core.errors import ApiError
 from app.core.netguard import host_is_private, url_is_private
 from app.core.urls import absolute, canonical_url, host_of, site_key
-from app.core.url_patterns import UrlPattern, compile_patterns, matches_any, url_batch, url_pattern_budget
+from app.core.url_patterns import UrlPattern, UrlPatternBatch, compile_patterns, matches_any, url_batch, url_pattern_budget, url_pattern_batch
 from app.fetching.oneoff import Fetched, PrivateAddress, gunzip_capped, http_get
 
 SITEMAP_CAP = 100_000
@@ -188,10 +188,14 @@ def sitemap_report(state: dict) -> dict:
     if state.get("pending_root"):
         pending.append(item(state["pending_root"], {"reason": "source_file_limit"}))
     refused = [item(u, e) for u, e in sources.items() if e.get("status") == "refused"]
-    return {"complete": bool(sources) and not failed and not pending and not state.get("capped", False),
+    report = {"complete": bool(sources) and not failed and not pending and not state.get("capped", False),
             "capped": bool(state.get("capped")), "cap_reason": state.get("cap_reason"),
             "entries_seen": int(state.get("entries_seen", 0)), "source_files": len(sources),
             "failed_sources": failed, "pending_sources": pending, "refused_sources": refused}
+    if state.get("source_scope"):
+        report.update(scope="configured_sources", excluded_source_count=int(state.get("excluded_source_count", 0)),
+                      excluded_sources=[item(u, {})["url"] for u in state.get("excluded_sources", [])[:20]])
+    return report
 
 
 def sitemap_coverage(runtime: dict) -> dict:
@@ -217,6 +221,9 @@ def sitemap_retry_state(state: dict) -> dict:
     for key in ("root_order", "root_list_sha256"):
         if key in state:
             retry[key] = state[key]
+    for key in ("source_scope", "excluded_source_count", "excluded_sources"):
+        if key in state:
+            retry[key] = copy.deepcopy(state[key])
     return retry
 
 
@@ -238,7 +245,8 @@ def _product_source_rank(url: str) -> int:
 
 async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int = MAX_SITEMAP_FILES,
                         state: dict | None = None, max_entries: int | None = None,
-                        prefer_products: bool = False):
+                        prefer_products: bool = False, source_include: list[str] | None = None,
+                        source_exclude: list[str] | None = None):
     """Breadth-first source traversal with optional per-source, caller-owned cursors.
 
     ``state`` MUST be a private copy: a cursor is advanced before yielding its URL,
@@ -255,11 +263,18 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
     state.setdefault("entries_seen", 0)
     state.setdefault("capped", False)
     state.setdefault("cap_reason", None)
+    include = compile_patterns(source_include or [], "sitemap_source_include")
+    exclude = compile_patterns(source_exclude or [], "sitemap_source_exclude")
+    scoped = bool(include or exclude)
+    state["source_scope"] = scoped
     # Root and child cursors are independent: even robots.txt with > max_files
     # roots must be partial and retry from the next root, never silently complete.
     if state["capped"] and state["cap_reason"] == "entry_limit":
         return
     order = "products-first-v1" if prefer_products else "original"
+    if scoped:
+        policy = json.dumps([source_include or [], source_exclude or []], separators=(",", ":"))
+        order += ":scope-" + hashlib.sha256(policy.encode()).hexdigest()
     roots = sorted(sitemaps, key=_product_source_rank) if prefer_products else list(sitemaps)
     root_hash = hashlib.sha256(json.dumps(roots, separators=(",", ":")).encode()).hexdigest()
     if state.get("root_order") != order or state.get("root_list_sha256") != root_hash:
@@ -328,7 +343,6 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
             # Bump the policy id if ranking changes. Legacy or changed ordering
             # replays index admission through caller dedup instead of interpreting
             # an old ordinal as a position in a differently ordered index.
-            order = "products-first-v1" if prefer_products else "original"
             if entry.get("nested_order", "original") != order:
                 entry["nested_offset"] = 0
             entry["nested_order"] = order
@@ -342,8 +356,25 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
             entry["page_offset"] = offset + 1
             state["entries_seen"] += 1
             yield pages[offset]
+        pattern_batch = UrlPatternBatch()
         for offset in range(int(entry["nested_offset"]), len(nested)):
             child = nested[offset]
+            # Declared roots remain readable. Child indexes obey the same explicit
+            # policy as leaf sources; an excluded index's descendants are unknown.
+            if scoped and child not in roots:
+                try:
+                    canonical = canonical_url(child)
+                except ValueError:
+                    canonical = None  # malformed sources still reach the normal guard
+                with url_pattern_batch(pattern_batch), url_pattern_budget():
+                    allowed = canonical is None or ((not include or matches_any(include, canonical)) and not matches_any(exclude, canonical))
+                if not allowed:
+                    state["excluded_source_count"] = int(state.get("excluded_source_count", 0)) + 1
+                    examples = state.setdefault("excluded_sources", [])
+                    if len(examples) < 20:
+                        examples.append(child)
+                    entry["nested_offset"] = offset + 1
+                    continue
             if child not in sources:
                 if len(sources) >= max_files:
                     entry["reason"] = "source_file_limit"
@@ -357,13 +388,14 @@ async def iter_sitemaps(sitemaps: list[str], fetch: Fetcher, *, max_files: int =
 
 
 async def collect_sitemap_urls(sitemaps: list[str], cap: int = SITEMAP_CAP, fetch: Fetcher | None = None,
-                               *, state: dict | None = None, prefer_products: bool = False) -> tuple[list[str], bool, Any]:
+                               *, state: dict | None = None, prefer_products: bool = False,
+                               source_include: list[str] | None = None, source_exclude: list[str] | None = None) -> tuple[list[str], bool, Any]:
     """Inspect source URLs up to the total enumeration cap, optionally retaining coverage."""
     urls: list[str] = []
     latest = None
     state = {} if state is None else state
     async for loc, lastmod in iter_sitemaps(sitemaps, fetch or http_fetcher(), state=state, max_entries=cap,
-                                          prefer_products=prefer_products):
+                                          prefer_products=prefer_products, source_include=source_include, source_exclude=source_exclude):
         urls.append(loc)
         if lastmod is not None and (latest is None or lastmod > latest):
             latest = lastmod
@@ -448,8 +480,9 @@ async def start_page_links(site_url: str, fetch: Fetcher | None = None) -> tuple
 async def decide_discovery(runner, sitemaps: list[str], fetch: Fetcher | None = None) -> tuple[str, list[str]]:
     cfg = runner.config
     probe_state: dict = {}
-    urls, _capped, _ = await collect_sitemap_urls(sitemaps, cap=SITEMAP_CAP, fetch=fetch, state=probe_state,
-                                               prefer_products=prefer_product_sitemaps(cfg)) if sitemaps else ([], False, None)
+    urls, _capped, _ = await collect_sitemap_urls(sitemaps, cap=min(SITEMAP_CAP, cfg.get("max_sitemap_entries") or SITEMAP_CAP), fetch=fetch, state=probe_state,
+                                               prefer_products=prefer_product_sitemaps(cfg),
+                                               source_include=cfg.get("sitemap_source_include"), source_exclude=cfg.get("sitemap_source_exclude")) if sitemaps else ([], False, None)
     if probe_state:
         report = sitemap_report(probe_state)
         runner.rt["sitemap_probe"] = report
@@ -461,6 +494,7 @@ async def decide_discovery(runner, sitemaps: list[str], fetch: Fetcher | None = 
         # feeder cursor. Failed sources remain available for linked recollection.
         intent = copy.deepcopy(probe_state)
         intent.update(entries_seen=0, capped=False, cap_reason=None)
+        intent.update(excluded_source_count=0, excluded_sources=[])
         for entry in intent["sources"].values():
             if entry["page_offset"] or entry["nested_offset"]:
                 entry["status"] = "pending"

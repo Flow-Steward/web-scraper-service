@@ -572,11 +572,57 @@ Sitemap source coverage is reported in `sitemap_discovery` and
 `completeness.sitemap_discovery`. A missing, inaccessible, empty-body or malformed
 sitemap is a failed source, while a valid empty `<urlset>` or `<sitemapindex>` (or
 URLs all excluded by the configured filters) can be complete. Source failures and
-the total 100,000-location or 500-source-file limits make the result partial even
+the configured raw-location budget (100,000 by default) or 500-source-file limit makes the result partial even
 when no failed product URL is known. The location budget counts all locations,
 before product filters, and stays spent across a service restart. Source report
 URLs omit user information, queries and fragments; failure reasons do not contain
 raw upstream errors. Private-address refusals remain explicit and outcome-neutral.
+
+`max_sitemap_entries` explicitly sets the feeder's raw-location budget (1–1,000,000),
+subject to the independently configured service ceiling `limits.max_sitemap_entries`
+(`WSS_LIMIT_MAX_SITEMAP_ENTRIES`, default/ceiling 1,000,000). Its request default stays
+100,000; selecting product URL filters never increases it automatically. This limit
+counts locations examined, including irrelevant products; it is not the number of
+product pages fetched. Page, record, time, result-byte and destination/method/response-byte
+guards remain independent. Auto inspection stays at most 100,000 locations (or the
+smaller requested budget), and analysis/samples retain their smaller preview caps.
+
+Optional `sitemap_source_include` and `sitemap_source_exclude` are Python URL regexes
+for child sitemap sources. Include is evaluated first and exclude wins. Active roots
+(from `sitemap_url`, robots.txt or the default root) are always read; every child index
+must also pass, so excluding an intermediate index excludes its unknown descendants.
+The implementation never silently discards files by filename. Configure source scope
+only when the advertised sources establish which partitions contain the selected data.
+A filtered source report has `scope: configured_sources`, `excluded_source_count` and
+up to twenty sanitized `excluded_sources` examples. Its `complete` means the declared
+source scope was traversed, not that the whole website was inventoried. Exclusion counts
+measure observed child occurrences; changed-index replays can count a source again.
+
+For example, a reviewed synthetic index at `https://catalogue.test/sitemap.xml` may
+advertise `/maps/products_1.xml` through `/maps/products_17.xml`, plus unrelated maps.
+If its product partitions contain roughly 803,000 raw locations, an explicitly sized
+single run can use:
+
+```json
+{
+  "site_url": "https://catalogue.test/catalogue/components",
+  "discovery_mode": "sitemap",
+  "sitemap_url": "https://catalogue.test/sitemap.xml",
+  "sitemap_source_include": ["/maps/products_[0-9]+\\.xml$"],
+  "url_include": ["/products/components/"],
+  "max_sitemap_entries": 900000,
+  "max_pages": 10000,
+  "max_duration_minutes": 240
+}
+```
+
+These are settings to merge with the normal configuration, not a guarantee that any
+site has that inventory or finishes within those budgets. Source filtering avoids
+fetching unrelated maps; product URL filters avoid unrelated page fetches. Numbered
+product partitions still require reading their raw locations because filenames do not
+identify product categories. Keeping a 100,000 raw limit for 803,000 such locations
+necessarily produces a partial result. `discovery_mode: crawl` bypasses sitemaps entirely
+when verified category pagination actually exposes the required catalogue.
 
 Use `POST /v1/runs/{id}/recollect` with a fresh profile to retry unfinished sitemap
 sources and selected failed document URLs. This creates a linked run with a fresh
@@ -622,8 +668,10 @@ pagination URLs and the final source coverage before claiming completeness. A
 warning does not itself discard the links already found or abort product work.
 
 `auto` retains its initial source inspection in `sitemap_probe`, including failed
-sources and caps, even when it falls back to crawling. These remain partial-run
-provenance if a later source body changes. Probe offsets are reset before feeding;
+sources and caps, even when it falls back to crawling. This historical preview stays
+visible, but a later complete authoritative feeder traversal supersedes it for the
+final outcome. Until the feeder starts, incomplete probe coverage remains partial.
+Probe offsets are reset before feeding;
 inspecting a URL never counts as having queued it. A default `/sitemap.xml` that
 returns 404/410 is absent; an inaccessible or invalid default is incomplete.
 

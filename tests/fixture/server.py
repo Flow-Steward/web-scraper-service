@@ -184,13 +184,13 @@ def make_shop(with_sitemap: bool) -> Starlette:
         _count(request)
         base = f"http://{request.url.netloc}"
         lines = ["User-agent: *", "Disallow: /private/"]
-        if with_sitemap:
+        if with_sitemap or request.url.hostname == "scope.test":
             lines.append(f"Sitemap: {base}/sitemap_index.xml")
         return PlainTextResponse("\n".join(lines) + "\n")
 
     async def sitemap_index(request: Request):
         _count(request)
-        if not with_sitemap:
+        if not with_sitemap and request.url.hostname != "scope.test":
             return PlainTextResponse("no", status_code=404)
         base = f"http://{request.url.netloc}"
         xml = (
@@ -349,7 +349,8 @@ def make_shop(with_sitemap: bool) -> Starlette:
     async def scope_page(request: Request):
         """On scope.test: the category /lt/lamps-c100 with a subcategory and a page 2
         under its path, products outside it (/lamp-*-p<n>), and a menu to other categories."""
-        if request.url.hostname != "scope.test":
+        loopback_product = request.url.hostname == "127.0.0.1" and re.fullmatch(r"/lamp-[a-z]-p\d+", request.url.path)
+        if request.url.hostname != "scope.test" and not loopback_product:
             return PlainTextResponse("not found", status_code=404)
         _count(request)
         path = request.url.path
@@ -373,6 +374,20 @@ def make_shop(with_sitemap: bool) -> Starlette:
             return HTMLResponse(page(name, f"{menu}<h1>{name}</h1><a href='/lt/tools-c200'>Related tools</a>",
                                      f"<script type='application/ld+json'>{json.dumps(ld)}</script>"))
         return HTMLResponse(page("About", "<h1>About</h1>"))
+
+    async def scope_sitemap(request: Request):
+        """Declared source scope with irrelevant raw locations before products."""
+        if request.url.hostname not in ("scope.test", "127.0.0.1"):
+            return PlainTextResponse("not found", status_code=404)
+        _count(request)
+        base = f"http://{request.url.netloc}"
+        name = request.path_params["name"]
+        if name == "index":
+            sources = ["products", "tools"]
+            xml = "<sitemapindex>" + "".join(f"<sitemap><loc>{base}/scope-map-{part}.xml</loc></sitemap>" for part in sources) + "</sitemapindex>"
+            return Response(xml, media_type="application/xml")
+        paths = [f"/irrelevant/{i}" for i in range(6)] + ["/lamp-a-p1", "/lamp-b-p2"] if name == "products" else ["/tool-x-p9"]
+        return Response(sitemap_xml(base, paths), media_type="application/xml")
 
     async def week_page(request: Request):
         """Re-collect and CSV on week.test: a category /wk/ and products /wk/p<n> whose set, prices and
@@ -577,6 +592,7 @@ def make_shop(with_sitemap: bool) -> Starlette:
         Route("/products/{handle}.js", shopify_js), Route("/wp-json/wc/store/v1/products/{pid}", store_api),
         Route("/wp-json/wc/store/v1/products", store_api), Route("/v/{kind}/{slug}", variant_page), Route("/gc/", gap_catalogue), Route("/gc/{slug}", gap_catalogue), Route("/pc/{case}", price_case_page), Route("/jk/", junk_catalogue), Route("/jk/{slug}", junk_catalogue),
         Route("/lt/{rest:path}", scope_page), Route("/wk/{rest:path}", week_page), Route("/lk/{rest:path}", links_page), Route("/down/{slug}", down),
+        Route("/scope-map-{name}.xml", scope_sitemap),
         Route("/sitemap-products.xml.gz", sitemap_products), Route("/sitemap-parts.xml", sitemap_parts),
         Route("/sitemap.xml", sitemap_plain), Route("/kategorie/{name}", category), Route("/produkt/{slug}", product),
         Route("/ersatzteile/{slug}", part), Route("/js/{slug}", js_product), Route("/slow/{slug}", slow),
