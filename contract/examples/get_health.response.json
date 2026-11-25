@@ -47,7 +47,8 @@
     "max_templates_per_site": 20,
     "max_transforms_per_source": 5,
     "max_url_list_entries": 50000,
-    "sample_html_max_bytes": 65536
+    "sample_html_max_bytes": 65536,
+    "max_sitemap_entries": 1000000
   },
   "protection": {
     "challenge_click_allowed": false,

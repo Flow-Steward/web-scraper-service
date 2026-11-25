@@ -27,7 +27,7 @@ Paced finite pagination longer than one page timeout; a hung policy after real p
 - [x] Add progress timeout / pacing / progress hooks to `app/fetching/navigation.py`, explicitly retaining setup's total-budget behavior. Real-browser navigation regressions passed.
 - [x] Wire runtime hooks and remaining page allowance in `app/jobs/runner.py`; keep handler lifetime consistent with the job duration and refresh watchdog only for real link progress. Add unit/integration evidence and update README timeout semantics.
 - [ ] Run unit plus affected browser/runtime fixture suites in an owned isolated Docker environment. Review the frozen change and correct any material finding with regression coverage.
-- [ ] Commit and publish the fix for review; deploy the verified immutable service source to fs.piksis.eu with the same data volume and paused states. Do not reinstall the unchanged extension or invalidate its approval.
+- [ ] Commit and publish the fix for review; deploy the verified immutable service source to the demo environment with the same data volume and paused states. Do not reinstall the unchanged extension or invalidate its approval.
 - [ ] Run one new bounded Liberty Wines workflow through the approved no-proxy extension profile. Verify callback, CSV/JSONL bytes, no navigation timeout warning, global health and unchanged old paused runs. Save receipts and clean up only owned disposable check resources.
 
 ## Verification ledger

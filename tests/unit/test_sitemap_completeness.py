@@ -589,7 +589,7 @@ async def test_auto_probe_successful_prefix_is_not_a_committed_feeder_cursor(ser
     assert feeder.rt['sitemap_partial'] is True
 
 
-async def test_auto_initial_probe_cap_remains_partial_if_next_body_changes(service, monkeypatch):
+async def test_auto_complete_feeder_supersedes_probe_cap_if_next_body_changes(service, monkeypatch):
     svc, doc = service
     monkeypatch.setattr(discovery, 'SITEMAP_CAP', 5)
     doc['config'].update(discovery_mode='auto', url_include=['/product/'], url_exclude=[])
@@ -604,12 +604,13 @@ async def test_auto_initial_probe_cap_remains_partial_if_next_body_changes(servi
     async def enqueue(*args, **kwargs):
         pass
     feeder.enqueue = enqueue
-    await feeder.feed()  # A later healthy, shorter body must not erase the initial cap.
+    await feeder.feed()  # The authoritative feeder supersedes the historical inspection.
     await svc.jobs._complete_doc(doc['run_id'], doc, runtime, None)
     summary = svc.jobs.summary(doc['run_id'])
-    assert summary['outcome'] == 'partial'
+    assert summary['outcome'] == 'complete'
     assert summary['sitemap_probe']['cap_reason'] == 'entry_limit'
-    assert 'none missing' not in summary['completeness']['sentence']
+    assert summary['sitemap_discovery']['complete'] is True
+    assert 'none missing' in summary['completeness']['sentence']
 
 
 @pytest.mark.parametrize('status,partial', [(503, True), (404, False), (410, False)])

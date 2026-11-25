@@ -430,6 +430,31 @@
       ],
       "default": "skip",
       "description": "Added 2026-11-14. `POST /v1/runs` while a run of the same site is queued, running or stopping: `skip` (default) refuses the start with `409 site_busy` and stores nothing; `queue` stores the run and starts it when the other one ends (README 4.13)."
+    },
+    "max_sitemap_entries": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000,
+      "default": 100000,
+      "description": "Maximum raw page locations enumerated by the run sitemap feeder, before url_include/url_exclude. Filtered locations and changed-source replays spend this budget; restarts do not reset it. Capped by limits.max_sitemap_entries. Auto inspection, analysis and samples retain separate smaller preview limits; source files remain capped at 500."
+    },
+    "sitemap_source_include": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/regex"
+      },
+      "maxItems": 50,
+      "default": [],
+      "description": "Optional child sitemap source URL regexes, searched in canonical URLs. Empty means all discovered child sources. Active declared roots are always read. Every intermediate index must also match; excluding an index excludes its descendants. This declares source scope, not complete website coverage."
+    },
+    "sitemap_source_exclude": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/regex"
+      },
+      "maxItems": 50,
+      "default": [],
+      "description": "Child sitemap source URL regexes never fetched, applied after sitemap_source_include. Active declared roots are always read. Explicit exclusions narrow declared source coverage; filenames are never automatically discarded."
     }
   },
   "allOf": [
@@ -1131,6 +1156,49 @@
             }
           ],
           "description": "Added 2026-11-14. `POST /v1/runs` while a run of the same site is queued, running or stopping: `skip` (default) refuses the start with `409 site_busy` and stores nothing; `queue` stores the run and starts it when the other one ends (README 4.13)."
+        },
+        "max_sitemap_entries": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "description": "Maximum raw page locations enumerated by the run sitemap feeder, before url_include/url_exclude. Filtered locations and changed-source replays spend this budget; restarts do not reset it. Capped by limits.max_sitemap_entries. Auto inspection, analysis and samples retain separate smaller preview limits; source files remain capped at 500."
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ]
+        },
+        "sitemap_source_include": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/regex"
+              },
+              "maxItems": 50,
+              "description": "Optional child sitemap source URL regexes, searched in canonical URLs. Empty means all discovered child sources. Active declared roots are always read. Every intermediate index must also match; excluding an index excludes its descendants. This declares source scope, not complete website coverage."
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ]
+        },
+        "sitemap_source_exclude": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/regex"
+              },
+              "maxItems": 50,
+              "description": "Child sitemap source URL regexes never fetched, applied after sitemap_source_include. Active declared roots are always read. Explicit exclusions narrow declared source coverage; filenames are never automatically discarded."
+            },
+            {
+              "$ref": "#/$defs/unset"
+            }
+          ]
         }
       },
       "description": "One unmerged layer: run inputs, `Site settings` or the profile's `defaults`. A missing field, `null`, an empty string, an empty array and an empty object all mean \"not set in this layer\"."
@@ -1362,7 +1430,8 @@
         "max_templates_per_site",
         "max_transforms_per_source",
         "max_url_list_entries",
-        "sample_html_max_bytes"
+        "sample_html_max_bytes",
+        "max_sitemap_entries"
       ],
       "additionalProperties": false,
       "description": "The service's configured hard limits. Each value is at most the contract ceiling given as `maximum`.",
@@ -1506,6 +1575,13 @@
           "maximum": 262144,
           "default": 65536,
           "description": "Size of `distilled_html` per sample; longer content is cut and `distilled_html_truncated` is true."
+        },
+        "max_sitemap_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000,
+          "default": 1000000,
+          "description": "Service upper bound for the raw max_sitemap_entries request; WSS_LIMIT_MAX_SITEMAP_ENTRIES may lower it. The request default remains 100000."
         }
       }
     },

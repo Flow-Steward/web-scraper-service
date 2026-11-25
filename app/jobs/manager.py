@@ -792,7 +792,7 @@ class JobManager:
             doc["sitemap_discovery"] = sitemap_coverage(rt)
             if rt.get("sitemap_probe"):
                 doc["sitemap_probe"] = copy.deepcopy(rt["sitemap_probe"])
-            rt["sitemap_partial"] = not doc["sitemap_discovery"]["complete"] or bool(rt.get("sitemap_probe_partial"))
+            rt["sitemap_partial"] = not doc["sitemap_discovery"]["complete"]
         templates_failed = any(t.get("status") == "failed" for t in (rt.get("templates") or {}).values())
         # outcome-neutral entries: not_found, and sitemap URLs refused by robots.txt or the private rule
         non_neutral = int(svc.db.scalar("SELECT COUNT(*) FROM unextracted WHERE run_id=? AND neutral=0", (run_id,)) or 0)
