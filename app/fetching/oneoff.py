@@ -246,11 +246,14 @@ class BrowserSession:
 
     def __init__(self, browser: str, *, proxy: str | None = None, budget=None, timeout_s: int = 45,
                  proxy_tier: int | None = None, debug: bool = False, shots=None, variant=None,
-                 delay: tuple[float, float] = (0.0, 0.0), table_dedicated: bool = False) -> None:
+                 delay: tuple[float, float] = (0.0, 0.0), table_dedicated: bool = False,
+                 block_heavy_resources: bool = True) -> None:
         from app.fetching.browsers import Variant
 
         self.browser_name = browser
         self.table_dedicated = table_dedicated
+        self.block_heavy_resources = block_heavy_resources
+        self._resource_site_url = ""
         self.variant = variant or Variant()  # Camoufox launch: browser_os, canvas_noise
         self.proxy = proxy
         self.proxy_tier = proxy_tier
@@ -342,7 +345,11 @@ class BrowserSession:
             else:
                 await route.continue_()
 
-        await self.page.route("**/*", private_route_guard(self._refused, native_document))
+        from app.fetching.resources import resource_route_guard
+
+        resources = resource_route_guard(lambda: self._resource_site_url,
+                                         enabled=self.block_heavy_resources, then=native_document)
+        await self.page.route("**/*", private_route_guard(self._refused, resources))
         return self
 
     async def close(self) -> None:
@@ -380,6 +387,7 @@ class BrowserSession:
         if stopped is not None:
             raise HostStopped(stopped)
         self._refused.clear()
+        self._resource_site_url = url
         if self.is_closed:
             # A read-only native command preserves TargetClosedError instead
             # of replacing the transport failure with a guard RuntimeError.

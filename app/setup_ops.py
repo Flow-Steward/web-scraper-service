@@ -405,6 +405,7 @@ class SetupFetch:
                                                      variant=Variant.from_config(self.config),
                                                      delay=(0, 0),
                                                      timeout_s=self.page_timeout,
+                                                     block_heavy_resources=self.config.get("block_heavy_resources", True),
                                                      **({"table_dedicated": True} if self._table_dedicated else {}))
                 self._session = await self._session.start()
             except Exception as exc:

@@ -1574,14 +1574,9 @@ class JobRunner:
             await page.set_extra_http_headers(headers)
         from app.fetching.oneoff import private_route_guard
 
-        block_heavy = self.config.get("block_heavy_resources", True)
-
         async def _allowed(route):
             try:
-                if block_heavy and route.request.resource_type in ("image", "media", "font"):
-                    await route.abort()
-                else:
-                    await route.continue_()
+                await route.continue_()
             except Exception:
                 pass
 
@@ -1623,7 +1618,11 @@ class JobRunner:
             else:
                 await _allowed(route)
 
-        await page.route("**/*", private_route_guard(None, native_allowed))
+        from app.fetching.resources import resource_route_guard
+
+        resources = resource_route_guard(lambda: url, enabled=self.config.get("block_heavy_resources", True),
+                                         then=native_allowed)
+        await page.route("**/*", private_route_guard(None, resources))
 
     def _is_browser(self, ctx) -> bool:
         try:
