@@ -55,7 +55,7 @@ async def test_child_fetch_and_recursive_attach_precede_script_resume():
     root.listeners["Target.attachedToTarget"](attached())
     await asyncio.gather(*list(tasks))
     methods = [json.loads(params["message"])["method"] for method, params in root.commands if method == "Target.sendMessageToTarget"]
-    assert methods == ["Fetch.enable", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"]
+    assert methods == ["Network.enable", "Fetch.enable", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"]
     assert failures == []
     manager.close()
 
@@ -75,7 +75,7 @@ async def test_child_setup_timeout_never_resumes_scripts_and_releases_futures():
     root.listeners["Target.attachedToTarget"](attached())
     await asyncio.gather(*list(tasks))
     methods = [json.loads(params["message"])["method"] for method, params in root.commands if method == "Target.sendMessageToTarget"]
-    assert methods == ["Fetch.enable"]
+    assert methods == ["Network.enable"]
     assert failures == ["child_target_initialization_failed"]
     assert manager.pending_commands == 0
     manager.close()
@@ -125,7 +125,7 @@ async def test_recursive_child_target_gets_its_own_interception_before_resume():
         while message["method"] == "Target.sendMessageToTarget":
             message = json.loads(message["params"]["message"])
         leaves.append(message["method"])
-    assert leaves == ["Fetch.enable", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"] * 2
+    assert leaves == ["Network.enable", "Fetch.enable", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"] * 2
     assert failures == []
     manager.close()
 
