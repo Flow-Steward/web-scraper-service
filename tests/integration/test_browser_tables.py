@@ -439,12 +439,12 @@ async def test_worker_policy_blocks_future_blob_network_and_firefox_shared_worke
 
 async def test_oneoff_dedicated_firefox_launch_really_isolates_workers(monkeypatch, native_resources):
     import os
-    from app.fetching.browsers import launch_camoufox
+    from app.fetching.browsers import browser_presence, launch_camoufox
     from app.fetching.oneoff import BrowserSession
     from tests.unit.test_logic import settings
-    binary = os.environ.get('CAMOUFOX_EXECUTABLE_PATH')
+    binary = os.environ.get('CAMOUFOX_EXECUTABLE_PATH') or browser_presence().get('camoufox', {}).get('path')
     if not binary:
-        pytest.skip('Pinned local Camoufox binary required')
+        pytest.skip('Camoufox is not installed in this environment')
     monkeypatch.setattr('app.settings._settings', settings())
     monkeypatch.setattr('camoufox.utils.warn_if_package_outdated', lambda:None)
     async def no_geo(*args, **kwargs):

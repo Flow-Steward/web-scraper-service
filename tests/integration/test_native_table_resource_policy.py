@@ -125,7 +125,10 @@ async def resource_page(request, monkeypatch, native_resources, table_worker_iso
                 'navigator':{'platform':'MacIntel','userAgent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:158.0) Gecko/20100101 Firefox/158.0','hardwareConcurrency':4},
                 'screen':{'width':1440,'height':900,'availWidth':1440,'availHeight':860,'colorDepth':24}})
         else:
-            browser = await pw.chromium.launch(headless=True, executable_path=os.environ.get('WSS_TEST_CHROMIUM_PATH'))
+            # The dev image installs full Chromium with --no-shell, as production
+            # does; default headless launch otherwise asks for a separate shell.
+            binary = os.environ.get('WSS_TEST_CHROMIUM_PATH') or pw.chromium.executable_path
+            browser = await pw.chromium.launch(headless=True, executable_path=binary)
         guard = None
         try:
             context = await browser.new_context(service_workers='block', ignore_https_errors=True)
