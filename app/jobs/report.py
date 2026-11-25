@@ -75,6 +75,8 @@ def completeness(db, run_id: str, doc: dict) -> dict:
         sentence += "; sitemap discovery is incomplete; additional target pages may be missing"
         if incomplete.get("capped"):
             sentence += " (" + (incomplete.get("cap_reason") or "limit").replace("_", " ") + ")"
+    if any(error.get("code") == "table_partial" for error in doc.get("errors", [])):
+        sentence += "; optional table data is incomplete"
     if coverage and coverage.get("scope") == "configured_sources":
         sentence += "; coverage is limited to configured sitemap sources, not the whole website"
     dups = int(((doc.get("counters") or {}).get("pages_by_class") or {}).get("duplicate", 0))

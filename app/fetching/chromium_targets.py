@@ -16,8 +16,15 @@ _AUTO_ATTACH = {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": F
 # Request interception enables authRequired while response interception still gates redirects.
 FETCH_OPTIONS = {"handleAuthRequests": True, "patterns": [
     {"resourceType": "Document", "requestStage": "Request"},
-    {"resourceType": "Document", "requestStage": "Response"},
+    {"requestStage": "Response"},
 ]}
+
+TABLE_FETCH_OPTIONS = {"handleAuthRequests": True, "patterns": [
+    {"requestStage": "Request"}, {"requestStage": "Response"},
+]}
+_TABLE_ATTACH = {**_AUTO_ATTACH, "filter": [
+    {"type": kind, "exclude": False} for kind in ("iframe", "worker", "shared_worker")
+] + [{"exclude": True}]}
 
 
 class _ChildChannel:
@@ -71,15 +78,36 @@ class _ChildChannel:
 
 class ChildTargets:
     def __init__(self, root, *, on_paused, on_failure, spawn, is_closed,
-                 timeout_s=3, max_children=64, max_commands=128, on_detached=None, on_auth_required=None):
+                 timeout_s=3, max_children=64, max_commands=128, on_detached=None, on_auth_required=None, fetch_options=None, table_active=None, on_network=None):
         self.root, self.on_paused, self.on_failure = root, on_paused, on_failure
         self.spawn, self.is_closed, self.timeout_s = spawn, is_closed, timeout_s
         self.max_children, self.max_commands = max_children, max_commands
         self.on_detached = on_detached
         self.on_auth_required = on_auth_required
+        self.fetch_options = fetch_options or (lambda: FETCH_OPTIONS)
+        self.table_active = table_active or (lambda: False)
+        self.on_network = on_network
         self.channels, self.pending_commands = {}, 0
         self.closed, self.failed = False, False
         self.initializers, self.listeners = set(), []
+
+    async def enable_table(self):
+        await self.root.send("Target.setAutoAttach", _TABLE_ATTACH)
+        for child in list(self.channels.values()):
+            if not child.closed:
+                await child.send("Fetch.enable", TABLE_FETCH_OPTIONS)
+                await child.send("Target.setAutoAttach", _TABLE_ATTACH)
+        while self.initializers:
+            await asyncio.gather(*list(self.initializers))
+        if self.failed:
+            raise RuntimeError("table child policy unavailable")
+
+    async def end_table(self):
+        for child in list(self.channels.values()):
+            if not child.closed:
+                await child.send("Fetch.enable", FETCH_OPTIONS)
+                await child.send("Target.setAutoAttach", _AUTO_ATTACH)
+        await self.root.send("Target.setAutoAttach", _AUTO_ATTACH)
 
     async def start(self):
         self._listen(self.root)
@@ -111,6 +139,9 @@ class ChildTargets:
         if len(self.channels) >= self.max_children:
             self.fail("child_target_capacity")
             return
+        if self.table_active() and event["targetInfo"]["type"] in ("worker", "shared_worker"):
+            self.fail("table_worker_unsupported")
+            return  # Never release worker execution. Owning page closes first.
         if event["targetInfo"]["type"] != "iframe" or not event.get("waitingForDebugger"):
             self.fail("child_target_not_paused")
             return
@@ -128,8 +159,9 @@ class ChildTargets:
     async def _initialize(self, child):
         try:
             async with asyncio.timeout(self.timeout_s):
-                await child.send("Fetch.enable", FETCH_OPTIONS)
-                await child.send("Target.setAutoAttach", _AUTO_ATTACH)
+                await child.send("Network.enable")
+                await child.send("Fetch.enable", self.fetch_options())
+                await child.send("Target.setAutoAttach", _TABLE_ATTACH if self.table_active() else _AUTO_ATTACH)
                 if not self.closed and not child.closed and not self.is_closed():
                     await child.send("Runtime.runIfWaitingForDebugger")
                     child.initialized = True
@@ -159,6 +191,8 @@ class ChildTargets:
                 method, params = message.get("method"), message.get("params", {})
                 if method == "Fetch.requestPaused":
                     self.on_paused(params, child)
+                elif method.startswith("Network.") and self.on_network is not None:
+                    self.on_network(method, params, child)
                 elif method == "Fetch.authRequired":
                     if self.on_auth_required is None:
                         self.fail("child_target_auth_unhandled")

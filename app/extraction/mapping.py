@@ -180,7 +180,7 @@ def source_allowed(kind: str, extraction_mode: str) -> bool:
     if extraction_mode == "structured_data":
         return kind in ("jsonld", "microdata")
     if extraction_mode == "selectors":
-        return kind in ("css", "meta", "spec_table")
+        return kind in ("css", "meta", "spec_table", "browser_table")
     return True
 
 
@@ -222,6 +222,11 @@ def _pairs_from_structured(values: list[Any]) -> dict[str, str]:
 
 def _run_source(page: Page, source: dict, field_type: str, multiple: bool) -> list[Any]:
     kind = source["kind"]
+    if kind == "browser_table":
+        from app.extraction.tables import capture_for
+
+        captured = capture_for(page, source)
+        return [coerce(captured["html"], "html", page.base_url)] if captured.get("complete") else []
     if kind == "spec_table" or field_type == "spec_table":
         if kind == "spec_table":
             pairs = spec_table_pairs(page, source)
@@ -271,6 +276,12 @@ def extract_field(page: Page, spec: dict, extraction_mode: str) -> FieldOutcome:
     for idx, source in enumerate(spec.get("sources") or []):
         if not source_allowed(source["kind"], extraction_mode):
             continue
+        if source["kind"] == "browser_table":
+            from app.extraction.tables import capture_for
+
+            captured = capture_for(page, source)
+            if not captured.get("complete"):
+                return FieldOutcome(None, idx, ["browser_table: " + captured.get("reason", "uncaptured") + "; collect new samples with matching table_sources before testing"])
         join = _join_spec(source)
         try:
             values = _run_source(page, source, spec["type"], multiple or join is not None)

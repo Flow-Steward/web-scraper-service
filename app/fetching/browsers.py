@@ -128,7 +128,7 @@ class Variant:
         return {"browser_os": self.browser_os, "canvas_noise": self.canvas_noise}
 
 
-async def launch_camoufox(playwright, *, headless: Any, variant: Variant | None = None, **overrides: Any):
+async def launch_camoufox(playwright, *, headless: Any, variant: Variant | None = None, table_dedicated: bool = False, **overrides: Any):
     """Camoufox as every part of the service launches it (jobs, analysis, samples, the report):
     ``humanize``, ``disable_coop``, the variant's OS and canvas mode, the 1280x720 window,
     ``enable_cache``. ``overrides``: the report's experiments (``humanize``, ``webgl_config``)."""
@@ -141,7 +141,7 @@ async def launch_camoufox(playwright, *, headless: Any, variant: Variant | None 
     options.update(overrides)
     from app.fetching.firefox_policy import FirefoxPolicyBridge
 
-    bridge = await FirefoxPolicyBridge().start()
+    bridge = await FirefoxPolicyBridge(**({"table_worker_isolation": True} if table_dedicated else {})).start()
     browser = None
     try:
         options["addons"] = [*(options.get("addons") or []), bridge.addon_path]
@@ -168,6 +168,11 @@ async def launch_camoufox(playwright, *, headless: Any, variant: Variant | None 
         try:
             await bootstrap.new_page()
             await bridge.wait_ready()
+            if table_dedicated:
+                if (getattr(bridge, "table_worker_isolation", False) is not True
+                        or getattr(bridge, "_worker_isolation_ready", False) is not True):
+                    raise RuntimeError("native table worker isolation unavailable")
+                browser._wss_table_worker_isolation = True
         finally:
             await bootstrap.close()
         return browser
@@ -225,11 +230,15 @@ def _make_plugins():
                 contexts = self.__dict__.setdefault("_wss_contexts", {})
                 key = getattr(proxy_info, "session_id", None) or getattr(proxy_info, "url", None) or "default"
                 ctx = contexts.get(key)
+                if ctx is not None:
+                    await self._await_table_cleanup(ctx)
                 if ctx is not None and getattr(ctx, "_wss_closed", False):
                     ctx = None
                 if ctx is None:
                     await self._close_idle_contexts(contexts)
                     ctx = await self._create_browser_context(browser_new_context_options=browser_new_context_options, proxy_info=proxy_info)
+                    if getattr(self, "_wss_table_dedicated", False):
+                        ctx._wss_table_owned = True
                     ctx.on("close", lambda *_: setattr(ctx, "_wss_closed", True))
                     contexts[key] = ctx
                 page = await ctx.new_page()
@@ -241,6 +250,23 @@ def _make_plugins():
                 self._opening_pages_count -= 1
             return page
 
+        async def _await_table_cleanup(self, context) -> None:
+            if not getattr(self, "_wss_table_dedicated", False):
+                return
+            pending = getattr(context, "_wss_table_cleanup_task", None)
+            if pending is not None:
+                import asyncio
+
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    raise  # The cleanup stays armed; a later admission waits too.
+                except Exception:
+                    # Never lend a transport with an unproven old binding to a
+                    # new page, even if the old page already released capacity.
+                    await self._browser.close()
+                    raise RuntimeError("previous table lease cleanup failed") from None
+
         async def _close_idle_contexts(self, contexts: dict) -> None:
             if len(contexts) < self.MAX_CONTEXTS:
                 return
@@ -250,6 +276,7 @@ def _make_plugins():
                 except Exception:
                     idle = True
                 if idle:
+                    await self._await_table_cleanup(ctx)
                     contexts.pop(key, None)
                     try:
                         await ctx.close()
@@ -285,7 +312,8 @@ def _make_plugins():
             return await chromium_context(self._browser, identity, **options)
 
     class ChromiumPlugin(PlaywrightBrowserPlugin):
-        def __init__(self, *, headless: bool, max_pages: int) -> None:
+        def __init__(self, *, headless: bool, max_pages: int, dedicated_internal: bool = False) -> None:
+            self._wss_table_dedicated = dedicated_internal
             super().__init__(
                 browser_type="chromium",
                 browser_launch_options={
@@ -303,12 +331,16 @@ def _make_plugins():
                 raise RuntimeError("plugin not initialised")
             opts = {k: v for k, v in self._browser_launch_options.items() if v is not None}
             browser = await self._playwright.chromium.launch(**opts)
-            return SessionFingerprintController(
+            controller = SessionFingerprintController(
                 browser,
                 use_incognito_pages=True,
                 max_open_pages_per_browser=self._max_open_pages_per_browser,
                 header_generator=None,
             )
+            controller._wss_table_dedicated = self._wss_table_dedicated
+            if self._wss_table_dedicated:
+                controller.MAX_CONTEXTS = 1
+            return controller
 
     class CamoufoxController(SessionContexts, PlaywrightBrowserController):
         """Camoufox: the identity of the context's exit (identity.py): one preset, fonts and
@@ -349,7 +381,8 @@ def _make_plugins():
                 return await camoufox_context(self._browser, None, proxy=proxy, variant=v, **options)
 
     class CamoufoxPlugin(PlaywrightBrowserPlugin):
-        def __init__(self, *, headless: bool, max_pages: int, variant: Variant | None = None) -> None:
+        def __init__(self, *, headless: bool, max_pages: int, variant: Variant | None = None, dedicated_internal: bool = False) -> None:
+            self._wss_table_dedicated = dedicated_internal
             super().__init__(browser_type="firefox", use_incognito_pages=True, max_open_pages_per_browser=max_pages)
             self._camoufox_headless = headless
             self._host_rendered: dict[str, bool] = {}
@@ -361,8 +394,9 @@ def _make_plugins():
             headless: Any = self._camoufox_headless
             if not headless and not os.environ.get("DISPLAY"):
                 headless = "virtual"
-            browser = await launch_camoufox(self._playwright, headless=headless, variant=self._variant)
-            return CamoufoxController(
+            table_options = {"table_dedicated": True} if self._wss_table_dedicated else {}
+            browser = await launch_camoufox(self._playwright, headless=headless, variant=self._variant, **table_options)
+            controller = CamoufoxController(
                 browser,
                 use_incognito_pages=True,
                 max_open_pages_per_browser=self._max_open_pages_per_browser,
@@ -370,14 +404,19 @@ def _make_plugins():
                 host_rendered=self._host_rendered,
                 variant=self._variant,
             )
+            controller._wss_table_dedicated = self._wss_table_dedicated
+            if self._wss_table_dedicated:
+                controller.MAX_CONTEXTS = 1
+            return controller
 
     return ChromiumPlugin, CamoufoxPlugin
 
 
-def make_browser_pool(browser: str, *, headless: bool, max_pages: int, variant: Variant | None = None):
+def make_browser_pool(browser: str, *, headless: bool, max_pages: int, variant: Variant | None = None, dedicated_internal: bool = False):
     from crawlee.browsers import BrowserPool
 
     chromium_cls, camoufox_cls = _make_plugins()
-    plugin = (camoufox_cls(headless=headless, max_pages=max_pages, variant=variant) if browser == "camoufox"
-              else chromium_cls(headless=headless, max_pages=max_pages))
+    max_pages = 1 if dedicated_internal else max_pages
+    plugin = (camoufox_cls(headless=headless, max_pages=max_pages, variant=variant, dedicated_internal=dedicated_internal) if browser == "camoufox"
+              else chromium_cls(headless=headless, max_pages=max_pages, dedicated_internal=dedicated_internal))
     return BrowserPool(plugins=[plugin], retire_browser_after_page_count=200)

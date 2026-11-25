@@ -193,6 +193,8 @@ class SetupFetch:
         self.navigation: dict[str, Any] = {}
         self._navigation_robots: dict[str, Any] = {}
         self._navigation_actions = 0
+        self._table_archive_bytes = 0
+        self._table_dedicated = False
         from app.jobs.throttle import HostThrottle
 
         floor = 60 / float(config.get("max_requests_per_minute") or 60000)
@@ -402,7 +404,8 @@ class SetupFetch:
                                                      debug=bool(self.config.get("debug")), shots=self.svc.samples,
                                                      variant=Variant.from_config(self.config),
                                                      delay=(0, 0),
-                                                     timeout_s=self.page_timeout)
+                                                     timeout_s=self.page_timeout,
+                                                     **({"table_dedicated": True} if self._table_dedicated else {}))
                 self._session = await self._session.start()
             except Exception as exc:
                 await self._abort_browser(exc)
@@ -478,6 +481,149 @@ class SetupFetch:
         if settle and got[0] and got[0] < 400 and detect_html(got[1], got[0]).kind == "none":
             await self.discover_links(url)
         return got
+
+    async def capture_tables(self, page, sources):
+        """Explicit sample acquisition; never borrow cached HTML from another tab state."""
+        from app.extraction.tables import TableCaptureBudget, unavailable
+        from app.fetching.tables import collect_table
+        from app.core.urls import host_of
+
+        if not sources:
+            return
+        budget = TableCaptureBudget(page.table_captures, sources)
+        if self.config.get("fetch_mode") == "http":
+            for source in sources:
+                if budget.needs_capture(source):
+                    budget.retain(source, unavailable("browser_required"))
+            return
+        if self._session is None:
+            self._table_dedicated = True
+        session = await self.session()
+        if session is None:
+            for source in sources:
+                if budget.needs_capture(source):
+                    budget.retain(source, unavailable("browser_unavailable"))
+            return
+        if (getattr(session, "context", None) is not None and getattr(session, "_browser", None) is not None
+                and session._browser.contexts == [session.context] and session.context.pages == [session.page]):
+            session.context._wss_table_owned = True
+        if self.failure_for(page.url):
+            for source in sources:
+                if budget.needs_capture(source):
+                    budget.retain(source, unavailable("protection_not_passed"))
+            return
+        def native_policy():
+            policy = (getattr(session, "_native_document_policy", None)
+                      or getattr(session.page, "_wss_native_document_policy", None))
+            if policy is not None:
+                policy.raise_if_denied()
+            return policy
+
+        def document_signature(html):
+            # Table hydration and pager state may change; compare the structure
+            # outside the explicitly configured table/control regions.
+            document = Page(html, page.url)
+            selectors = dict.fromkeys(source[key] for source in sources for key in (
+                "selector", "current_page_selector", "next_selector") if source.get(key))
+            for selector in selectors:
+                for node in document.selector.css(selector):
+                    parent = node.root.getparent()
+                    if parent is not None:
+                        parent.remove(node.root)
+            return Page(document.selector.get(), page.url).signature
+
+        async def validate_document():
+            policy = native_policy()
+            if session.page is None or session.page.url != page.url:
+                await self._navigation_throttle.wait(host_of(page.url))
+                native_policy()
+                status, html, final_url, _ = await session.get(
+                    page.url, destination_policy=lambda target: self._destination_allowed(target, site_url=page.url, admitted_url=page.url))
+                if native_policy() is None:
+                    return "unsupported_browser"
+            else:
+                if policy is None:
+                    return "unsupported_browser"
+                html = await session.page.content()
+                native_policy()
+                status, final_url = policy.document_status(None), session.page.url
+            if final_url != page.url or session.page.url != page.url:
+                return "document_changed"
+            if status is None or not 200 <= status < 400:
+                return "table_http_failed"
+            if document_signature(html) != document_signature(page.html):
+                return "document_changed"
+            return None
+
+        async def allowed(action):
+            if self._navigation_actions >= int(self.config.get("max_pages") or 100):
+                return False
+            if not await self._destination_allowed(action.url, site_url=page.url, admitted_url=page.url):
+                return False
+            self._navigation_actions += 1
+            return True
+
+        async def pace(action):
+            await self._navigation_throttle.wait(host_of(action.url))
+
+        async def restart_document():
+            session._native_document_policy.raise_if_denied()
+            status, html, final_url, _ = await session.get(
+                page.url, destination_policy=lambda target: self._destination_allowed(target, site_url=page.url, admitted_url=page.url))
+            session._native_document_policy.raise_if_denied()
+            return (final_url == page.url and status is not None and status < 400
+                    and document_signature(html) == document_signature(page.html))
+
+        table_started = asyncio.get_running_loop().time()
+        document_checked, document_reason = False, None
+        for source in sources:
+            if not budget.needs_capture(source):
+                continue
+            bounded, limit_reason = budget.bounds(source)
+            if bounded is None:
+                budget.retain(source, unavailable(limit_reason))
+                continue
+            remaining = self.page_timeout - (asyncio.get_running_loop().time() - table_started)
+            if remaining <= 0:
+                budget.retain(source, unavailable("time_limit"))
+                continue
+            if not document_checked:
+                try:
+                    async with asyncio.timeout(remaining):
+                        document_reason = await validate_document()
+                except TimeoutError:
+                    native_policy()
+                    document_reason = "time_limit"
+                document_checked = True
+            if document_reason is not None:
+                budget.retain(source, unavailable(document_reason))
+                continue
+            remaining = self.page_timeout - (asyncio.get_running_loop().time() - table_started)
+            if remaining <= 0:
+                budget.retain(source, unavailable("time_limit"))
+                continue
+            bounded = bounded | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
+            captured = await collect_table(session.page, bounded, before_action=allowed,
+                                           pace_action=pace, cancelled=lambda: bool(asyncio.current_task().cancelling()),
+                                           restart_document=restart_document)
+            if session._native_document_policy is not None:
+                session._native_document_policy.raise_if_denied()
+            budget.retain(source, captured, bounded)
+
+    def save_table_sample(self, sample, page):
+        if not page.table_captures:
+            return
+        payload = {"table_captures": page.table_captures}
+        size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        limit = self.svc.settings.limits["max_result_bytes"]
+        if self._table_archive_bytes + size <= limit:
+            self.svc.samples.save_extra(sample["sample_id"], payload)
+            self._table_archive_bytes += size
+            sample["table_evidence"] = {"retained": True, "reason": "retained", "bytes": size}
+        else:
+            receipt = {"retained": False, "reason": "storage_limit", "source_keys": list(page.table_captures)}
+            self.svc.samples.save_extra(sample["sample_id"], {"table_evidence": receipt})
+            sample["table_evidence"] = {"retained": False, "reason": "storage_limit"}
 
     def _browser_fetched(self, url, got):
         from dataclasses import asdict
@@ -839,6 +985,10 @@ async def samples(svc, body: dict) -> dict:
         errors.append(field_error("config.sample_count", "limit_exceeded", "sample_count above the service limit", limits["max_sample_count"]))
     if body.get("urls") and len(body["urls"]) > limits["max_sample_count"]:
         errors.append(field_error("urls", "limit_exceeded", "too many URLs", limits["max_sample_count"]))
+    for i, source in enumerate(body.get("table_sources") or []):
+        for key, value in source.items():
+            if key.endswith("selector") and not _css_ok(value):
+                errors.append(field_error(f"table_sources[{i}].{key}", "invalid_value", "the CSS selector does not parse"))
     if errors:
         raise validation_failed(errors)
     sf = SetupFetch(svc, config, profile, strict_stop=True)
@@ -873,6 +1023,12 @@ def _sample_link_groups(page, site, config, mappings):
     return groups
 
 
+def _sample_table_sources(mapping, body):
+    from app.extraction.tables import requested_sources
+
+    return list(body["table_sources"]) if "table_sources" in body else requested_sources(mapping)
+
+
 async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) -> dict:
     warnings: list[dict] = []
     template_id = body.get("template_id")
@@ -882,6 +1038,9 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
     if site is None:
         raise validation_failed([field_error("config.site_url", "required", "samples need site_url or urls")])
     mappings = [m["mapping"] | {"__version": m["version"]} for m in svc.mappings.active_mappings(site)]
+    from app.extraction.tables import requested_sources
+
+    sf._table_dedicated = bool(body["table_sources"]) if "table_sources" in body else any(requested_sources(mapping) for mapping in mappings)
     only = [m for m in mappings if m["template_id"] == template_id] if template_id else None
     from app.extraction.target_guess import product_signals
 
@@ -1045,6 +1204,11 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
                 **facts,
             )
             continue
+        from app.extraction.tables import table_field_names
+
+        table_sources = _sample_table_sources(tmpl, body)
+        if table_sources:
+            await sf.capture_tables(page, table_sources)
         ex.page(shown, how, "sample", None, signals, **facts)
         extracted = plain_prices(apply_mapping(tmpl, page, config.get("extraction_mode", "auto")).data) if tmpl else None
         ts = now()
@@ -1054,13 +1218,15 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
             matched_template_id=tmpl["template_id"] if tmpl else None,
             suggested_template_id=tmpl["template_id"] if tmpl else suggest_template_id(canonical, taken),
             structured_types=config.get("structured_data_types") or [], max_bytes=svc.settings.limits["sample_html_max_bytes"],
-            extracted=extracted,
+            extracted=extracted, table_fields=table_field_names(tmpl),
         )
         await _attach_variant_sources(svc, sample, page, sf, ex)
+        if page.table_captures:
+            sf.save_table_sample(sample, page)
         svc.samples.save(sample, page.html, page.url)
         out.append(sample)
     if not out and not explicit and not single and config.get("discovery_mode") != "sitemap" and _no_target_hints(config, mappings) and config.get("site_url") and sf.failure_for(config["site_url"]) is None:
-        guessed = await _guessed_samples(svc, config, sf, count, taken, warnings, ex)
+        guessed = await _guessed_samples(svc, config, sf, count, taken, warnings, ex, body.get("table_sources"))
         out += guessed
     requested = count if not explicit else len(body["urls"])
     if len(out) < count and not explicit:
@@ -1149,7 +1315,7 @@ def _no_target_hints(config: dict, mappings: list[dict]) -> bool:
     return not (config.get("url_include") or config.get("target_page_selector") or mappings or config.get("discovery_mode") == "url_list")
 
 
-async def _guessed_samples(svc, config: dict, sf: SetupFetch, count: int, taken: set, warnings: list, ex: Explain | None = None) -> list[dict]:
+async def _guessed_samples(svc, config: dict, sf: SetupFetch, count: int, taken: set, warnings: list, ex: Explain | None = None, table_sources: list | None = None) -> list[dict]:
     """No structured data and no hint: guess the target pages by URL shape and page structure."""
     from app.extraction.target_guess import guess_targets
 
@@ -1196,6 +1362,8 @@ async def _guessed_samples(svc, config: dict, sf: SetupFetch, count: int, taken:
             canonical = canonical_url(page.url)
         except ValueError:
             continue
+        if table_sources:
+            await sf.capture_tables(page, table_sources)
         ts = now()
         sample = sample_doc(
             sample_id=new_id("smp"), page=page, requested_url=url, source_key=None,
@@ -1205,6 +1373,8 @@ async def _guessed_samples(svc, config: dict, sf: SetupFetch, count: int, taken:
             extracted=None,
         )
         await _attach_variant_sources(svc, sample, page, sf, ex)
+        if page.table_captures:
+            sf.save_table_sample(sample, page)
         svc.samples.save(sample, page.html, page.url)
         out.append(sample)
         if ex is not None:
@@ -1387,10 +1557,25 @@ def validate_mapping_rules(mapping: dict, svc, prefix: str) -> list[dict]:
                         re.compile(t["pattern"])
                     except re.error:
                         errors.append(field_error(f"{prefix}.fields[{i}].sources[{j}].transforms[{k}].pattern", "pattern_invalid", "the regular expression does not compile"))
+            if s.get("kind") == "browser_table":
+                for key, value in s.items():
+                    if key.endswith("selector") and not _css_ok(value):
+                        errors.append(field_error(f"{prefix}.fields[{i}].sources[{j}].{key}", "invalid_value", "the CSS selector does not parse"))
             if s.get("selector"):
                 if not _css_ok(s["selector"]):
                     errors.append(field_error(f"{prefix}.fields[{i}].sources[{j}].selector", "invalid_value", "the CSS selector does not parse"))
     block = mapping.get("variants") or {}
+    if block:
+        from app.extraction.variants import variant_field_specs
+
+        variant_names = {spec["name"] for spec in variant_field_specs(mapping)}
+        for i, spec in enumerate(fields):
+            if (spec["name"] in variant_names
+                    and any(source.get("kind") == "browser_table" for source in spec.get("sources") or [])):
+                errors.append(field_error(
+                    f"{prefix}.fields[{i}].sources", "ambiguous_table_variant",
+                    "A browser table field cannot also be overridden by a variant; use one verified source or separate table and variant fields.",
+                ))
     for i, src in enumerate(block.get("sources") or []):
         if src.get("selector") and not _css_ok(src["selector"]):
             errors.append(field_error(f"{prefix}.variants.sources[{i}].selector", "invalid_value", "the CSS selector does not parse"))
@@ -1475,6 +1660,13 @@ async def mapping_test(svc, body: dict) -> dict:
     checks: dict[str, dict] = {}  # per sample, the page's price signal and variant data
     for sid, (doc, html, final_url) in loaded:
         page = Page(html, final_url, doc.get("http_status", 200))
+        from app.extraction.tables import referenced_captures, restore_captures
+
+        extra = svc.samples.load_extra(sid)
+        captured = extra.get("table_captures")
+        if not isinstance(captured, dict):
+            captured = referenced_captures(getattr(svc.settings, "data_dir", None), extra.get("table_evidence"))
+        restore_captures(page, captured)
         try:
             canonical = canonical_url(final_url)
         except ValueError:
@@ -1485,6 +1677,8 @@ async def mapping_test(svc, body: dict) -> dict:
             sample_results.append({"sample_id": sid, "url": doc["url"], "template_id": None, "data": None, "missing_required": []})
             continue
         ext = apply_mapping(tmpl, page, mode)
+        from app.extraction.tables import table_coverage, table_failures
+
         required = required_set(tmpl, extra_required)
         per_template[tmpl["template_id"]].append((sid, ext))
         view = price_view(page)  # what the page shows of its price, whatever the mapping reads
@@ -1571,6 +1765,10 @@ async def mapping_test(svc, body: dict) -> dict:
             )
             if not checks[sid]["excluded"]:
                 evaluated_rows[tmpl["template_id"]].append((sid, ext.data, ext, {}))
+        coverage = table_coverage(tmpl, page)
+        if coverage:
+            result["table_coverage"] = coverage
+            result["missing_required"] = sorted(set(result["missing_required"]) | (required & set(table_failures(tmpl, page))))
         result.update(keys)
         if (
             own_record
@@ -1684,6 +1882,14 @@ async def mapping_test(svc, body: dict) -> dict:
             entry["passed"] = False
             all_passed = False  # failures exist only for a template that matched a sample
             warnings.extend(failures)
+        for sample in sample_results:
+            if sample["template_id"] == tid:
+                for name, coverage in (sample.get("table_coverage") or {}).items():
+                    if not coverage["complete"]:
+                        warnings.append(field_error(
+                            f"mappings[{mappings.index(m)}].fields", "table_incomplete",
+                            f"sample {sample['sample_id']}: table {name} is unknown ({coverage['reason']}); collect a fresh guarded sample to verify it",
+                        ))
         # fields of the mapping that no matched sample filled (a test passes on its required
         # fields only; an optional field empty everywhere is worth a loud warning)
         empty = [f["name"] for f in fields_out if evaluated and f["filled_count"] == 0]

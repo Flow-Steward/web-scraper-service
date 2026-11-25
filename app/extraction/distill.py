@@ -219,6 +219,35 @@ def variant_pointers(sources: list[dict]) -> dict[str, str]:
     return out
 
 
+def table_capture_previews(captures: dict) -> list[dict]:
+    """Public hints share one 64 KiB budget; only private evidence is replayable."""
+    import json
+
+    def text(value):
+        return value.encode("utf-8")[:256].decode("utf-8", errors="ignore") if isinstance(value, str) else ""
+
+    previews = []
+    originals = []
+    for key, captured in list(captures.items())[:55]:
+        rows, headers = captured.get("rows") or [], captured.get("headers") or []
+        previews.append({"source_key": key, "complete": captured["complete"], "reason": captured["reason"],
+                         "pages": captured["pages"], "bytes": captured["bytes"], "row_count": len(rows),
+                         "column_count": max([len(headers), *(len(row) for row in rows)], default=0),
+                         "headers_preview": [], "rows_preview": [], "preview_truncated": bool(rows or headers)})
+        originals.append((rows, headers))
+    for index, (rows, headers) in enumerate(originals):
+        header_preview = [text(value) for value in headers[:16]]
+        row_preview = [[text(value) for value in row[:16]] for row in rows[:3]]
+        previous = previews[index]
+        candidate = previous | {"headers_preview": header_preview, "rows_preview": row_preview,
+                                "preview_truncated": header_preview != headers or row_preview != rows}
+        previews[index] = candidate
+        # ASCII escaping is an upper bound for both UTF-8 API and SQLite JSON.
+        if len(json.dumps(previews, ensure_ascii=True).encode()) > 65536:
+            previews[index] = previous
+    return previews
+
+
 def sample_doc(
     *,
     sample_id: str,
@@ -233,6 +262,7 @@ def sample_doc(
     structured_types: list[str],
     max_bytes: int,
     extracted: dict | None,
+    table_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     from app.core.urls import canonical_url
     from app.extraction.pricing import page_signal, price_details
@@ -264,11 +294,15 @@ def sample_doc(
         "distilled_html_truncated": truncated,
         "jsonld": [n for n in page.jsonld_nodes if isinstance(n, dict)],
         "meta": page.meta,
-        "extracted": extracted,
+        "extracted": {name: value for name, value in extracted.items() if name not in (table_fields or [])} if extracted is not None else None,
         "variant_sources": in_page,
         "variant_candidates": detect_candidates(page),
         "price_on_page": page_signal(page),
     }
+    if table_fields:
+        doc["table_fields_omitted"] = list(dict.fromkeys(table_fields))
+    if getattr(page, "table_captures", None):
+        doc["table_captures"] = table_capture_previews(page.table_captures)
     details = price_details(page)
     if details:
         doc["price_details"] = details

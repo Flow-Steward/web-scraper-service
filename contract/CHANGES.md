@@ -5,6 +5,35 @@ and clarified text. Nullable fields introduced below require consumers to handle
 the extension (`flowsteward.web-scraper`, which keeps a copy of this
 directory) must do.
 
+## 2026-11-25 (scoped sources and browser tables)
+
+- Job settings add optional `sitemap_source_include` / `sitemap_source_exclude`
+  patterns and an explicit `max_sitemap_entries` raw-location budget. The default
+  remains 100,000; the service enforces its separate ceiling. Declared roots stay
+  readable, while child indexes and leaf sources follow the configured policy.
+  Coverage identifies configured source scope and exclusions. Complete committed
+  feeding supersedes an earlier limited inspection; inspection diagnostics remain.
+- Mappings may opt into `browser_table` HTML sources for settled, in-page numeric
+  pagination. Acquisition preserves ordered rows and open bounds under page, row,
+  byte, time and action limits. Original product HTML and ordinary variant sources
+  retain their behavior; conflicting table/variant overrides are rejected.
+- Samples accept explicit `table_sources`; when provided, that exact set replaces
+  active table sources. Public samples carry bounded previews, full counts,
+  truncation/omission metadata and retention status. Full evidence remains behind
+  private references for offline mapping tests and stored-page re-extraction.
+  Records and mapping tests expose `table_coverage`. Ordinary optional table
+  failures preserve products with null fields and a partial-data warning;
+  required fields and genuine security denials retain their stricter behavior.
+- Native resource redirects receive private-destination checks, including worker
+  requests. Chromium rejects ambiguous raw redirect spellings. Table actions use
+  a persistent read-only native binding; Firefox's opt-in dedicated acquisition
+  additionally blocks workers from initial document load. Worker-dependent pages
+  can remain unsupported; fixture success is not a live completeness guarantee.
+
+Extension: synchronize the additive contracts, retain table warnings and tested
+sample identities, and keep mapping tests offline. Any candidate reacquisition
+must be explicit and bounded; normal launch forms need no additional controls.
+
 ## 2026-11-24 (single-page setup)
 
 - In explicit `sitemap` mode, automatic samples stay within the map candidates.

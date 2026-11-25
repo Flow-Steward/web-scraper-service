@@ -674,3 +674,99 @@ final outcome. Until the feeder starts, incomplete probe coverage remains partia
 Probe offsets are reset before feeding;
 inspecting a URL never counts as having queued it. A default `/sitemap.xml` that
 returns 404/410 is absent; an inaccessible or invalid default is incomplete.
+
+Mappings may explicitly acquire an asynchronously loaded, paginated table with a
+`browser_table` source. This source produces cleaned HTML containing the headers
+and every observed ordered row; repeated models, month values and blank bounds
+remain unchanged. It does not interpret blank end dates as finite year ranges.
+For example, an invented product page can declare this field:
+
+```json
+{
+  "name": "fitment_raw",
+  "type": "html",
+  "sources": [{
+    "kind": "browser_table",
+    "selector": "#applications",
+    "header_selector": "thead th",
+    "row_selector": "tbody tr",
+    "cell_selector": "td",
+    "loading_selector": "#applications-processing",
+    "empty_selector": "td.empty",
+    "next_selector": "#applications-pager .next",
+    "current_page_selector": "#applications-pager .current",
+    "max_pages": 32,
+    "max_rows": 2000,
+    "max_bytes": 1048576,
+    "max_seconds": 30
+  }]
+}
+```
+
+Selectors describe the observed layout. The loading indicator must be hidden
+before rows or an explicit empty marker can settle. Paginated sources require a
+current page containing an integer, beginning at 1 and advancing by 1, and an
+explicit Next control that remains present and becomes disabled on the last page.
+Supported disabled states are the native `disabled` property/attribute,
+`aria-disabled="true"`, and a `disabled` class on the control or its ancestor.
+Supported Next names are `Next`, `Next page`, and `»`, `›`, `→` or `>`.
+A single-page source omits both pagination selectors. Each row must have ordinary
+cells without merged row or column spans. Unsupported layouts report incomplete
+coverage. The hard limits are 64 pages, 10,000 rows, 4 MiB and 120 seconds per
+source. All sources on one page additionally share hard limits of 4 MiB of
+serialized retained capture evidence, 10,000 rows and 64 observed pages, including
+existing captures and proposed sample sources. Exhausted sources report an
+explicit `aggregate_byte_limit`, `aggregate_row_limit` or `aggregate_page_limit`;
+their original source fingerprints stay unchanged. The run's action and time
+budgets still apply.
+
+Acquisition uses the existing guarded browser tab and supports in-page pagination.
+Document navigation and non-GET browser requests (including fetch/XHR and beacons)
+are refused during acquisition. HTTP-only jobs
+report `browser_required`; automatic mode uses the normal browser escalation.
+Other product fields and variants continue reading the original product HTML.
+A table field cannot also be overridden by a variant field; use separate names
+so table coverage describes the value that is exported.
+Each JSON Lines record includes `table_coverage` with page/row/byte counts.
+A missing, partial or differently configured capture never falls back to
+specification years. Required table failures block extraction. An optional table
+failure leaves that field null and preserves the product, with false coverage,
+a warning and a partial run outcome. Native destination/method policy violations
+remain page failures; optionality never bypasses a security denial.
+
+To test a proposed source before activating its mapping, pass the same source
+object in `POST /v1/samples`' optional `table_sources` array (at most five), using
+explicit synthetic URLs such as `https://parts.example.test/products/mock-part`.
+When `table_sources` is supplied, samples acquire exactly those candidate sources;
+otherwise they acquire the active mapping's sources. Overlapping sources restart
+from the approved product URL through the same guards and action/time budgets.
+Samples expose table previews sharing a 64 KiB budget, with full `row_count`,
+`column_count`, capped `rows_preview`/`headers_preview` and `preview_truncated`.
+Known table fields are omitted from sample `extracted` and listed in
+`table_fields_omitted`; run records retain their complete values. Samples report
+`table_evidence` retention;
+`POST /v1/mappings/test` replays retained captures without new network requests.
+Changing a source, or missing replay evidence, requires fresh acquisition. Optional
+unknown fields remain optional in mapping tests, with warnings and false coverage.
+Stored page re-extraction never treats an initial table page as the full result.
+
+Table jobs use an internally dedicated browser/context with one active page.
+The cleared context is reused only after the previous page's native lease has
+finished cleanup; session rotation waits for the same barrier. Other jobs keep
+their normal pooling behavior. The lease refuses unproved ownership, blocks new
+workers and popup requests, and keeps native resource/method/redirect enforcement
+armed after capture until the old document is destroyed. Firefox table browsers are launched with an immutable native CSP that blocks
+workers before merchant scripts; worker-dependent initial pages may therefore be
+unsupported. This mode is restricted to worker-free table acquisition and does
+not change ordinary Firefox jobs. A later mapping repair that adds a table
+to an ordinary browser may require a fresh run to establish ownership.
+
+Partial or repair-needed table evidence is stored once in the run's private KVS;
+outcomes, stored pages and repair samples retain references. Its per-job archive
+allowance uses the existing `max_result_bytes` ceiling separately from product
+result capacity, with durable conservative reservations. Fully successful pages
+can rely on exported field HTML and coverage. Archive exhaustion never erases
+already acquired values or prevents later bounded acquisition; it reports
+`storage_limit`, and unavailable offline evidence requires fresh acquisition.
+Fresh sample calls apply the same ceiling to their private table archives.
+Private evidence follows the existing working-file/sample retention policies.

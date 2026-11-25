@@ -84,7 +84,8 @@
         "css",
         "meta",
         "microdata",
-        "spec_table"
+        "spec_table",
+        "browser_table"
       ],
       "description": "`microdata` (added 2026-11-13): schema.org microdata (`itemscope`/`itemtype`/`itemprop`), read like `jsonld`: `schema_type` and `path` follow the same rules."
     },
@@ -188,7 +189,40 @@
           "maxItems": 5,
           "description": "Tried in order; the first source that yields a value (for `multiple`: at least one value) wins."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sources": {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "browser_table"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "type": {
+                "const": "html"
+              },
+              "multiple": {
+                "const": false
+              },
+              "sources": {
+                "maxItems": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "source": {
       "type": "object",
@@ -246,6 +280,44 @@
         "value_selector": {
           "$ref": "#/$defs/css_selector",
           "description": "`spec_table`: the value inside a row (text)."
+        },
+        "cell_selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "header_selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "loading_selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "empty_selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "next_selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "current_page_selector": {
+          "$ref": "#/$defs/css_selector"
+        },
+        "max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "max_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "max_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 120
         }
       },
       "allOf": [
@@ -338,6 +410,72 @@
               "row_selector",
               "key_selector",
               "value_selector"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "browser_table"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "selector",
+              "row_selector",
+              "cell_selector",
+              "loading_selector",
+              "empty_selector"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "transforms"
+                  ]
+                },
+                {
+                  "required": [
+                    "extract"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "browser_table"
+              }
+            },
+            "required": [
+              "next_selector"
+            ]
+          },
+          "then": {
+            "required": [
+              "current_page_selector"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "browser_table"
+              }
+            },
+            "required": [
+              "current_page_selector"
+            ]
+          },
+          "then": {
+            "required": [
+              "next_selector"
             ]
           }
         }
@@ -996,6 +1134,44 @@
           }
         }
       ]
+    },
+    "table_coverage": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "complete",
+          "reason",
+          "pages",
+          "row_count",
+          "bytes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "pages": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64
+          },
+          "row_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4194304
+          }
+        }
+      }
     }
   }
 }

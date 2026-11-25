@@ -117,6 +117,7 @@ class Page:
         self.extra_links = list(extra_links or [])
         self.extra_anchors = [tuple(anchor) for anchor in extra_anchors or []]
         self.deferred_links = list(deferred_links or [])
+        self.table_captures: dict[str, dict] = {}
 
     @cached_property
     def selector(self) -> Selector:
