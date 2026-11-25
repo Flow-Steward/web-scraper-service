@@ -349,7 +349,8 @@ def make_shop(with_sitemap: bool) -> Starlette:
     async def scope_page(request: Request):
         """On scope.test: the category /lt/lamps-c100 with a subcategory and a page 2
         under its path, products outside it (/lamp-*-p<n>), and a menu to other categories."""
-        if request.url.hostname != "scope.test":
+        loopback_product = request.url.hostname == "127.0.0.1" and re.fullmatch(r"/lamp-[a-z]-p\d+", request.url.path)
+        if request.url.hostname != "scope.test" and not loopback_product:
             return PlainTextResponse("not found", status_code=404)
         _count(request)
         path = request.url.path
@@ -376,7 +377,7 @@ def make_shop(with_sitemap: bool) -> Starlette:
 
     async def scope_sitemap(request: Request):
         """Declared source scope with irrelevant raw locations before products."""
-        if request.url.hostname != "scope.test":
+        if request.url.hostname not in ("scope.test", "127.0.0.1"):
             return PlainTextResponse("not found", status_code=404)
         _count(request)
         base = f"http://{request.url.netloc}"

@@ -49,7 +49,10 @@ def test_crawl_include_validates(service):
 def test_single_scoped_sitemap_run_uses_explicit_raw_budget_and_one_export(service, fixture_world):
     import json
 
-    ensure_mappings(service, SITE, ITEM)
+    # A literal loopback origin exercises the real native HTTP transport on
+    # developer hosts too, without operating-system .test DNS configuration.
+    S = "http://127.0.0.1:8602"
+    ensure_mappings(service, "127.0.0.1:8602", ITEM)
     fixture_world.set(8602, reset_hits=True)
     cfg = merged_config(service, {
         "site_url": S + "/lt/lamps-c100", "discovery_mode": "sitemap", "fetch_mode": "http", "browser": "auto",
