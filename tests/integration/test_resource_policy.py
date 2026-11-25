@@ -102,10 +102,10 @@ async def test_setup_session_filters_widgets_before_upstream(browser, enabled, s
         assert await session.page.evaluate("window.fixtureChallengeDependency") is True
     finally:
         await session.close()
-    hosts = {host for host, path in hits}
-    assert "cdn.catalogue.test" in hosts and "challenges.cloudflare.com" in hosts
-    for host in ["cdn-cookieyes.com", "omnisnippet1.com"]:
-        assert (host in hosts) is not enabled, hits
+    assert ("cdn.catalogue.test", "/product.js") in hits
+    assert ("challenges.cloudflare.com", "/resource.js") in hits
+    for resource in [("cdn-cookieyes.com", "/banner.js"), ("omnisnippet1.com", "/launcher.js")]:
+        assert (resource in hits) is not enabled, hits
     for path in ["/widget.js", "/frame", "/redirected-widget.js", "/redirected-frame"]:
         assert (("embed.tawk.to", path) in hits) is (not enabled or site_host == "tawk.to"), hits
     assert ("cdn.catalogue.test", "/script-redirect") in hits
@@ -133,10 +133,10 @@ def test_job_filters_widgets_and_preserves_external_product_data(service, browse
     assert run["outcome"] == "complete" and run["counters"]["records_extracted"] == 1, run
     records = [json.loads(line) for line in service.get(run["result"]["download_path"]).text.splitlines()]
     assert records[0]["data"]["title"] == "External API product"
-    hosts = {host for host, path in hits}
-    assert "cdn.catalogue.test" in hosts and "challenges.cloudflare.com" in hosts
-    for host in ["embed.tawk.to", "cdn-cookieyes.com", "omnisnippet1.com"]:
-        assert (host in hosts) is not enabled, hits
+    assert ("cdn.catalogue.test", "/product.js") in hits
+    assert ("challenges.cloudflare.com", "/resource.js") in hits
+    for resource in [("cdn-cookieyes.com", "/banner.js"), ("omnisnippet1.com", "/launcher.js")]:
+        assert (resource in hits) is not enabled, hits
     for path in ["/widget.js", "/frame", "/redirected-widget.js", "/redirected-frame"]:
         assert (("embed.tawk.to", path) in hits) is not enabled, hits
     assert ("cdn.catalogue.test", "/script-redirect") in hits
