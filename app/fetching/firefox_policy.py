@@ -241,6 +241,10 @@ class FirefoxPolicyBridge:
                     and binding.guard.active and binding.guard.generation == binding.generation
                     and len(binding.guard.errors) < 32):
                 binding.guard.errors.append(DestinationDenied(payload["url"], "private_resource_redirect"))
+            if allowed and binding is not None:
+                from app.fetching.resources import blocks_native_resource
+
+                allowed = not blocks_native_resource(binding.guard, payload["url"])
             return {"allow": allowed}
         if path == "/table-control":
             return await self._table_control(payload)
@@ -403,6 +407,7 @@ class FirefoxDocumentGuard:
     def __init__(self, page, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10, challenge_post_allowed=False):
         self.page = page
         self.initial_url = initial_url
+        self.resource_economy_enabled = False
         self.destination_policy = destination_policy
         self.timeout_s = timeout_s
         self.max_redirects = max_redirects
@@ -565,6 +570,10 @@ class FirefoxDocumentGuard:
                     raise PrivateAddress(url)
                 if redirects > self.max_redirects:
                     raise DestinationDenied(url, "too_many_redirects")
+                from app.fetching.resources import blocks_native_resource
+
+                if frame_kind == "sub_frame" and blocks_native_resource(self, url):
+                    return False
                 if (frame_kind == "main_frame" and (reserved or redirects > 0 or url != self.initial_url)
                         and not await redirect_destination_allowed(
                     url, site_url=self.initial_url, destination_policy=self.destination_policy,

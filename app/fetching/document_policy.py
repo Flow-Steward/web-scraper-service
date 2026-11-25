@@ -371,13 +371,15 @@ class NativeDocumentPolicy:
 
 
 async def bind_document_policy(page, browser, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10,
-                               proxy_auth=None, on_proxy_auth_required=None, challenge_post_allowed=False):
+                               proxy_auth=None, on_proxy_auth_required=None, challenge_post_allowed=False,
+                               block_heavy_resources=False):
     auth_options = {"proxy_auth": proxy_auth, "on_proxy_auth_required": on_proxy_auth_required} if browser == "chromium" else {}
     if browser == "camoufox":
         auth_options["challenge_post_allowed"] = bool(challenge_post_allowed)
     existing = getattr(page, "_wss_native_document_policy", None)
     if existing is not None:
         await existing.rebind(initial_url, destination_policy, **auth_options)
+        existing.guard.resource_economy_enabled = bool(block_heavy_resources)
         return existing
     if browser == "camoufox":
         from app.fetching.firefox_policy import FirefoxDocumentGuard as Guard
@@ -387,6 +389,7 @@ async def bind_document_policy(page, browser, initial_url, *, destination_policy
         raise RuntimeError("unsupported native document policy browser")
     guard = Guard(page, initial_url, destination_policy=destination_policy,
                   timeout_s=timeout_s, max_redirects=max_redirects, **auth_options)
+    guard.resource_economy_enabled = bool(block_heavy_resources)
     try:
         await guard.start()
     except BaseException:

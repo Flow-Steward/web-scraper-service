@@ -36,6 +36,17 @@ def should_block_resource(url: str, page_url: str, resource_type: str, *, main_d
     return any(_in_family(host, family) and not _in_family(page_host, family) for family in _WIDGET_FAMILIES)
 
 
+def effective_page_url(page, fallback: str) -> str:
+    current = getattr(page, "url", "")
+    return current if _host(current) else fallback
+
+
+def blocks_native_resource(guard, url: str) -> bool:
+    return bool(getattr(guard, "resource_economy_enabled", False) and should_block_resource(
+        url, effective_page_url(guard.page, guard.initial_url), "",
+    ))
+
+
 def resource_route_guard(page_url: Callable[[], str], *, enabled: bool, then):
     """Use behind private_route_guard, retaining native I/O for allowed requests."""
     async def route_resource(route):

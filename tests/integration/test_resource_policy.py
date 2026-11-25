@@ -20,6 +20,15 @@ def resource_proxy():
         def do_GET(self):
             target = urlsplit(self.path)
             hits.append((target.hostname, target.path))
+            redirects = {"/script-redirect": "http://embed.tawk.to/redirected-widget.js",
+                         "/frame-redirect": "http://embed.tawk.to/redirected-frame",
+                         "/site-redirect": "http://tawk.to/product" if target.hostname == "catalogue.test" else "http://catalogue.test/product"}
+            if target.path in redirects:
+                self.send_response(302)
+                self.send_header("Location", redirects[target.path])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             kind = "text/javascript"
             if target.path == "/robots.txt":
                 body, kind = b"User-agent: *\nAllow: /\n", "text/plain"
@@ -32,6 +41,8 @@ def resource_proxy():
                 <script src="http://cdn-cookieyes.com/banner.js"></script>
                 <script src="http://omnisnippet1.com/launcher.js"></script>
                 <iframe src="http://embed.tawk.to/frame"></iframe>
+                <script src="http://cdn.catalogue.test/script-redirect"></script>
+                <iframe src="http://cdn.catalogue.test/frame-redirect"></iframe>
                 <img src="http://catalogue.test/picture.png"></body></html>''', "text/html")
             elif target.path == "/product.js":
                 body = b"document.querySelector('h1').textContent='External API product';"
@@ -66,7 +77,8 @@ def resource_proxy():
 
 @pytest.mark.parametrize("browser", ["chromium", "camoufox"])
 @pytest.mark.parametrize("enabled", [True, False])
-async def test_setup_session_filters_widgets_before_upstream(browser, enabled, resource_proxy, monkeypatch):
+@pytest.mark.parametrize("site_host", ["catalogue.test", "tawk.to"])
+async def test_setup_session_filters_widgets_before_upstream(browser, enabled, site_host, resource_proxy, monkeypatch):
     from tests.unit.test_logic import settings
 
     monkeypatch.setattr("app.settings._settings", settings())
@@ -85,15 +97,19 @@ async def test_setup_session_filters_widgets_before_upstream(browser, enabled, r
     session = BrowserSession(browser, proxy=f"http://127.0.0.1:{port}", timeout_s=15, block_heavy_resources=enabled)
     try:
         await session.start()
-        status, html, final, _ = await session.get("http://catalogue.test/product")
+        status, html, final, _ = await session.get(f"http://{site_host}/product")
         assert status == 200 and "External API product" in html
         assert await session.page.evaluate("window.fixtureChallengeDependency") is True
     finally:
         await session.close()
     hosts = {host for host, path in hits}
     assert "cdn.catalogue.test" in hosts and "challenges.cloudflare.com" in hosts
-    for host in ["embed.tawk.to", "cdn-cookieyes.com", "omnisnippet1.com"]:
+    for host in ["cdn-cookieyes.com", "omnisnippet1.com"]:
         assert (host in hosts) is not enabled, hits
+    for path in ["/widget.js", "/frame", "/redirected-widget.js", "/redirected-frame"]:
+        assert (("embed.tawk.to", path) in hits) is (not enabled or site_host == "tawk.to"), hits
+    assert ("cdn.catalogue.test", "/script-redirect") in hits
+    assert ("cdn.catalogue.test", "/frame-redirect") in hits
     assert (("catalogue.test", "/picture.png") in hits) is not enabled
 
 
@@ -121,3 +137,7 @@ def test_job_filters_widgets_and_preserves_external_product_data(service, browse
     assert "cdn.catalogue.test" in hosts and "challenges.cloudflare.com" in hosts
     for host in ["embed.tawk.to", "cdn-cookieyes.com", "omnisnippet1.com"]:
         assert (host in hosts) is not enabled, hits
+    for path in ["/widget.js", "/frame", "/redirected-widget.js", "/redirected-frame"]:
+        assert (("embed.tawk.to", path) in hits) is not enabled, hits
+    assert ("cdn.catalogue.test", "/script-redirect") in hits
+    assert ("cdn.catalogue.test", "/frame-redirect") in hits

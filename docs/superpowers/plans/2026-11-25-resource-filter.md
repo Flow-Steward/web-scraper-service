@@ -27,6 +27,9 @@
 **Files:**
 - Create `app/fetching/resources.py` and `tests/unit/test_resource_policy.py`.
 - Modify `app/fetching/oneoff.py`, `app/setup_ops.py`, `app/jobs/runner.py`.
+- Modify `app/fetching/document_policy.py`, `app/fetching/chromium_destinations.py`,
+  `app/fetching/firefox_policy.py` for native optional-resource redirects.
+- Create `tests/unit/test_resource_redirects.py` for native redirect regression cases.
 - Create `tests/integration/test_resource_policy.py`.
 - Document the existing flag in `README.md` and `contract/schemas/job_config.schema.json`.
 

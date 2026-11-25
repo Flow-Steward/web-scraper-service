@@ -345,9 +345,9 @@ class BrowserSession:
             else:
                 await route.continue_()
 
-        from app.fetching.resources import resource_route_guard
+        from app.fetching.resources import effective_page_url, resource_route_guard
 
-        resources = resource_route_guard(lambda: self._resource_site_url,
+        resources = resource_route_guard(lambda: effective_page_url(self.page, self._resource_site_url),
                                          enabled=self.block_heavy_resources, then=native_document)
         await self.page.route("**/*", private_route_guard(self._refused, resources))
         return self
@@ -404,6 +404,7 @@ class BrowserSession:
 
         self._native_document_policy = await bind_document_policy(
             self.page, self.browser_name, url, destination_policy=allowed,
+            block_heavy_resources=self.block_heavy_resources,
             proxy_auth=_proxy_cfg(self.proxy),
             challenge_post_allowed=bool(self.budget is not None and self.budget.click_usable()),
             timeout_s=min(3.0, float(self.timeout_s)),

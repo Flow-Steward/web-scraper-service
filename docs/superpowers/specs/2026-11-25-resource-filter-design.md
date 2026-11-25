@@ -9,9 +9,9 @@ and browser subresource loading remain separate policies.
 A strict external-host ban breaks product APIs, CDNs and challenge resources.
 A new filtering UI adds configuration before there is evidence it is needed.
 Extend the existing `block_heavy_resources` mode with a small, explicit list of
-known widget/tracking host families instead. This is an implementation choice
-under the user's standing instruction to continue checks without blocking on
-routine questions. There are no supplier-specific host names in the policy.
+known widget/tracking host families instead. This preserves simple configuration
+and leaves unknown dependencies usable. There are no supplier-specific host names
+in the policy.
 
 ## Behavior
 
@@ -22,6 +22,8 @@ routine questions. There are no supplier-specific host names in the policy.
   guards. Known tracking hosts used as the actual target remain usable.
 - Match parsed host names on DNS label boundaries, ignoring case and a trailing
   DNS dot. Query strings, userinfo and similar names cannot cause false matches.
+- Use the effective top-level document and check optional-resource redirect
+  destinations in the existing native interceptors before native follow.
 - Leave unlisted external scripts, product APIs, CDNs, styles and Cloudflare
   resources available. No script rewriting or challenge transport changes.
 - `block_heavy_resources=false` disables this economy policy in both consumers.

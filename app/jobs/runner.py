@@ -1605,6 +1605,7 @@ class JobRunner:
         }
         policy = await bind_document_policy(
             page, self.browser or "chromium", url, destination_policy=destination_allowed,
+            block_heavy_resources=self.config.get("block_heavy_resources", True),
             proxy_auth=proxy_auth,
             challenge_post_allowed=bool(self.browser == "camoufox" and self.config.get("challenge_click")
                                         and self.settings.challenge_click_allowed and self.route_budget().click_usable()),
@@ -1618,9 +1619,9 @@ class JobRunner:
             else:
                 await _allowed(route)
 
-        from app.fetching.resources import resource_route_guard
+        from app.fetching.resources import effective_page_url, resource_route_guard
 
-        resources = resource_route_guard(lambda: url, enabled=self.config.get("block_heavy_resources", True),
+        resources = resource_route_guard(lambda: effective_page_url(page, url), enabled=self.config.get("block_heavy_resources", True),
                                          then=native_allowed)
         await page.route("**/*", private_route_guard(None, resources))
 

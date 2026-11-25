@@ -23,6 +23,7 @@ class ChromiumDocumentGuard:
     def __init__(self, page, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10, max_pending=64, max_chains=64, proxy_auth=None, on_proxy_auth_required=None):
         self.page = page
         self.initial_url = initial_url
+        self.resource_economy_enabled = False
         self.destination_policy = destination_policy
         self.timeout_s = timeout_s
         self.max_redirects = max_redirects
@@ -347,6 +348,12 @@ class ChromiumDocumentGuard:
                            if self._table_mode is not None else await self._allowed(target, private_only=private_only)))
                 if not allowed:
                     raise DestinationDenied(target or url)
+                from app.fetching.resources import blocks_native_resource
+
+                if private_only and blocks_native_resource(self, target):
+                    self.chains.pop(chain, None)
+                    await channel.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+                    return  # Optional-resource suppression is not a document failure.
             else:
                 self.chains.pop(network_id or previous or chain, None)
             if self.closed or generation != self.generation:
