@@ -16,6 +16,7 @@ from pathlib import Path
 
 from app.core.netguard import url_is_private
 from app.fetching.destinations import DestinationDenied, redirect_destination_allowed
+from app.fetching.challenge_forms import ChallengeFormAllowance, MAX_FORM_BYTES
 
 
 @dataclass
@@ -107,6 +108,8 @@ class FirefoxPolicyBridge:
                 lines = raw.decode("ascii").split("\r\n")
                 if len(raw) > 8192 or lines[0] not in (
                     "POST /ready HTTP/1.1", "POST /enroll HTTP/1.1", "POST /bound HTTP/1.1", "POST /policy HTTP/1.1",
+                    "POST /challenge HTTP/1.1",
+                    "POST /form-release HTTP/1.1",
                 ):
                     await self._reply(writer, 400, {"allow": False})
                     return
@@ -191,9 +194,32 @@ class FirefoxPolicyBridge:
             if not binding.enrolled.done():
                 binding.enrolled.set_result(None)
             return {"allow": True, "generation": generation}
+        if path == "/challenge" and binding.bound:
+            if set(payload) != {"tabId", "storeId", "generation", "url", "requestId", "status", "headers"}:
+                raise ValueError("invalid challenge observation")
+            url, request_id, status, headers = (payload[k] for k in ("url", "requestId", "status", "headers"))
+            if (not isinstance(url, str) or not 0 < len(url) <= 8192
+                    or not isinstance(request_id, str) or not 0 < len(request_id) <= 128
+                    or type(status) is not int or status != 403 or not isinstance(headers, dict)
+                    or set(headers) != {"server", "cf-mitigated", "cf-ray"}
+                    or any(value is not None and (not isinstance(value, str) or len(value) > 256) for value in headers.values())):
+                raise ValueError("invalid challenge observation fields")
+            binding.guard.observe_challenge(url, request_id, status, headers)
+            return {"allow": True, "generation": generation}
+        if path == "/form-release" and binding.bound:
+            if set(payload) != {"tabId", "storeId", "generation", "url", "requestId", "formBytes"}:
+                raise ValueError("invalid form release")
+            url, request_id, size = (payload[k] for k in ("url", "requestId", "formBytes"))
+            if (not isinstance(url, str) or not 0 < len(url) <= 8192
+                    or not isinstance(request_id, str) or not 0 < len(request_id) <= 128
+                    or type(size) is not int or not 0 < size <= MAX_FORM_BYTES):
+                raise ValueError("invalid form release fields")
+            allowed = binding.guard.release_form(url, request_id, size)
+            return {"allow": allowed, "generation": generation}
         if path != "/policy" or not binding.bound:
             return {"allow": False}
-        if set(payload) != {"tabId", "storeId", "generation", "url", "frameKind", "requestId", "redirects", "method"}:
+        required = {"tabId", "storeId", "generation", "url", "frameKind", "requestId", "redirects", "method"}
+        if set(payload) not in (required, required | {"formBytes"}):
             raise ValueError("invalid policy object")
         url, kind, request_id, redirects, method = (payload[k] for k in ("url", "frameKind", "requestId", "redirects", "method"))
         if (not isinstance(url, str) or not 0 < len(url) <= 8192 or kind not in ("main_frame", "sub_frame")
@@ -201,7 +227,13 @@ class FirefoxPolicyBridge:
                 or type(redirects) is not int or not 0 <= redirects <= 1000
                 or not isinstance(method, str) or re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}", method) is None):
             raise ValueError("invalid policy fields")
-        allowed = await binding.guard.decide(url, kind, redirects, method)
+        if "formBytes" in payload:
+            size = payload["formBytes"]
+            if size is not None and (type(size) is not int or not 0 < size <= MAX_FORM_BYTES):
+                raise ValueError("invalid form metadata")
+            allowed = await binding.guard.decide(url, kind, redirects, method, request_id=request_id, form_bytes=size)
+        else:
+            allowed = await binding.guard.decide(url, kind, redirects, method)
         # A verdict arriving after revoke/rebind can never release the old document.
         valid = (not self._closed and self._tabs.get(tab_id) is binding and binding.guard.active
                  and binding.guard.generation == generation)
@@ -251,7 +283,7 @@ class FirefoxPolicyBridge:
 
 
 class FirefoxDocumentGuard:
-    def __init__(self, page, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10):
+    def __init__(self, page, initial_url, *, destination_policy=None, timeout_s=3, max_redirects=10, challenge_post_allowed=False):
         self.page = page
         self.initial_url = initial_url
         self.destination_policy = destination_policy
@@ -260,6 +292,8 @@ class FirefoxDocumentGuard:
         self.generation = secrets.token_urlsafe(24)
         self.active = False
         self.errors = []
+        self.challenge_post_allowed = bool(challenge_post_allowed)
+        self.challenge_form = ChallengeFormAllowance(initial_url, self.challenge_post_allowed)
         self.bridge = getattr(page.context.browser, "_wss_firefox_policy_bridge", None)
 
     async def start(self):
@@ -271,14 +305,18 @@ class FirefoxDocumentGuard:
 
     def _revoke(self):
         self.active = False
+        self.challenge_form.revoke()
         if self.bridge is not None:
             self.bridge.revoke(self)
 
-    async def rebind(self, initial_url, destination_policy=None):
+    async def rebind(self, initial_url, destination_policy=None, *, challenge_post_allowed=None):
         self._revoke()
         self.initial_url, self.destination_policy = initial_url, destination_policy
         self.generation = secrets.token_urlsafe(24)
         self.errors.clear()
+        if challenge_post_allowed is not None:
+            self.challenge_post_allowed = bool(challenge_post_allowed)
+        self.challenge_form = ChallengeFormAllowance(initial_url, self.challenge_post_allowed)
         self.active = True
         try:
             nonce, enrolled = self.bridge.prepare(self)
@@ -288,28 +326,52 @@ class FirefoxDocumentGuard:
             self._revoke()
             raise
 
-    async def decide(self, url, frame_kind, redirects, method="GET"):
+    def observe_challenge(self, url, request_id, status, headers):
+        if self.active:
+            self.challenge_form.observe(url, request_id, status, headers)
+
+    def release_form(self, url, request_id, form_bytes):
+        return bool(self.active and self.challenge_form.release(url, request_id, form_bytes))
+
+    async def decide(self, url, frame_kind, redirects, method="GET", *, request_id=None, form_bytes=None):
         generation = self.generation
+        allowance = self.challenge_form
+        reserved = False
         try:
             async with asyncio.timeout(self.timeout_s):
                 if not self.active:
                     return False
+                if frame_kind == "main_frame":
+                    if method == "GET":
+                        allowance.get_started(request_id)
+                    elif method == "POST" and redirects == 0:
+                        reserved = allowance.reserve(url, request_id, form_bytes)
+                        if not reserved:
+                            allowance.revoke()
+                            raise DestinationDenied(url)
+                    else:
+                        allowance.revoke()
+                        raise DestinationDenied(url)
                 if await url_is_private(url):
                     from app.fetching.oneoff import PrivateAddress
                     raise PrivateAddress(url)
-                if frame_kind == "main_frame" and method != "GET":
-                    raise DestinationDenied(url)
                 if redirects > self.max_redirects:
                     raise DestinationDenied(url, "too_many_redirects")
-                if (frame_kind == "main_frame" and (redirects > 0 or url != self.initial_url)
+                if (frame_kind == "main_frame" and (reserved or redirects > 0 or url != self.initial_url)
                         and not await redirect_destination_allowed(
                     url, site_url=self.initial_url, destination_policy=self.destination_policy,
                 )):
                     raise DestinationDenied(url)
+                if reserved and (not self.active or self.generation != generation or not allowance.can_release(request_id)):
+                    raise DestinationDenied(url, "guard_revoked")
                 return True
         except asyncio.CancelledError:
+            if reserved:
+                allowance.revoke()
             raise
         except Exception as exc:
+            if reserved:
+                allowance.revoke()
             if self.active and self.generation == generation and len(self.errors) < 32:
                 self.errors.append(exc)
             return False

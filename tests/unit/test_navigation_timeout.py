@@ -13,6 +13,20 @@ from tests.unit.test_logic import settings
 URL = "https://catalogue.example.test/list"
 
 
+@pytest.mark.parametrize("policy", [{"single_page": True}, {"discovery_mode": "sitemap"}])
+async def test_non_crawling_setup_does_not_follow_listing_controls(policy):
+    async def collect(**kwargs):
+        raise AssertionError("non-crawling setup must not operate listing controls")
+
+    sf = SetupFetch(
+        SimpleNamespace(settings=settings(), samples=None),
+        {"site_url": URL, "browser": "chromium", **policy}, {},
+    )
+    sf._session = SimpleNamespace(page=SimpleNamespace(url=URL), discover_links=collect, is_closed=False)
+    sf._browser[URL] = (200, "<main>Product with related items</main>", URL, None)
+    assert await sf.discover_links(URL) is None
+
+
 @pytest.mark.parametrize("seconds", [120, 15])
 async def test_setup_listing_navigation_honors_selected_page_timeout(seconds):
     captured = {}

@@ -180,7 +180,7 @@ Environment variables, all optional except the first:
 | `WSS_SECRETS_KEY` | unset | Key that encrypts job secrets at rest (AES-256-GCM): 32 bytes URL-safe base64, or a passphrase ≥ 16 chars. Without it `POST /v1/runs` and resume answer `503 secrets_key_unavailable`. A changed key puts running jobs into `waiting_for_credentials` until Resume. Explicit upstream proxy authentication rejection also pauses for Resume after credentials or IP allow-list approval, preserving pending work and budgets |
 | `WSS_DATA_DIR` | `/data` | The one volume: `service.sqlite3`, `jobs/<run_id>/crawlee` (Crawlee storage per job), `results/`, `samples/`, `identities.json` |
 | `WSS_PORT`, `WSS_HOST` | `8080`, `0.0.0.0` | Listen address |
-| `WSS_ALLOW_CHALLENGE_CLICK` | `0` | Allow the model-free checkbox click (route step `click`) |
+| `WSS_ALLOW_CHALLENGE_CLICK` | `0` | Allow the model-free checkbox click and the bounded native Camoufox challenge form described under Protection; the run must also request `challenge_click` |
 | `WSS_ALLOW_SOLVERS` | `0` | Allow paid challenge solvers (route step `solver`) |
 | `WSS_ALLOW_ROBOTS_OVERRIDE` | `0` | Allow `respect_robots: false` |
 | `WSS_LIMIT_<NAME>` | contract defaults | Every limit of `GET /health` → `limits`, e.g. `WSS_LIMIT_MAX_PAGES_PER_JOB`, `WSS_LIMIT_MAX_CONCURRENT_JOBS`, `WSS_LIMIT_MAX_RESULT_BYTES` (default 103,809,024 = 99 MiB). Values above the contract ceilings are refused at start |
@@ -308,8 +308,10 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
   with keys; robots.txt honoured by our own check (counts `urls_skipped.robots`).
   Configured URL patterns retain Python regular-expression syntax, including lookaround
   and backreferences. Matching is limited to 20 ms per pattern, 50 ms per URL-policy
-  evaluation and 2 seconds of matching work per synchronous bulk operation. Parsing
-  and network time do not consume the regex budget. A limit raises `pattern_timeout`
+  evaluation and 2 seconds of matching work per synchronous bulk operation. Wrapper
+  allowances use the matching thread's CPU time; process scheduling pauses, parsing
+  and network time do not consume them. The engine's search timeout remains enabled.
+  A limit raises `pattern_timeout`
   with the configuration field and pattern identifier; a running job fails explicitly
   instead of silently omitting URLs. These limits do not cover extraction transforms.
 * **Job record and SQLite:** the follower applies page outcomes in one synchronous
@@ -342,7 +344,12 @@ resume on the next start; a job restarted 3 times within 10 minutes fails `crash
   `stalled`, then stops (contract README 4.13, 4.14).
 * **Re-collect:** `POST /v1/runs/{id}/recollect` starts a new linked run over a finished
   run's selected unextracted URLs and unfinished sitemap sources, preserving per-source
-  progress with its own result (contract README 4.10).
+  progress with its own result (contract README 4.10). For a failed parent, the default
+  `stopped` selection also recovers durable queued/backlog work and pages still awaiting
+  extraction or refetch. It preserves source keys and category traversal, skips completed
+  ancestor identities for newly discovered links, and leaves the parent unchanged.
+  Recovery seeds obey `max_url_list_entries`; changed parent/reason intent with an existing
+  idempotency key is refused rather than silently reusing a different recovery run.
 * **Events:** journal in SQLite, HMAC-SHA256 signing, delivery with the contract's
   back-off across restarts, claim/stage/complete/resend.
 
@@ -416,7 +423,9 @@ judged before extraction: `empty` (no text), `truncated` (the HTML stops early w
 of the same URL shape end properly), `error_page` (error or maintenance wording in the
 title or first heading, in about 12 languages, on a small page), `too_small` (under 10 % of
 the usual size of its URL shape) and, after extraction, `lost_template` (a URL shape that
-was always a target page lost its template's marks). Such an answer is retried like a
+was always a target page lost its template's marks). Explicit URL filters keep
+navigation-only pages in a separate response history from selected pages, even when
+their collapsed URL shapes coincide. Such an answer is retried like a
 server error (same route, growing back-off, `max_retries`), counts in the host's breaker
 and slow-down, and is counted in `counters.soft_errors` / `soft_errors_by_reason` (first one
 in the timeline as `soft_error`). After the retries the page is `fetch_failed` with
@@ -476,6 +485,18 @@ vertical middle, ±3 px), then the page is polled for up to
 `WSS_CHALLENGE_CLICK_WAIT_SECONDS`; with Camoufox one `mouse.move` lets its `humanize`
 draw the path. `POST /v1/analyze` and `POST /v1/samples` run the same route (one browser
 session per request, the config's flags and caps), so a protected site gets samples.
+With that same explicit server-and-run permission, Camoufox can also submit one
+native opaque verification form to the exact HTTPS page being loaded. The allowance
+requires its native GET response to be HTTP 403 with unambiguous `server: cloudflare`,
+`cf-mitigated: challenge` and `cf-ray` headers. It expires after 45 seconds and cannot
+be re-armed in that page generation. Only 1–8 unique lowercase hexadecimal field names
+of length 64, one bounded printable ASCII value each, are accepted. The native addon
+checks the URL-encoded wire Content-Type and exact body length (at most 64 KiB) before
+sending; values stay in the browser. Destination, private-address, scope and robots
+checks still apply. Replays, other forms, changed URLs and POST-preserving redirects
+are blocked. The headers and form shape are heuristics, not proof of vendor identity
+or of an origin's behavior: enabling the permission authorizes this one POST as part
+of protection handling. Chromium retains its existing document POST denial.
 If that browser closes or fails to start, setup returns HTTP 503 with
 `error.details.reason: browser_unavailable`. It closes and discards the failed session;
 it does not relaunch automatically or substitute an HTTP challenge for the browser failure.
@@ -564,11 +585,41 @@ children. It does not rewrite the finished parent's result. Completed source
 entries are skipped and previously completed ancestor document URLs are not fetched
 again if a retried source repeats them. Cursors are committed only after their
 queue batch commits, so a crash can safely replay a batch through queue deduplication.
+If a linked recovery itself fails before admitting its full seed, the next linked
+run also recovers the unadmitted suffix using the saved admission cursor. Completed
+prefix requests stay skipped; all recovered work shares the normal URL-list limit.
+Original URL lists and explicit source-retry URLs also retain their own admission
+cursors. A recovery's private seed is the sole feeder for its mirrored URL list,
+and follower links remain durable if the feeder fails before task teardown.
 Each incomplete source cursor retains a private body fingerprint. If its body changes
 or an older cursor has no fingerprint, that source replays from the start through
 queue/ancestor deduplication; replay spends the current run's remaining location
 budget and stays partial when exhausted. Completed sources are not re-polled; use
 a fresh full run when a complete new inventory is required.
+
+A category page may show only recent or featured products until a vehicle, model,
+or other catalogue context is selected. Crawling that view does not establish
+full category coverage. Use advertised sitemap sources as well as category links
+when available, and continue incomplete sources through linked Re-collect runs
+until their reported coverage is complete. A bounded sample or a run stopped at
+`max_records` proves extraction, not a complete catalogue. Category page counts
+are a useful cross-check, but repeated fitments and canonical aliases mean their
+position totals need not equal unique extracted records.
+
+Category membership also need not match a product URL's directory. A listing can
+link to products whose canonical addresses live in another section. Explicit
+`url_include` filters still apply to those addresses; a successful visit to every
+listing page does not prove that every listed product passed the selection.
+Compare actual listing links with the extracted source URLs. Keep `crawl_include`
+focused on the relevant listing pages and include any verified alternate product
+URL shapes in `url_include`, rather than maintaining a fixed product URL list or
+removing selection constraints. Links on product pages outside the walk scope
+are not followed.
+
+Listing navigation warnings remain visible when a browser action fails or a
+document navigation is deferred to normal fetching. Check the ordinary queue's
+pagination URLs and the final source coverage before claiming completeness. A
+warning does not itself discard the links already found or abort product work.
 
 `auto` retains its initial source inspection in `sitemap_probe`, including failed
 sources and caps, even when it falls back to crawling. These remain partial-run

@@ -41,6 +41,7 @@ from app.jobs.discovery import (  # noqa: E402
     find_sitemaps,
     http_fetcher,
     iter_sitemaps,
+    prefer_product_sitemaps,
     robots_from,
     sitemap_report,
     target_patterns,
@@ -80,6 +81,7 @@ async def _sitemap_metadata(site_url, config, robots, fetch):
             async with aclosing(iter_sitemaps(
                 sitemaps, bounded_fetch, max_files=SITEMAP_METADATA_FILE_CAP,
                 max_entries=SITEMAP_METADATA_URL_CAP, state=traversal,
+                prefer_products=prefer_product_sitemaps(config),
             )) as entries:
                 async for loc, lastmod in entries:
                     urls.append(loc)
@@ -256,6 +258,8 @@ class SetupFetch:
 
     async def discover_links(self, url: str, page: Page | None = None):
         """Observe listing states while retaining the originally fetched document."""
+        if self.config.get("single_page") or self.config.get("discovery_mode") == "sitemap":
+            return None
         from app.fetching.navigation import NavigationLimits
         from app.core.urls import host_of
 
@@ -883,15 +887,21 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
     ex = Explain()
     candidates: list[tuple[str, str | None]] = []
     explicit = bool(body.get("urls"))
+    single = not explicit and bool(config.get("single_page") and config.get("site_url"))
     if explicit:
         candidates = [(u, None) for u in body["urls"]]
         ex.discovery.update(source="urls", candidates=len(candidates))
+    elif single:
+        count = 1
+        if filter_urls([config["site_url"]], [], config.get("url_exclude") or []):
+            candidates = [(config["site_url"], None)]
+        ex.discovery.update(source="single_page", candidates=len(candidates))
     elif config.get("discovery_mode") == "url_list" and config.get("urls"):
         candidates = [(e["url"], e.get("key")) for e in config["urls"][: count * 4]]
         ex.discovery.update(source="url_list", candidates=len(candidates))
-    listed = not explicit and config.get("discovery_mode") == "url_list" and bool(config.get("urls"))
+    listed = not explicit and not single and config.get("discovery_mode") == "url_list" and bool(config.get("urls"))
     plan: ProbePlan | None = None
-    if not explicit and not listed:
+    if not explicit and not listed and not single:
         plan = await _discover_candidates(config, mappings, count, sf.fetch, ex)
 
     selector = config.get("target_page_selector")
@@ -987,7 +997,7 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
         except ValueError:
             ex.page(shown, how, "failed", "no usable final URL", signals, **facts)
             continue
-        if plan is not None:
+        if plan is not None and config.get("discovery_mode") != "sitemap":
             await sf.discover_links(url, page)
             groups = _sample_link_groups(page, site, config, mappings)
             plan.extend(
@@ -1048,7 +1058,7 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
         await _attach_variant_sources(svc, sample, page, sf, ex)
         svc.samples.save(sample, page.html, page.url)
         out.append(sample)
-    if not out and not explicit and _no_target_hints(config, mappings) and config.get("site_url") and sf.failure_for(config["site_url"]) is None:
+    if not out and not explicit and not single and config.get("discovery_mode") != "sitemap" and _no_target_hints(config, mappings) and config.get("site_url") and sf.failure_for(config["site_url"]) is None:
         guessed = await _guessed_samples(svc, config, sf, count, taken, warnings, ex)
         out += guessed
     requested = count if not explicit else len(body["urls"])
@@ -1242,7 +1252,8 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         robots = await _robots(site_url, fetch)
         sitemaps = await find_sitemaps(site_url, config.get("sitemap_url"), robots, fetch)
         if sitemaps:
-            urls, capped, _ = await collect_sitemap_urls(sitemaps, cap=5000, fetch=fetch)
+            urls, capped, _ = await collect_sitemap_urls(sitemaps, cap=5000, fetch=fetch,
+                                                        prefer_products=prefer_product_sitemaps(config))
             ex.discovery.update(sitemap_urls=len(urls), sitemap_capped=capped)
             with url_pattern_batch():
                 matching = filter_urls(urls, include, exclude)
@@ -1250,7 +1261,7 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
                 preferred = [u for u in matching if matches_any(pats, u)] if pats else []
                 sitemap_groups = url_groups(matching, include=inc)
     groups: list[dict] = []
-    if mode == "crawl" or not (sitemap_groups or preferred) or (deep and mode == "auto" and not pats):
+    if mode != "sitemap" and (mode == "crawl" or not (sitemap_groups or preferred) or (deep and mode == "auto" and not pats)):
         groups = await _start_link_groups(site_url, fetch, exclude, ex, config)
         # Include patterns select extracted pages, not intermediate navigation.
         from app.core.scope import crawl_patterns
@@ -1294,8 +1305,8 @@ async def _discover_candidates(config: dict, mappings: list[dict], count: int, f
         ex.discovery["source"] = "sitemap"
         plan = ProbePlan(sitemap_groups, limit=limit)
     else:
-        ex.discovery["source"] = "start_page"
-        plan = ProbePlan([], limit=links_limit, tail=[site_url])
+        ex.discovery["source"] = "sitemap" if mode == "sitemap" else "start_page"
+        plan = ProbePlan([], limit=links_limit, tail=[] if mode == "sitemap" else [site_url])
     plan.depths[_url_key(site_url)] = 0
     if ex.discovery.get("start_page"):
         plan._known.add(_url_key(site_url))  # backlinks cannot reprobe discovery's root

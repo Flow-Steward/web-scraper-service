@@ -393,6 +393,7 @@ class BrowserSession:
         self._native_document_policy = await bind_document_policy(
             self.page, self.browser_name, url, destination_policy=allowed,
             proxy_auth=_proxy_cfg(self.proxy),
+            challenge_post_allowed=bool(self.budget is not None and self.budget.click_usable()),
             timeout_s=min(3.0, float(self.timeout_s)),
         )
         page = self.page
@@ -417,6 +418,7 @@ class BrowserSession:
 
         if not await settle_page(page, 20.0):  # a page still loading is not judged
             raise PageNotLoaded(f"the page did not finish loading within 20 s ({url})")
+        status = self._native_document_policy.document_status(status)
         verdict = await detect_page(page, status)
         if verdict.is_challenge:
             trace = {"url": url, "at": _now_iso(), "browser": self.browser_name, "proxy_tier": self.proxy_tier, "exit_ip": None,
@@ -583,6 +585,10 @@ class BrowserSession:
             if attempt == 0 and detect_html(head, fetched.status).is_challenge:
                 try:
                     await self.get(url, destination_policy=destination_policy)
+                    if self.failure_for(url) is None and self._native_document_policy is not None:
+                        native = await self._native_document_policy.read_document(url)
+                        if native is not None:
+                            return native
                 except PrivateAddress:
                     return None
                 except Exception as exc:

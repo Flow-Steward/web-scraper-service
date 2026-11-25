@@ -217,6 +217,7 @@ async def test_backlog_prioritization_shares_one_sync_matching_budget(runner, mo
     from app.core.urls import site_key
 
     patterns = timed_policy(monkeypatch)
+    runner.include = patterns  # explicit selections now take precedence over cached target hints
     runner._target_patterns[site_key("https://catalogue.example.test/")] = patterns
     runner.crawler_task = SimpleNamespace(done=lambda: False)
     for index in range(4):

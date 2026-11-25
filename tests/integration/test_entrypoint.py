@@ -8,6 +8,8 @@ import signal
 import socket
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -36,16 +38,26 @@ def _entry(*cmd: str) -> subprocess.CompletedProcess:
 def stale_display():
     os.makedirs("/tmp/.X11-unix", exist_ok=True)
     for path in (SOCK, LOCK):
-        if os.path.exists(path):
-            os.remove(path)
+        Path(path).unlink(missing_ok=True)
     s = socket.socket(socket.AF_UNIX)
     s.bind(SOCK)  # a socket file nobody listens on, as after a restart
     s.close()
     yield
     try:
-        os.kill(_lock_pid(), signal.SIGTERM)
+        pid = _lock_pid()
+        proc = Path(f"/proc/{pid}")
+        if proc.joinpath("comm").read_text().strip() != "Xvfb" or DISPLAY not in proc.joinpath("cmdline").read_text().split("\0"):
+            return
+        os.kill(pid, signal.SIGTERM)
     except (OSError, ValueError):
-        pass
+        return
+    # Xvfb removes its socket and lock while exiting. The next parameter must
+    # not replace those paths until that cleanup has finished.
+    deadline = time.monotonic() + 5
+    while any(os.path.exists(path) for path in (SOCK, LOCK)):
+        if time.monotonic() >= deadline:
+            pytest.fail("fixture Xvfb did not release display :97 after SIGTERM")
+        time.sleep(0.02)
 
 
 @pytest.mark.parametrize("stale_pid", ["4190000", str(os.getpid())], ids=["dead-pid", "pid-of-another-process"])

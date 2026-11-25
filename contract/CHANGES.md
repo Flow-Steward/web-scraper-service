@@ -5,6 +5,18 @@ and clarified text. Nullable fields introduced below require consumers to handle
 the extension (`flowsteward.web-scraper`, which keeps a copy of this
 directory) must do.
 
+## 2026-11-24 (single-page setup)
+
+- In explicit `sitemap` mode, automatic samples stay within the map candidates.
+  Listing controls, linked pages and sibling guessing are not explored; empty
+  maps produce no samples. Explicit sample URLs and `single_page` keep precedence.
+  `auto` and combined discovery retain link fallback. Extension: no request change.
+- `POST /v1/samples` honours `single_page` when no explicit sample `urls` are
+  supplied: only `site_url` is considered, `requested_count` is 1, and
+  `explanation.discovery.source` is `single_page`. Sitemaps, listing controls
+  and sibling-target guessing are skipped; target filters still apply.
+  Explicit sample URLs keep precedence. Extension: no request change required.
+
 ## 2026-11-21 (discovery and connection reliability)
 
 - Run summaries and completeness reports add `sitemap_discovery` (`complete`,

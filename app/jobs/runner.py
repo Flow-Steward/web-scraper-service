@@ -182,7 +182,8 @@ class JobRunner:
         self.job_dir = Path(self.settings.data_dir) / "jobs" / run_id
         rate_floor = 60 / float(self.config.get("max_requests_per_minute") or 60000)
         self.throttle = HostThrottle(max(rate_floor, self.config["delay_min_seconds"]), max(rate_floor, self.config["delay_max_seconds"]))
-        self._shape_stats: dict[str, softerror.ShapeStats] = {}  # what normal pages of a URL shape look like
+        # Explicit navigation-only URLs can share a collapsed shape with products.
+        self._shape_stats: dict[tuple[str, bool], softerror.ShapeStats] = {}
         self.tiers = TierPlan([], self.rt.get("host_level"))
         self.solver = None
         self.browser = self.doc["resolved"].get("browser")
@@ -842,6 +843,23 @@ class JobRunner:
             return False
         return ud.get("src") in ("link", "start") and not matches_any(self.include, canonical)
 
+    def _completed_ancestor_keys(self, entries: list[dict]) -> set[tuple[str, str | None]]:
+        parent = (self.doc.get("recollect_of") or {}).get("run_id")
+        if not parent:
+            return set()
+        urls = sorted({e["url"] for e in entries if e.get("source") in ("link", "sitemap")})
+        completed = set()
+        for i in range(0, len(urls), 500):
+            chunk = urls[i:i + 500]
+            marks = ",".join("?" for _ in chunk)
+            rows = self.svc.db.all(
+                "WITH RECURSIVE ancestors(run_id) AS (SELECT ? UNION SELECT runs.parent_run_id "
+                "FROM runs JOIN ancestors ON runs.run_id=ancestors.run_id WHERE runs.parent_run_id IS NOT NULL) "
+                "SELECT url,source_key FROM urls WHERE status='done' AND run_id IN (SELECT run_id FROM ancestors) "
+                f"AND url IN ({marks})", (parent, *chunk))
+            completed.update((r["url"], r["source_key"] or None) for r in rows)
+        return completed
+
     async def enqueue(self, entries: list[dict], *, forefront: bool = False, backlog_seqs: list[int] | None = None,
                       feed: tuple[str, int] | None = None) -> int:
         """entries: {url, source (start|sitemap|link|list|refetch), source_key?, unique_key? (refetch)}.
@@ -854,6 +872,7 @@ class JobRunner:
         if self.state == "waiting_for_credentials":
             raise ProxyAuthenticationRequired()
         job_site = self.doc["site"]
+        completed_recovery = self._completed_ancestor_keys(entries) if "recollect_pending" in self.rt else set()
         decisions: list[tuple] = []
         new_requests = []
         seen_now: set[str] = set()
@@ -862,6 +881,9 @@ class JobRunner:
             with url_pattern_batch(batch):
                 url = entry["url"]
                 source = entry["source"]
+                if source in ("link", "sitemap") and (url, entry.get("source_key") or None) in completed_recovery:
+                    decisions.append(("duplicate",))
+                    continue
                 try:
                     canonical = canonical_url(url)
                     site = site_key(url)
@@ -1145,9 +1167,17 @@ class JobRunner:
         cfg = self.config
         mode = self.doc["resolved"].get("discovery_mode")
         try:
+            pending = self.rt.get("recollect_pending") or []
+            done = int(self.rt.get("recollect_pending_fed", 0))
+            for i in range(done, len(pending), 100):
+                if self._cut_or_stopping():
+                    return
+                chunk = pending[i:i + 100]
+                await self.enqueue(chunk, feed=("recollect_pending_fed", len(chunk)))
             if cfg.get("single_page"):
                 await self.enqueue([{"url": cfg["site_url"], "source": "start"}])
-            elif mode == "url_list":
+            elif mode == "url_list" and "recollect_pending" not in self.rt:
+                # A recovery's config.urls mirrors its private seed above.
                 from app.core.config import dedupe_url_list
 
                 entries = [{"url": e["url"], "source": "list", "source_key": e.get("key")} for e in dedupe_url_list(cfg["urls"])]
@@ -1188,7 +1218,7 @@ class JobRunner:
         awaits must never contain a cursor for URLs the queue has not accepted.
         Legacy sitemap_fed offsets are deliberately replayed through normal dedup.
         """
-        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps, sitemap_report, _origin
+        from app.jobs.discovery import SITEMAP_CAP, iter_sitemaps, sitemap_report, prefer_product_sitemaps, _origin
 
         urls = list(self.rt.get("sitemap_retry_roots") or self.rt.get("sitemaps") or [])
         if not urls:
@@ -1215,21 +1245,14 @@ class JobRunner:
                                feed=("sitemap_retry_fed", len(chunk)))
 
         async def enqueue_source_batch(entries):
-            parent_id = (self.doc.get("recollect_of") or {}).get("run_id")
-            if parent_id:
-                marks = ",".join("?" for _ in entries)
-                prior = self.svc.db.all(
-                    "WITH RECURSIVE ancestors(run_id) AS (SELECT ? UNION SELECT runs.parent_run_id "
-                    "FROM runs JOIN ancestors ON runs.run_id=ancestors.run_id WHERE runs.parent_run_id IS NOT NULL) "
-                    "SELECT url FROM urls WHERE status='done' AND run_id IN (SELECT run_id FROM ancestors) "
-                    f"AND url IN ({marks})", (parent_id, *(e["url"] for e in entries)))
-                completed = {r["url"] for r in prior}
-                entries = [e for e in entries if e["url"] not in completed]
+            completed = self._completed_ancestor_keys(entries)
+            entries = [e for e in entries if (e["url"], e.get("source_key") or None) not in completed]
             if entries:
                 await self.enqueue(entries, feed=("sitemap_fed", len(entries)))
 
         batch: list[dict] = []
-        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state, max_entries=SITEMAP_CAP):
+        async for loc, _lastmod in iter_sitemaps(urls, self.aux_fetch, state=state, max_entries=SITEMAP_CAP,
+                                               prefer_products=prefer_product_sitemaps(self.config)):
             if self._cut_or_stopping():
                 return
             batch.append({"url": loc, "source": "sitemap"})
@@ -1249,6 +1272,8 @@ class JobRunner:
     async def _drain_backlog(self) -> None:
         """Enqueues links and refetches recorded by the follower (after its transaction committed)."""
         while not self._shutdown:
+            if self.state == "failed":
+                return  # feeder failure can precede follower teardown; keep durable links
             # links that look like target pages first, wherever they are in the backlog: a crawl that
             # finds thousands of listing variants per page still reaches its products
             rows = self.svc.db.all("SELECT seq, url, source, source_key, unique_key, forefront FROM link_backlog WHERE run_id=? "
@@ -1412,6 +1437,10 @@ class JobRunner:
             site = site_key(url)
         except ValueError:
             return False
+        if self.include:
+            # An explicit target selection outranks broad mapping/learned hints,
+            # including when a target is allowed outside the navigation scope.
+            return matches_any(self.include, canonical)
         pats = self._target_patterns.get(site)
         if pats is None:
             from app.jobs.discovery import target_patterns
@@ -1428,8 +1457,10 @@ class JobRunner:
 
     def _targetish(self, url: str) -> bool:
         """Whether a link likely leads to a target page, for the trap budget and the backlog order:
-        by the URL shapes of pages that turned out to be targets once there are some (a mapping's
-        url_patterns may be broad, e.g. a selector-only template), else by ``_looks_like_target_url``."""
+        explicit selection first, then learned target shapes (a mapping's url_patterns may be
+        broad, e.g. a selector-only template), else ``_looks_like_target_url``."""
+        if self.include:
+            return self._looks_like_target_url(url)
         if self._target_shapes:
             from app.extraction.sampling import url_shape
 
@@ -1571,6 +1602,8 @@ class JobRunner:
         policy = await bind_document_policy(
             page, self.browser or "chromium", url, destination_policy=destination_allowed,
             proxy_auth=proxy_auth,
+            challenge_post_allowed=bool(self.browser == "camoufox" and self.config.get("challenge_click")
+                                        and self.settings.challenge_click_allowed and self.route_budget().click_usable()),
             on_proxy_auth_required=lambda: request.user_data.__setitem__("_wss_proxy_auth_failed", True),
             timeout_s=min(3.0, float(self.config.get("page_timeout_seconds") or 45)),
         )
@@ -1647,6 +1680,9 @@ class JobRunner:
                 # still loading ("Loading https://…") is not a challenge; Crawlee retries the request
                 raise PageNotLoaded("the page did not finish loading within 20 s")
             raise_document_policy_error(ctx)
+            policy = getattr(ctx.page, "_wss_native_document_policy", None)
+            if policy is not None:
+                status = policy.document_status(status)
             verdict = await detect_page(ctx.page, status)
         else:
             body = await ctx.http_response.read()
@@ -1895,6 +1931,9 @@ class JobRunner:
         if not await settle(ctx.page, 20.0):
             raise PageNotLoaded("the page did not finish loading within 20 s")
         raise_document_policy_error(ctx)
+        policy = getattr(ctx.page, "_wss_native_document_policy", None)
+        if policy is not None:
+            status = policy.document_status(status)
         verdict = await detect_page(ctx.page, status)
         if verdict.is_block:
             self.prot()["hard_blocks"] += 1
@@ -1913,10 +1952,16 @@ class JobRunner:
             session = ctx.session
             if session is not None:
                 session.user_data["cleared_usage"] = session.usage_count
-        # the raw bytes through the page's context: its cookies (clearance) and its proxy
+        # Prefer the actual native response, including a clearance reload. The
+        # context HTTP client has a different transport and may still be gated.
         if self.state == "waiting_for_credentials":
             self._defer(request, "upstream proxy authentication requires Resume")
         try:
+            policy = getattr(ctx.page, "_wss_native_document_policy", None)
+            native = await policy.read_document(url) if policy is not None else None
+            if native is not None:
+                self._aux_done(request, native)
+                return
             from app.fetching.destinations import document_destination_allowed
             from app.fetching.oneoff import context_get
 
@@ -2348,7 +2393,9 @@ class JobRunner:
         from app.extraction.sampling import url_shape
 
         shape = url_shape(canonical)
-        stats = self._shape_stats.get(shape)
+        outside_include = self._outside_include(canonical, ud)
+        history_key = (shape, outside_include)
+        stats = self._shape_stats.get(history_key)
         soft = softerror.judge(html, stats)
         if soft is not None and soft[0] in ("empty", "too_small") and (html or "").strip() and not browser_run \
                 and self.config["fetch_mode"] == "auto" and self.browser:
@@ -2358,7 +2405,7 @@ class JobRunner:
         page = Page(html, final_url, status)
         from_list = ud.get("src") == "list"
         mappings = self.mappings_for(site)
-        outside = self._outside_include(canonical, ud)
+        outside = outside_include
         # a page without target_page_selector is not a target page even when a template
         # matches it by URL (pages the operator listed in `urls` are exempt)
         if not outside and not from_list and not passes_target_selector(page, self.config):
@@ -2488,7 +2535,7 @@ class JobRunner:
         self._observe(host, True, elapsed)
         self._host_ok(host)
         target = True if out["page_class"] in ("extracted", "incomplete") else (False if out["page_class"] == "not_target" else None)
-        self._shape_stats.setdefault(shape, softerror.ShapeStats()).add(len(html), softerror.is_closed(html), target)
+        self._shape_stats.setdefault(history_key, softerror.ShapeStats()).add(len(html), softerror.is_closed(html), target)
         if out["page_class"] in ("extracted", "incomplete", "no_template"):
             self._target_shapes.add(url_shape(canonical))
         # static -> browser fall-through for pages that may need JavaScript

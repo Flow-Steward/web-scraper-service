@@ -308,14 +308,16 @@ const callbacks = {};
 const event = name => ({addListener: callback => callbacks[name] = callback});
 globalThis.browser = {
   tabs: {onUpdated: event("updated"), onRemoved: event("removed")},
-  webRequest: Object.fromEntries(["onBeforeRequest", "onBeforeRedirect", "onHeadersReceived", "onCompleted", "onErrorOccurred"].map(name => [name, event(name)])),
+  webRequest: Object.fromEntries(["onBeforeRequest", "onBeforeSendHeaders", "onBeforeRedirect", "onHeadersReceived", "onCompleted", "onErrorOccurred"].map(name => [name, event(name)])),
   extension: {isAllowedIncognitoAccess: async () => true},
 };
 globalThis.fetch = async () => ({ok: true, json: async () => ({allow: true})});
 '''
     cases = r'''
-const inspect = value => callbacks.onHeadersReceived({statusCode:302,url:"https://shop.test/list",responseHeaders:[{name:"Location",value}]}).cancel === true;
-process.stdout.write(JSON.stringify([inspect("data:text/html,blocked"),inspect("javascript:alert(1)"),inspect("http://["),inspect("/list/next"),inspect("https://challenge.test/frame")]));
+(async () => {
+const inspect = async value => (await callbacks.onHeadersReceived({statusCode:302,url:"https://shop.test/list",responseHeaders:[{name:"Location",value}]})).cancel === true;
+process.stdout.write(JSON.stringify(await Promise.all([inspect("data:text/html,blocked"),inspect("javascript:alert(1)"),inspect("http://["),inspect("/list/next"),inspect("https://challenge.test/frame")])));
+})();
 '''
     import shutil
     import playwright
@@ -337,7 +339,7 @@ const observed = [];
 const event = name => ({addListener: callback => callbacks[name] = callback});
 globalThis.browser = {
   tabs: {onUpdated: event("updated"), onRemoved: event("removed")},
-  webRequest: Object.fromEntries(["onBeforeRequest", "onBeforeRedirect", "onHeadersReceived", "onCompleted", "onErrorOccurred"].map(name => [name, event(name)])),
+  webRequest: Object.fromEntries(["onBeforeRequest", "onBeforeSendHeaders", "onBeforeRedirect", "onHeadersReceived", "onCompleted", "onErrorOccurred"].map(name => [name, event(name)])),
   extension: {isAllowedIncognitoAccess: async () => true},
 };
 globalThis.fetch = async (url, options) => {

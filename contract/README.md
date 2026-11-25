@@ -504,6 +504,22 @@ patterns of the site's active mappings and `url_include`) that the sitemap
 contains. `single_page: true` skips discovery (`resolved.discovery_mode`
 stays `null`).
 
+`POST /v1/samples` also honours `single_page`: without explicit sample `urls`,
+it considers only `site_url` and reports `requested_count: 1`. It does not discover
+sitemaps, operate listing controls or guess sibling targets. Target selectors and
+URL filters still apply. Explicit sample `urls` take precedence as usual.
+
+Without explicit sample URLs, `POST /v1/samples` in `sitemap` mode samples only
+the sitemap candidates: it does not operate listing controls, follow page links
+or guess sibling targets. An empty map yields no samples. `sitemap_and_crawl`
+and `auto` retain their documented link-discovery fallbacks.
+
+For configured Product/Offer targets, analysis, samples and full discovery inspect
+clearly product/item-named sitemap files first. This filename heuristic affects
+order only; it does not exclude unknown files or establish complete coverage.
+Changing a saved index's ordering policy conservatively replays its admission
+through normal queue deduplication rather than reinterpreting an older ordinal.
+
 `url_include` / `url_exclude` are Python `re` patterns searched in the
 canonical URL; include first (when non-empty), then exclude.
 `url_exclude` keeps a URL out of the queue in every mode. **`url_include`
@@ -531,6 +547,12 @@ walked). A target page outside the scope is fetched and extracted, its links are
 not followed. Links left out by the scope are counted in
 `counters.urls_skipped.scope`. Samples respect the same scope when target pages
 can be told by URL. Sitemap URLs are pages to extract and are not affected.
+
+When `url_include` is nonempty, only its matching URLs qualify as target hints
+for leaving `crawl_include`/`stay_in_section` navigation scope. A broader mapping
+pattern or learned URL shape cannot widen that explicit product selection.
+Navigation within the walk scope is still allowed, as are explicitly selected
+product URLs outside it.
 
 ### 4.5 Page classes and the unextracted list
 
@@ -755,17 +777,31 @@ products") or found but not collected ("the scraper missed them").
   (default `fetch_failed`, `blocked`, `incomplete`, `no_template`,
   `template_failed`, `stopped`; `not_found` and the refusals only when asked),
   each once, as requested (`requested_url` when it differs), with its
-  `source_key` kept as the entry's `key`; none and no unfinished sitemap source → `409 nothing_to_recollect`;
-- config: the parent's `config` with `discovery_mode: url_list`, those `urls`,
-  `rebuild_mapping: false`, `sitemap_url: null`; everything else (limits,
+  `source_key` kept as the entry's `key`;
+- unfinished work: for a failed parent with `stopped` among `reasons`, also
+  recover queued requests, pending link/refetch backlog and stored pages, plus
+  any input suffix not yet admitted by that parent (a recovery seed, a
+  deduplicated URL list, or explicit source-retry URLs), using its committed
+  feeder cursor. A recovery seed is authoritative over its mirrored config URL
+  list. Follower links survive a concurrent feeder failure. Request source/key
+  identity is retained and repeated entries are deduplicated. Already admitted
+  seed prefixes are represented by their durable work rows, so completed prefix
+  requests are not replayed. No document work and no unfinished sitemap source
+  → `409 nothing_to_recollect`;
+- config: normally the parent's `config` with `discovery_mode: url_list`, those
+  `urls`, `rebuild_mapping: false`, `sitemap_url: null`. Failed crawl recovery
+  retains category navigation in `crawl` mode (or `sitemap_and_crawl` when sources
+  also need retrying), feeding recovered work before following new links.
+  Everything else (limits,
   fetch mode, browser, protection flags) as the parent's. It is validated
   again like `POST /v1/runs` (e.g. more URLs than `max_url_list_entries` →
   `422`);
 - unfinished sources: when `sitemap_discovery.complete` is false, the linked
   run retries failed/pending source files with retained per-source page and child
-  offsets. It uses sitemap mode, also queues the selected failed document URLs,
+  offsets. It uses sitemap mode unless combined crawl recovery applies, also queues the selected failed document URLs,
   and gets a fresh 100,000-location / 500-source-file budget. Completed source
-  entries and completed ancestor documents are skipped; a restart retains the
+  entries and completed ancestor request identities encountered through links or
+  sitemaps are skipped; explicit failed/refetch retries remain eligible. A restart retains the
   same run's spent budget. A source-only retry is valid with `url_count: 0`;
 - mappings: the site's active mappings when the new run starts (a repair
   made during the parent counts);

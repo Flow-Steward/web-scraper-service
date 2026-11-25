@@ -4,9 +4,27 @@ target page". Reproduced with fixtures: a guarded category whose first 30 links 
 
 from __future__ import annotations
 
+import pytest
+
 from tests.conftest import GUARD, check, merged_config, profile
 
 CATEGORY = GUARD + "/kategorie/lampen"
+
+
+@pytest.mark.parametrize("fetch_mode", ["http", "browser"])
+def test_single_page_samples_returns_one_product_without_discovery(service, fixture_world, fetch_mode):
+    from tests.conftest import PRODUCT_MAPPING, SHOP, SHOP_SITE, ensure_mappings, fast
+
+    ensure_mappings(service, SHOP_SITE, PRODUCT_MAPPING)
+    url = SHOP + "/produkt/leuchte-02"
+    cfg = merged_config(service, {"site_url": url, "single_page": True,
+                                  "fetch_mode": fetch_mode, "browser": "chromium",
+                                  "sample_count": 5, **fast()})
+    body = check(service.post("/v1/samples", {"config": cfg, "profile": profile()}), "samples.schema.json", 200)
+    assert [s["url"] for s in body["samples"]] == [url]
+    assert body["requested_count"] == 1 and body["warnings"] == []
+    assert body["explanation"]["discovery"] == {"source": "single_page", "candidates": 1}
+    assert body["explanation"]["counts"]["tried"] == 1
 
 
 def test_category_crawl_with_selector_samples_product_cards_in_the_cleared_tab(guarded_service, fixture_world):

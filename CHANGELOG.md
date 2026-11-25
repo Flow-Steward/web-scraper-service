@@ -4,6 +4,73 @@ All notable changes to web-scraper-service. Versions follow `SERVICE_VERSION` in
 `app/settings.py` and the release tags `vX.Y.Z`. Changes to the HTTP API are listed in
 `contract/CHANGES.md`.
 
+## 0.2.2-dev.17 (unreleased)
+
+- Failed-run recollection recovers durable queued, backlog and stored work,
+  including an unadmitted recovery seed suffix after a linked run also fails.
+  Request keys, navigation scope, URL-list limits and completed prefixes are
+  preserved without changing the finished parent.
+- Original URL-list and explicit source-retry inputs retain their unadmitted
+  suffixes too; mirrored recovery lists are fed once. Pending follower links
+  survive feeder failure and teardown for subsequent recollection.
+
+## 0.2.2-dev.16
+
+- URL regex budgets charge thread CPU time rather than scheduling pauses, and
+  browser response history is scoped to the current document during long runs.
+
+## 0.2.2-dev.15
+
+- Explicit target URL filters take precedence over broad mapping patterns and
+  learned URL shapes when ranking links or allowing targets outside crawl scope.
+  Category navigation inside the configured scope and explicitly selected products
+  outside it remain reachable; unrelated sections no longer qualify as targets.
+
+## 0.2.2-dev.14
+
+- Solver token delivery chooses a page callback before form fallback, preventing
+  a competing form navigation from cancelling asynchronous verification. Camoufox
+  explicitly invokes that callback in the page's main world; ordinary evaluations
+  remain isolated. Route permissions and solve budgets still gate the action.
+
+## 0.2.2-dev.13
+
+- Browser setup and runtime discovery retain native main-document GET bytes after
+  protection clearance instead of rereading them through a separately gated HTTP
+  client. Response ownership follows binding, request and document commit; reads
+  have a finite timeout and discard bytes if the document changes while reading.
+- Protection detection uses the current committed document's HTTP status after an
+  automatic clearance reload, avoiding a stale initial 403 on a successful page.
+
+## 0.2.2-dev.12
+
+- Product/Offer jobs inspect clearly product/item-named sitemap documents before
+  unrelated sources, in analysis, samples and full discovery. This changes order
+  only: other documents and completeness limits remain in force. Versioned index
+  ordering safely replays admission when older saved cursors used another order.
+
+## 0.2.2-dev.11
+
+- Sitemap-only sampling now stays within the published map, skips listing
+  controls, and does not fall back to crawling or sibling-target guessing when
+  a map is empty. Crawl and combined sitemap-and-crawl modes keep link discovery.
+
+## 0.2.2-dev.10
+
+- Fetch samples now respects `single_page`: it samples only `site_url`, requests
+  one sample, and skips sitemap, sibling-target guessing and listing controls.
+  Explicit sample URLs retain their existing behaviour; target filters still apply.
+
+## 0.2.2-dev.9
+
+- Camoufox can complete one bounded native opaque challenge form when both the
+  service and run permit protection handling. Native response, body, final header,
+  expiry, generation and destination checks preserve the denial of ordinary forms,
+  replays and POST-preserving redirects. Setup and full crawls use the same rule;
+  Chromium keeps its existing document POST denial.
+- Added native HTTPS fixtures with real POST handlers and regression checks for
+  final-release revocation and repeated interception of a single Firefox request.
+
 ## 0.2.1
 
 First published release. Release notes: `release-notes/v0.2.1.md`.
