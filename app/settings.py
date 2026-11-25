@@ -16,6 +16,7 @@ SERVICE_VERSION = "0.2.2-dev.17"
 # name -> (default, contract ceiling)
 LIMIT_DEFAULTS: dict[str, tuple[int, int]] = {
     "max_pages_per_job": (100_000, 1_000_000),
+    "max_sitemap_entries": (1_000_000, 1_000_000),
     "max_duration_minutes": (1_440, 10_080),
     "max_result_bytes": (103_809_024, 1_073_741_824),
     "max_concurrency": (16, 64),

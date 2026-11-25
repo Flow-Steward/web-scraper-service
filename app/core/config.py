@@ -109,6 +109,7 @@ async def apply_rules(
             errors.append(field_error(field, "limit_exceeded", f"{field} {value} is above the service limit {maximum}", maximum))
 
     limit("max_pages", cfg.get("max_pages"), limits["max_pages_per_job"])
+    limit("max_sitemap_entries", cfg.get("max_sitemap_entries"), limits["max_sitemap_entries"])
     limit("max_duration_minutes", cfg.get("max_duration_minutes"), limits["max_duration_minutes"])
     limit("max_concurrency", cfg.get("max_concurrency"), limits["max_concurrency"])
     limit("max_requests_per_minute", cfg.get("max_requests_per_minute"), limits["max_requests_per_minute"])
@@ -181,7 +182,7 @@ async def apply_rules(
     dmin, dmax = cfg.get("delay_min_seconds"), cfg.get("delay_max_seconds")
     if isinstance(dmin, (int, float)) and isinstance(dmax, (int, float)) and dmin > dmax:
         errors.append(field_error("delay_min_seconds", "delay_range_invalid", "delay_min_seconds is greater than delay_max_seconds"))
-    for name in ("url_include", "url_exclude", "crawl_include"):
+    for name in ("url_include", "url_exclude", "crawl_include", "sitemap_source_include", "sitemap_source_exclude"):
         for idx, pattern in enumerate(cfg.get(name) or []):
             try:
                 re.compile(pattern)
