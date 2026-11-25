@@ -512,9 +512,48 @@ class SetupFetch:
                 if budget.needs_capture(source):
                     budget.retain(source, unavailable("protection_not_passed"))
             return
-        if session.page is None or session.page.url != page.url:
-            await self._navigation_throttle.wait(host_of(page.url))
-            await session.get(page.url, destination_policy=lambda url: self._destination_allowed(url, site_url=page.url, admitted_url=page.url))
+        def native_policy():
+            policy = (getattr(session, "_native_document_policy", None)
+                      or getattr(session.page, "_wss_native_document_policy", None))
+            if policy is not None:
+                policy.raise_if_denied()
+            return policy
+
+        def document_signature(html):
+            # Table hydration and pager state may change; compare the structure
+            # outside the explicitly configured table/control regions.
+            document = Page(html, page.url)
+            selectors = dict.fromkeys(source[key] for source in sources for key in (
+                "selector", "current_page_selector", "next_selector") if source.get(key))
+            for selector in selectors:
+                for node in document.selector.css(selector):
+                    parent = node.root.getparent()
+                    if parent is not None:
+                        parent.remove(node.root)
+            return Page(document.selector.get(), page.url).signature
+
+        async def validate_document():
+            policy = native_policy()
+            if session.page is None or session.page.url != page.url:
+                await self._navigation_throttle.wait(host_of(page.url))
+                native_policy()
+                status, html, final_url, _ = await session.get(
+                    page.url, destination_policy=lambda target: self._destination_allowed(target, site_url=page.url, admitted_url=page.url))
+                if native_policy() is None:
+                    return "unsupported_browser"
+            else:
+                if policy is None:
+                    return "unsupported_browser"
+                html = await session.page.content()
+                native_policy()
+                status, final_url = policy.document_status(None), session.page.url
+            if final_url != page.url or session.page.url != page.url:
+                return "document_changed"
+            if status is None or not 200 <= status < 400:
+                return "table_http_failed"
+            if document_signature(html) != document_signature(page.html):
+                return "document_changed"
+            return None
 
         async def allowed(action):
             if self._navigation_actions >= int(self.config.get("max_pages") or 100):
@@ -533,15 +572,31 @@ class SetupFetch:
                 page.url, destination_policy=lambda target: self._destination_allowed(target, site_url=page.url, admitted_url=page.url))
             session._native_document_policy.raise_if_denied()
             return (final_url == page.url and status is not None and status < 400
-                    and Page(html, final_url, status).signature == page.signature)
+                    and document_signature(html) == document_signature(page.html))
 
         table_started = asyncio.get_running_loop().time()
+        document_checked, document_reason = False, None
         for source in sources:
             if not budget.needs_capture(source):
                 continue
             bounded, limit_reason = budget.bounds(source)
             if bounded is None:
                 budget.retain(source, unavailable(limit_reason))
+                continue
+            remaining = self.page_timeout - (asyncio.get_running_loop().time() - table_started)
+            if remaining <= 0:
+                budget.retain(source, unavailable("time_limit"))
+                continue
+            if not document_checked:
+                try:
+                    async with asyncio.timeout(remaining):
+                        document_reason = await validate_document()
+                except TimeoutError:
+                    native_policy()
+                    document_reason = "time_limit"
+                document_checked = True
+            if document_reason is not None:
+                budget.retain(source, unavailable(document_reason))
                 continue
             remaining = self.page_timeout - (asyncio.get_running_loop().time() - table_started)
             if remaining <= 0:

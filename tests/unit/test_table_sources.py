@@ -259,7 +259,10 @@ async def test_aggregate_byte_budget_prevents_later_source_collection(tmp_path, 
     monkeypatch.setattr('app.fetching.tables.collect_table', collect)
     if caller == 'setup':
         sf = SetupFetch(SimpleNamespace(settings=settings(), samples=None), {'site_url':page.url, 'browser':'chromium', 'fetch_mode':'browser'}, {})
-        sf._session = SimpleNamespace(page=SimpleNamespace(url=page.url), failure_for=lambda url:None, _native_document_policy=None)
+        async def content():
+            return page.html
+        policy = SimpleNamespace(raise_if_denied=lambda:None, document_status=lambda fallback:200)
+        sf._session = SimpleNamespace(page=SimpleNamespace(url=page.url, content=content), failure_for=lambda url:None, _native_document_policy=policy)
         await sf.capture_tables(page, sources)
     else:
         svc, runner = await make_run(tmp_path, monkeypatch)
