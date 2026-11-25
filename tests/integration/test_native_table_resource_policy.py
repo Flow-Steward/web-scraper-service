@@ -114,9 +114,11 @@ async def resource_page(request, monkeypatch, native_resources, table_worker_iso
         monkeypatch.setattr(module + '.url_is_private', private)
     async with async_playwright() as pw:
         if request.param == 'camoufox':
-            binary = os.environ.get('CAMOUFOX_EXECUTABLE_PATH')
+            from app.fetching.browsers import browser_presence
+
+            binary = os.environ.get('CAMOUFOX_EXECUTABLE_PATH') or browser_presence().get('camoufox', {}).get('path')
             if not binary:
-                pytest.skip('Pinned local Camoufox binary required')
+                pytest.skip('Camoufox is not installed in this environment')
             monkeypatch.setattr('camoufox.utils.warn_if_package_outdated', lambda: None)
             browser = await launch_camoufox(pw, headless=True, executable_path=binary,
                 table_dedicated=table_worker_isolation, fingerprint_preset={
