@@ -682,6 +682,12 @@ class JobRunner:
         from app.jobs.predictor import JobPredictor
 
         cfg = self.config
+        from app.extraction.tables import requested_sources
+
+        primary_mappings = self.mappings_for(self.doc["site"])
+        dedicated_tables = any(requested_sources(mapping) for mapping in primary_mappings) or any(
+            requested_sources(entry["mapping"]) for site in self.mappings.values() for entry in site.values()
+        )
         browser = self.browser or "chromium"
         # the job's page timeout bounds the HTTP request and the browser navigation
         page_timeout = int(cfg.get("page_timeout_seconds") or self.settings.navigation_timeout_seconds)
@@ -712,7 +718,7 @@ class JobRunner:
             result_checker=self._result_ok,
             playwright_crawler_specific_kwargs={
                 "browser_pool": make_browser_pool(browser, headless=self.settings.headless, max_pages=max(1, cfg["max_concurrency"]),
-                                                  variant=Variant.from_config(cfg)),
+                                                  variant=Variant.from_config(cfg), dedicated_internal=dedicated_tables),
                 "navigation_timeout": timedelta(seconds=nav),
             },
             configuration=self.cfg,
@@ -1752,6 +1758,9 @@ class JobRunner:
             outcome["challenge"] = {"passed_at_step": passed_step}
         if browser_run:
             raise_document_policy_error(ctx)
+        await self._archive_table_evidence(ctx, outcome)
+        if browser_run:
+            raise_document_policy_error(ctx)
         await ctx.push_data(outcome)
 
     def _rate_limited(self, ctx, host: str) -> None:
@@ -2336,6 +2345,60 @@ class JobRunner:
                 severity="warning",
             )
 
+    async def _archive_table_evidence(self, ctx, outcome):
+        """Retain one private KVS blob, never duplicate raw captures in outcomes/DB."""
+        captures = outcome.pop("table_captures", None)
+        if not captures:
+            return
+        source_keys = list(captures)
+        receipt = {"retained": False, "reason": "storage_limit", "source_keys": source_keys}
+        outcome["table_evidence"] = receipt
+        if outcome.get("page_class") == "extracted" and all(value.get("complete") is True for value in captures.values()):
+            receipt["reason"] = "record_complete"  # The exported field HTML is authoritative.
+            return
+        payload = json.dumps(captures, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        # Reserve fixed room for the two KVS metadata files and small journal;
+        # the capture itself is written once as these exact UTF-8 bytes.
+        charge = len(payload) + 1024
+        limit = self.settings.limits["max_result_bytes"]
+        if charge > limit:
+            return
+        identity = page_key(outcome.get("url") or "", outcome.get("source_key"))
+        key = "table_evidence_" + hashlib.sha256(identity.encode() + b"\0" + payload).hexdigest()
+        reservation_key = key + "_reservation"
+        try:
+            store = await ctx.get_key_value_store()
+            async with self.lock:
+                previous = await store.get_value(reservation_key)
+                if previous is None:
+                    used = int(self.rt.get("table_evidence_bytes", 0))
+                    if used + charge > limit:
+                        return
+                    # Persist the monotonic charge BEFORE creating a reservation
+                    # marker. A crash can conservatively spend extra allowance,
+                    # but a surviving marker can never represent an uncharged blob.
+                    self.rt["table_evidence_bytes"] = used + charge
+                    self._persist()
+                    await store.set_value(reservation_key, {"charged_bytes": charge, "state": "reserved"})
+                elif not isinstance(previous, dict) or previous.get("charged_bytes") != charge:
+                    receipt["reason"] = "evidence_unavailable"
+                    return
+                await store.set_value(key, payload, content_type="application/octet-stream")
+                await store.set_value(reservation_key, {"charged_bytes": charge, "state": "stored"})
+            receipt.update(retained=True, reason="retained", key=key, bytes=len(payload))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Storage does not erase values already acquired successfully.
+            # The private receipt makes missing replay evidence explicit.
+            receipt["reason"] = "write_failed"
+
+    def _mark_table_partial(self, url=None):
+        if not self.rt.get("table_partial"):
+            self.add_error("table_partial", "Optional table data is incomplete; see record table_coverage for unknown fields.",
+                           url=url, severity="warning")
+        self.rt["table_partial"] = True
+
     async def _collect_tables(self, ctx, page, mapping, browser_run, out):
         from app.extraction.tables import TableCaptureBudget, requested_sources, table_coverage, unavailable
         from app.fetching.tables import collect_table
@@ -2361,6 +2424,29 @@ class JobRunner:
         def progress():
             self.last_progress = time.monotonic()
 
+        async def restart_document():
+            raise_document_policy_error(ctx)
+            policy = getattr(ctx.page, "_wss_native_document_policy", None)
+            if policy is None:
+                return False
+            async def destination(target):
+                return await self._document_destination_allowed(
+                    page.url, target, robots_allowed=lambda url: self._browser_redirect_robots_allowed(ctx.page, url))
+            options = {}
+            if getattr(policy.guard, "bridge", None) is None:
+                proxy = getattr(ctx, "proxy_info", None)
+                options = {"proxy_auth": None if proxy is None else {
+                    "server": f"{proxy.scheme}://{proxy.hostname}:{proxy.port}",
+                    "username": proxy.username, "password": proxy.password},
+                    "on_proxy_auth_required": lambda: ctx.request.user_data.__setitem__("_wss_proxy_auth_failed", True)}
+            await policy.rebind(page.url, destination, **options)
+            response = await ctx.page.goto(page.url, wait_until="load", timeout=page_budget * 1000)
+            raise_document_policy_error(ctx)
+            if ctx.page.url != page.url or response is None or response.status >= 400:
+                return False
+            refreshed = Page(await ctx.page.content(), ctx.page.url, response.status)
+            return pick_template([mapping], refreshed, page.url) is not None and refreshed.signature == page.signature
+
         sources = requested_sources(mapping)
         budget = TableCaptureBudget(page.table_captures, sources)
         table_started = time.monotonic()
@@ -2382,7 +2468,8 @@ class JobRunner:
                 else:
                     bounded = bounded | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
                     captured = await collect_table(ctx.page, bounded, before_action=allowed,
-                                                  cancelled=cancelled, pace_action=pace, on_progress=progress)
+                                                  cancelled=cancelled, pace_action=pace, on_progress=progress,
+                                                  restart_document=restart_document)
                     raise_document_policy_error(ctx)
             budget.retain(source, captured, bounded)
         out["table_captures"] = page.table_captures
@@ -2533,7 +2620,9 @@ class JobRunner:
                     for name in record_filter_missing(tmpl, data)
                 }
             )
-            missing = sorted(set(missing) | set(table_failures(tmpl, page)))
+            failed_tables = table_failures(tmpl, page)
+            missing = sorted(set(missing) | (required & set(failed_tables)))
+            out["table_partial"] = bool(failed_tables)
             out["records_filtered"] = len(rows) - len(selected)
             out["template_id"] = tmpl["template_id"]
             out["mapping_version"] = tmpl["__version"]
@@ -2830,6 +2919,8 @@ class JobRunner:
         del bw[: -self.settings.block_window_pages]
         tid = item.get("template_id")
         if cls == "extracted":
+            if item.get("table_partial"):
+                self._mark_table_partial(canonical)
             for rec in item.get("records") or [item["record"]]:  # one record per variant
                 if not self._write_record(rec, item):
                     break
@@ -2965,9 +3056,12 @@ class JobRunner:
             "needs_reextract": False,
             "refetch_pending": False,
         }
-        if item.get("table_captures"):
-            doc["table_captures"] = item["table_captures"]
-            doc["table_coverage"] = item.get("table_coverage") or {}
+        if item.get("table_coverage"):
+            doc["table_coverage"] = item["table_coverage"]
+        if item.get("table_evidence"):
+            doc["table_evidence"] = item["table_evidence"]
+        elif item.get("table_captures"):
+            doc["table_evidence"] = {"retained": False, "reason": "evidence_unavailable", "source_keys": list(item["table_captures"])}
         if item.get("gaps"):
             doc["gaps"] = item["gaps"]
         if item.get("missing_fields"):
@@ -3280,30 +3374,45 @@ class JobRunner:
         page = Page(html, d.get("final_url") or d["url"], d.get("status") or 200)
         from app.extraction.tables import restore_captures
 
-        restore_captures(page, d.get("table_captures"))
+        restore_captures(page, self._stored_table_captures_sync(d))
         fetch = dict(d.get("fetch") or {"fetch_mode": "http", "browser": None, "proxy_tier": None})
         fetch.setdefault("passed_at_step", None)
         if fetch.get("fetch_mode") not in ("http", "browser"):
             fetch["fetch_mode"] = "http"
         extracted = None
+        table_fields = []
         if tid:
             entry = self._mapping_for_any_site(tid)
             if entry:
+                from app.extraction.tables import table_field_names
+
+                table_fields = table_field_names(entry["mapping"])
                 extracted = plain_prices(apply_mapping(entry["mapping"], page, self.config["extraction_mode"]).data)
         sample = sample_doc(
             sample_id=sid, page=page, requested_url=d.get("requested_url"), source_key=d.get("source_key"),
             fetched_at=d.get("fetched_at") or iso(ts), expires_at=iso(plus(self.settings.samples_hours * 3600, ts)),
             fetch={k: fetch.get(k) for k in ("fetch_mode", "browser", "proxy_tier", "passed_at_step")},
             matched_template_id=tid, suggested_template_id=suggested, structured_types=self.config["structured_data_types"],
-            max_bytes=self.settings.limits["sample_html_max_bytes"], extracted=extracted,
+            max_bytes=self.settings.limits["sample_html_max_bytes"], extracted=extracted, table_fields=table_fields,
         )
         # sample_doc carries the in-page variant sources; shop JSON is probed by POST /v1/samples
         if page.microdata_nodes:
             sample["microdata"] = [n for n in page.microdata_nodes if isinstance(n, dict)][:20]
-        self.svc.samples.save(sample, html, page.url)
         if page.table_captures:
-            self.svc.samples.save_extra(sid, {"table_captures": page.table_captures})
+            receipt = dict(d.get("table_evidence") or {"retained": False, "reason": "evidence_unavailable", "source_keys": list(page.table_captures)})
+            receipt["run_id"] = self.run_id
+            self.svc.samples.save_extra(sid, {"table_evidence": receipt})
+            sample["table_evidence"] = {key: receipt[key] for key in ("retained", "reason", "bytes") if key in receipt}
+        self.svc.samples.save(sample, html, page.url)
         return sample
+
+    def _stored_table_captures_sync(self, doc):
+        from app.extraction.tables import referenced_captures
+
+        legacy = doc.get("table_captures")
+        if isinstance(legacy, dict):
+            return legacy
+        return referenced_captures(self.settings.data_dir, doc.get("table_evidence"), run_id=self.run_id)
 
     def _stored_html_sync(self, key: str) -> str | None:
         path = self.job_dir / "crawlee" / "key_value_stores" / "default"
@@ -3460,7 +3569,7 @@ class JobRunner:
         page = Page(html, d.get("final_url") or d["url"], d.get("status") or 200)
         from app.extraction.tables import restore_captures
 
-        restore_captures(page, d.get("table_captures"))
+        restore_captures(page, self._stored_table_captures_sync(d))
         site = d.get("site") or self.doc["site"]
         tmpl = pick_template(self.mappings_for(site), page, d["url"])
         if tmpl is None:
@@ -3481,7 +3590,8 @@ class JobRunner:
         missing = sorted(set(missing) | {name for data, _meta, _filled in rows for name in record_filter_missing(tmpl, data)})
         from app.extraction.tables import table_failures, table_coverage
 
-        missing = sorted(set(missing) | set(table_failures(tmpl, page)))
+        failed_tables = table_failures(tmpl, page)
+        missing = sorted(set(missing) | (required & set(failed_tables)))
         t = self.template(tmpl["template_id"])
         view = price_view(page, tmpl)
         gaps = (
@@ -3490,6 +3600,8 @@ class JobRunner:
             else self._mapping_gaps(tmpl, page, [row for _index, row in selected], view)
         )
         if not missing and not gaps:
+            if failed_tables and selected:
+                self._mark_table_partial(d["url"])
             if tmpl["__version"] not in t["versions_used"]:
                 t["versions_used"].append(tmpl["__version"])
             for index, (data, meta, _filled) in selected:

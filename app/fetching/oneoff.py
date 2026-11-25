@@ -246,10 +246,11 @@ class BrowserSession:
 
     def __init__(self, browser: str, *, proxy: str | None = None, budget=None, timeout_s: int = 45,
                  proxy_tier: int | None = None, debug: bool = False, shots=None, variant=None,
-                 delay: tuple[float, float] = (0.0, 0.0)) -> None:
+                 delay: tuple[float, float] = (0.0, 0.0), table_dedicated: bool = False) -> None:
         from app.fetching.browsers import Variant
 
         self.browser_name = browser
+        self.table_dedicated = table_dedicated
         self.variant = variant or Variant()  # Camoufox launch: browser_os, canvas_noise
         self.proxy = proxy
         self.proxy_tier = proxy_tier
@@ -304,7 +305,8 @@ class BrowserSession:
             from app.fetching.identity import camoufox_context, identity_for
 
             v = self.variant
-            self._browser = await launch_camoufox(self._pw, headless=headless, variant=v)
+            table_options = {"table_dedicated": True} if self.table_dedicated else {}
+            self._browser = await launch_camoufox(self._pw, headless=headless, variant=v, **table_options)
             # the identity of this exit and launch variant: the same preset, fonts and voices as
             # every other context (analysis, samples, jobs, report) going out through it
             self.identity = await identity_for("camoufox", v.os_name(), self.proxy, self.geo, ff_version=self._browser.version.split(".", 1)[0],
@@ -332,6 +334,8 @@ class BrowserSession:
                                                   viewport={"width": WINDOW[0], "height": WINDOW[1]},
                                                   **(self.geo.context_kwargs(camoufox=False) if self.geo else {}))
         self.page = await self.context.new_page()
+        if self.table_dedicated:
+            self.context._wss_table_owned = True
         async def native_document(route):
             if self._native_document_policy is not None:
                 await self._native_document_policy.request(route)

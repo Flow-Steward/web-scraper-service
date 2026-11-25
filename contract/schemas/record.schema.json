@@ -137,7 +137,7 @@
     },
     "table_coverage": {
       "$ref": "mapping.schema.json#/$defs/table_coverage",
-      "description": "Coverage of explicitly mapped browser tables. Records are emitted only after each requested table is completely acquired."
+      "description": "Coverage of explicitly mapped browser tables. An incomplete optional table is null while the product record remains present; required table failures block extraction."
     }
   },
   "$defs": {

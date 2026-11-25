@@ -562,9 +562,12 @@
               "complete",
               "reason",
               "pages",
-              "rows",
-              "headers",
-              "bytes"
+              "bytes",
+              "row_count",
+              "column_count",
+              "headers_preview",
+              "rows_preview",
+              "preview_truncated"
             ],
             "properties": {
               "source_key": {
@@ -583,32 +586,80 @@
                 "minimum": 0,
                 "maximum": 64
               },
-              "rows": {
-                "type": "array",
-                "maxItems": 10000,
-                "items": {
-                  "type": "array",
-                  "maxItems": 64,
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "headers": {
-                "type": "array",
-                "maxItems": 64,
-                "items": {
-                  "type": "string"
-                }
-              },
               "bytes": {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 4194304
+              },
+              "row_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "column_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 64
+              },
+              "headers_preview": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "string",
+                  "maxLength": 256
+                }
+              },
+              "rows_preview": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 256
+                  }
+                }
+              },
+              "preview_truncated": {
+                "type": "boolean"
               }
             }
           },
-          "description": "Bounded ordered raw-cell evidence from explicitly requested tables. Partial captures remain evidence and cannot satisfy mapping extraction."
+          "description": "Non-replayable table previews share a 64 KiB serialized budget per sample. Counts describe full captured data; preview rows/headers may be truncated. Full evidence is private and subject to archive retention."
+        },
+        "table_evidence": {
+          "type": "object",
+          "required": [
+            "retained",
+            "reason"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "retained": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4195328
+            }
+          },
+          "description": "Private replay evidence retention status. Known extracted values remain valid if the archive allowance is exhausted; unavailable replay evidence requires a fresh acquisition."
+        },
+        "table_fields_omitted": {
+          "type": "array",
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "description": "Known browser_table field values omitted from this public sample view. Run record values remain unchanged; full replay needs retained private evidence."
         }
       }
     },
@@ -688,7 +739,7 @@
               }
             ]
           },
-          "description": "Explicit browser table sources to acquire before testing a proposed mapping. Captures are stored for offline mapping tests; HTTP-only requests report browser_required."
+          "description": "Acquire exactly these proposed table sources instead of active mapping sources. Omit this property to acquire active mapping sources. Multiple sources share one bounded acquisition budget; overlapping pagers restart through guarded document acquisition."
         }
       }
     },

@@ -63,20 +63,24 @@ from tests.unit.test_mapping_row_coverage import sample_service
 
 
 @pytest.mark.parametrize('captured', [False, True])
-async def test_offline_mapping_test_requires_matching_complete_capture(sample_service, captured):
+@pytest.mark.parametrize('required', [False, True])
+async def test_offline_mapping_test_requires_matching_complete_capture(sample_service, captured, required):
     from app.extraction.tables import source_key
     from app.setup_ops import mapping_test
     sid = 'smp_table'
     sample_service.samples.save({'sample_id': sid, 'url': 'https://parts.example.test/mock', 'expires_at': '2030-01-01T00:00:00Z', 'variant_sources': []}, '<h1>Mock part</h1>', 'https://parts.example.test/mock')
     if captured:
         sample_service.samples.save_extra(sid, {'table_captures': {source_key(SOURCE): capture()}})
-    result = await mapping_test(sample_service, {'sample_ids': [sid], 'mappings': [mapping()], 'required_fill_threshold': .9})
-    assert result['passed'] is captured
+    spec = mapping()
+    spec['fields'][1]['required'] = required
+    result = await mapping_test(sample_service, {'sample_ids': [sid], 'mappings': [spec], 'required_fill_threshold': .9})
+    assert result['passed'] is (captured or not required)
     assert result['samples'][0]['table_coverage']['fitment_raw']['complete'] is captured
     if captured:
         assert result['samples'][0]['data']['fitment_raw'].count('<td>Mock A</td>') == 2
     else:
-        assert result['samples'][0]['missing_required'] == ['fitment_raw']
+        assert result['samples'][0]['missing_required'] == (['fitment_raw'] if required else [])
+        assert any(warning['code'] == 'table_incomplete' for warning in result['warnings'])
 
 
 def test_sample_table_capture_extras_merge_with_variant_json(sample_service):
@@ -88,12 +92,14 @@ def test_sample_table_capture_extras_merge_with_variant_json(sample_service):
     assert 'table_captures' in sample_service.samples.load_extra(sid)
 
 
-async def test_runtime_http_table_source_fails_closed_and_preserves_capture_reason(tmp_path, monkeypatch):
+@pytest.mark.parametrize('required', [False, True])
+async def test_runtime_http_table_source_fails_closed_and_preserves_capture_reason(tmp_path, monkeypatch, required):
     from crawlee import Request
     from app.jobs.runner import JobRunner
     from tests.unit.test_proxy_auth_pause import make_run
     svc, runner = await make_run(tmp_path, monkeypatch, config_overrides={'urls': [{'url': 'https://target.test/one'}], 'required_fields': []})
     spec = mapping() | {'__version': 1}
+    spec['fields'][1]['required'] = required
     monkeypatch.setattr(runner, 'mappings_for', lambda site: [spec])
     monkeypatch.setattr('app.jobs.runner.url_is_private', lambda url: _false())
     request = Request.from_url('https://target.test/one', user_data={'src':'list'})
@@ -105,13 +111,20 @@ async def test_runtime_http_table_source_fails_closed_and_preserves_capture_reas
     try:
         body = '<!doctype html><html><body><h1>Mock part</h1>' + '<p>Ordinary product detail.</p>' * 40 + '</body></html>'
         result = await runner._classify(ctx, body, request.url, 200, False, request.user_data)
-        assert result['page_class'] == 'incomplete'
-        assert result['missing_fields'] == ['fitment_raw']
+        assert result['page_class'] == ('incomplete' if required else 'extracted')
+        assert result.get('missing_fields', []) == (['fitment_raw'] if required else [])
         assert result['table_coverage']['fitment_raw']['reason'] == 'browser_required'
-        runner._store_page(result, 'table-key', 'target.test')
+        if not required:
+            assert result['record']['data']['fitment_raw'] is None
+            assert result['record']['table_coverage']['fitment_raw']['complete'] is False
+            runner._apply_item(result)
+            assert runner.rt['table_partial'] is True
+            assert any(error['code'] == 'table_partial' for error in runner.doc['errors'])
+        runner._store_page(result | {'page_class':'incomplete', 'kvs_key':'fixture_html'}, 'table-key', 'target.test')
         from app.core.db import loads
         stored = loads(svc.db.one('SELECT doc FROM stored_pages WHERE run_id=? AND page_key=?', (runner.run_id, 'table-key'))['doc'])
-        assert stored['table_captures']
+        assert 'table_captures' not in stored
+        assert stored['table_coverage']['fitment_raw']['reason'] == 'browser_required'
     finally:
         svc.db.close()
 
@@ -270,7 +283,7 @@ async def test_offline_replay_applies_aggregate_limits_to_stored_captures(sample
     second = SOURCE | {'selector':'#stored-second', 'max_bytes':4194304}
     spec = mapping()
     spec['fields'][1]['sources'] = [first]
-    spec['fields'].append({'name':'other_fitment', 'type':'html', 'sources':[second]})
+    spec['fields'].append({'name':'other_fitment', 'type':'html', 'required':True, 'sources':[second]})
     sid = 'smp_stored_tables'
     sample_service.samples.save({'sample_id':sid, 'url':'https://parts.example.test/mock', 'expires_at':'2030-01-01T00:00:00Z', 'variant_sources':[]}, '<h1>Mock part</h1>', 'https://parts.example.test/mock')
     large = capture() | {'bytes':2500000, 'html':'<table>'+'x'*2500000+'</table>'}
@@ -279,3 +292,55 @@ async def test_offline_replay_applies_aggregate_limits_to_stored_captures(sample
     assert result['passed'] is False
     assert result['samples'][0]['table_coverage']['fitment_raw']['complete'] is True
     assert result['samples'][0]['table_coverage']['other_fitment']['reason'] == 'aggregate_byte_limit'
+
+
+async def test_optional_table_failure_keeps_products_and_reports_partial_result(tmp_path, monkeypatch):
+    from app.core.db import dumps
+    from tests.unit.test_proxy_auth_pause import make_run
+    svc, runner = await make_run(tmp_path, monkeypatch)
+    runner.rt['table_partial'] = True
+    runner.doc.setdefault('errors', []).append({'code':'table_partial', 'message':'Optional table data is incomplete', 'severity':'warning', 'at':'2026-11-25T00:00:00Z'})
+    record = {'record_id':'rec_'+'0'*32, 'source_url':'https://target.test/one', 'site':'target.test', 'template_id':'product', 'mapping_version':1, 'item_index':0, 'extracted_at':'2026-11-25T00:00:00Z', 'data':{'title':'Mock part','fitment_raw':None}, 'table_coverage':{'fitment_raw':{'complete':False,'reason':'time_limit','pages':1,'row_count':1,'bytes':100}}}
+    runner._write_record(record, None)
+    try:
+        await svc.jobs._complete_doc(runner.run_id, runner.doc, runner.rt, None)
+        summary = svc.jobs.summary(runner.run_id)
+        assert summary['outcome'] == 'partial'
+        assert summary['completeness']['pages_collected'] == 1
+        assert summary['completeness']['not_collected'] == 0
+        assert 'optional table data is incomplete' in summary['completeness']['sentence'].lower()
+    finally:
+        svc.db.close()
+
+
+@pytest.mark.parametrize('name,variant_fields,conflict', [
+    ('fitment_raw',[{'name':'fitment_raw','path':'description'}],True),
+    ('description',None,True),
+    ('fitment_raw',[{'name':'sku','path':'sku'}],False),
+    ('fitment_raw',None,False),
+])
+def test_table_mapping_rejects_ambiguous_variant_override(name, variant_fields, conflict):
+    from app.setup_ops import validate_mapping_rules
+    from tests.unit.test_generic_mapping_validation import service
+    spec = mapping()
+    spec['fields'][1]['name'] = name
+    spec['variants'] = {'sources':[{'kind':'jsonld'}]}
+    if variant_fields is not None:
+        spec['variants']['fields'] = variant_fields
+    errors = validate_mapping_rules(spec, service(), 'mapping')
+    assert any(error['code'] == 'ambiguous_table_variant' for error in errors) is conflict
+    if conflict:
+        assert any(error['field'] == 'mapping.fields[1].sources' for error in errors)
+    # The same variant override is still valid for all existing source kinds.
+    spec['fields'][1]['sources'] = [{'kind':'css','selector':'.description','extract':'html'}]
+    assert not any(error['code'] == 'ambiguous_table_variant' for error in validate_mapping_rules(spec, service(), 'mapping'))
+
+
+def test_explicit_sample_table_sources_replace_active_candidates():
+    from app.setup_ops import _sample_table_sources
+    active = mapping()
+    active['fields'][1]['sources'][0]['max_pages'] = 2
+    candidate = SOURCE | {'max_pages':8}
+    assert _sample_table_sources(active, {'table_sources':[candidate]}) == [candidate]
+    assert _sample_table_sources(active, {'table_sources':[]}) == []
+    assert _sample_table_sources(active, {}) == active['fields'][1]['sources']

@@ -192,6 +192,8 @@ class SetupFetch:
         self.navigation: dict[str, Any] = {}
         self._navigation_robots: dict[str, Any] = {}
         self._navigation_actions = 0
+        self._table_archive_bytes = 0
+        self._table_dedicated = False
         from app.jobs.throttle import HostThrottle
 
         floor = 60 / float(config.get("max_requests_per_minute") or 60000)
@@ -401,7 +403,8 @@ class SetupFetch:
                                                      debug=bool(self.config.get("debug")), shots=self.svc.samples,
                                                      variant=Variant.from_config(self.config),
                                                      delay=(0, 0),
-                                                     timeout_s=self.page_timeout)
+                                                     timeout_s=self.page_timeout,
+                                                     **({"table_dedicated": True} if self._table_dedicated else {}))
                 self._session = await self._session.start()
             except Exception as exc:
                 await self._abort_browser(exc)
@@ -492,12 +495,17 @@ class SetupFetch:
                 if budget.needs_capture(source):
                     budget.retain(source, unavailable("browser_required"))
             return
+        if self._session is None:
+            self._table_dedicated = True
         session = await self.session()
         if session is None:
             for source in sources:
                 if budget.needs_capture(source):
                     budget.retain(source, unavailable("browser_unavailable"))
             return
+        if (getattr(session, "context", None) is not None and getattr(session, "_browser", None) is not None
+                and session._browser.contexts == [session.context] and session.context.pages == [session.page]):
+            session.context._wss_table_owned = True
         if self.failure_for(page.url):
             for source in sources:
                 if budget.needs_capture(source):
@@ -518,6 +526,14 @@ class SetupFetch:
         async def pace(action):
             await self._navigation_throttle.wait(host_of(action.url))
 
+        async def restart_document():
+            session._native_document_policy.raise_if_denied()
+            status, html, final_url, _ = await session.get(
+                page.url, destination_policy=lambda target: self._destination_allowed(target, site_url=page.url, admitted_url=page.url))
+            session._native_document_policy.raise_if_denied()
+            return (final_url == page.url and status is not None and status < 400
+                    and Page(html, final_url, status).signature == page.signature)
+
         table_started = asyncio.get_running_loop().time()
         for source in sources:
             if not budget.needs_capture(source):
@@ -532,10 +548,26 @@ class SetupFetch:
                 continue
             bounded = bounded | {"max_seconds": min(float(source.get("max_seconds", 30)), remaining)}
             captured = await collect_table(session.page, bounded, before_action=allowed,
-                                           pace_action=pace, cancelled=lambda: bool(asyncio.current_task().cancelling()))
+                                           pace_action=pace, cancelled=lambda: bool(asyncio.current_task().cancelling()),
+                                           restart_document=restart_document)
             if session._native_document_policy is not None:
                 session._native_document_policy.raise_if_denied()
             budget.retain(source, captured, bounded)
+
+    def save_table_sample(self, sample, page):
+        if not page.table_captures:
+            return
+        payload = {"table_captures": page.table_captures}
+        size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        limit = self.svc.settings.limits["max_result_bytes"]
+        if self._table_archive_bytes + size <= limit:
+            self.svc.samples.save_extra(sample["sample_id"], payload)
+            self._table_archive_bytes += size
+            sample["table_evidence"] = {"retained": True, "reason": "retained", "bytes": size}
+        else:
+            receipt = {"retained": False, "reason": "storage_limit", "source_keys": list(page.table_captures)}
+            self.svc.samples.save_extra(sample["sample_id"], {"table_evidence": receipt})
+            sample["table_evidence"] = {"retained": False, "reason": "storage_limit"}
 
     def _browser_fetched(self, url, got):
         from dataclasses import asdict
@@ -935,6 +967,12 @@ def _sample_link_groups(page, site, config, mappings):
     return groups
 
 
+def _sample_table_sources(mapping, body):
+    from app.extraction.tables import requested_sources
+
+    return list(body["table_sources"]) if "table_sources" in body else requested_sources(mapping)
+
+
 async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) -> dict:
     warnings: list[dict] = []
     template_id = body.get("template_id")
@@ -944,6 +982,9 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
     if site is None:
         raise validation_failed([field_error("config.site_url", "required", "samples need site_url or urls")])
     mappings = [m["mapping"] | {"__version": m["version"]} for m in svc.mappings.active_mappings(site)]
+    from app.extraction.tables import requested_sources
+
+    sf._table_dedicated = bool(body["table_sources"]) if "table_sources" in body else any(requested_sources(mapping) for mapping in mappings)
     only = [m for m in mappings if m["template_id"] == template_id] if template_id else None
     from app.extraction.target_guess import product_signals
 
@@ -1107,9 +1148,9 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
                 **facts,
             )
             continue
-        from app.extraction.tables import requested_sources
+        from app.extraction.tables import table_field_names
 
-        table_sources = [*requested_sources(tmpl), *(body.get("table_sources") or [])]
+        table_sources = _sample_table_sources(tmpl, body)
         if table_sources:
             await sf.capture_tables(page, table_sources)
         ex.page(shown, how, "sample", None, signals, **facts)
@@ -1121,12 +1162,12 @@ async def _samples(svc, body: dict, config: dict, count: int, sf: SetupFetch) ->
             matched_template_id=tmpl["template_id"] if tmpl else None,
             suggested_template_id=tmpl["template_id"] if tmpl else suggest_template_id(canonical, taken),
             structured_types=config.get("structured_data_types") or [], max_bytes=svc.settings.limits["sample_html_max_bytes"],
-            extracted=extracted,
+            extracted=extracted, table_fields=table_field_names(tmpl),
         )
         await _attach_variant_sources(svc, sample, page, sf, ex)
-        svc.samples.save(sample, page.html, page.url)
         if page.table_captures:
-            svc.samples.save_extra(sample["sample_id"], {"table_captures": page.table_captures})
+            sf.save_table_sample(sample, page)
+        svc.samples.save(sample, page.html, page.url)
         out.append(sample)
     if not out and not explicit and not single and config.get("discovery_mode") != "sitemap" and _no_target_hints(config, mappings) and config.get("site_url") and sf.failure_for(config["site_url"]) is None:
         guessed = await _guessed_samples(svc, config, sf, count, taken, warnings, ex, body.get("table_sources"))
@@ -1276,9 +1317,9 @@ async def _guessed_samples(svc, config: dict, sf: SetupFetch, count: int, taken:
             extracted=None,
         )
         await _attach_variant_sources(svc, sample, page, sf, ex)
-        svc.samples.save(sample, page.html, page.url)
         if page.table_captures:
-            svc.samples.save_extra(sample["sample_id"], {"table_captures": page.table_captures})
+            sf.save_table_sample(sample, page)
+        svc.samples.save(sample, page.html, page.url)
         out.append(sample)
         if ex is not None:
             ex.mark_sample(redact(url))
@@ -1467,6 +1508,17 @@ def validate_mapping_rules(mapping: dict, svc, prefix: str) -> list[dict]:
                 if not _css_ok(s["selector"]):
                     errors.append(field_error(f"{prefix}.fields[{i}].sources[{j}].selector", "invalid_value", "the CSS selector does not parse"))
     block = mapping.get("variants") or {}
+    if block:
+        from app.extraction.variants import variant_field_specs
+
+        variant_names = {spec["name"] for spec in variant_field_specs(mapping)}
+        for i, spec in enumerate(fields):
+            if (spec["name"] in variant_names
+                    and any(source.get("kind") == "browser_table" for source in spec.get("sources") or [])):
+                errors.append(field_error(
+                    f"{prefix}.fields[{i}].sources", "ambiguous_table_variant",
+                    "A browser table field cannot also be overridden by a variant; use one verified source or separate table and variant fields.",
+                ))
     for i, src in enumerate(block.get("sources") or []):
         if src.get("selector") and not _css_ok(src["selector"]):
             errors.append(field_error(f"{prefix}.variants.sources[{i}].selector", "invalid_value", "the CSS selector does not parse"))
@@ -1551,9 +1603,13 @@ async def mapping_test(svc, body: dict) -> dict:
     checks: dict[str, dict] = {}  # per sample, the page's price signal and variant data
     for sid, (doc, html, final_url) in loaded:
         page = Page(html, final_url, doc.get("http_status", 200))
-        from app.extraction.tables import restore_captures
+        from app.extraction.tables import referenced_captures, restore_captures
 
-        restore_captures(page, svc.samples.load_extra(sid).get("table_captures"))
+        extra = svc.samples.load_extra(sid)
+        captured = extra.get("table_captures")
+        if not isinstance(captured, dict):
+            captured = referenced_captures(getattr(svc.settings, "data_dir", None), extra.get("table_evidence"))
+        restore_captures(page, captured)
         try:
             canonical = canonical_url(final_url)
         except ValueError:
@@ -1655,7 +1711,7 @@ async def mapping_test(svc, body: dict) -> dict:
         coverage = table_coverage(tmpl, page)
         if coverage:
             result["table_coverage"] = coverage
-            result["missing_required"] = sorted(set(result["missing_required"]) | set(table_failures(tmpl, page)))
+            result["missing_required"] = sorted(set(result["missing_required"]) | (required & set(table_failures(tmpl, page))))
         result.update(keys)
         if (
             own_record
@@ -1769,6 +1825,14 @@ async def mapping_test(svc, body: dict) -> dict:
             entry["passed"] = False
             all_passed = False  # failures exist only for a template that matched a sample
             warnings.extend(failures)
+        for sample in sample_results:
+            if sample["template_id"] == tid:
+                for name, coverage in (sample.get("table_coverage") or {}).items():
+                    if not coverage["complete"]:
+                        warnings.append(field_error(
+                            f"mappings[{mappings.index(m)}].fields", "table_incomplete",
+                            f"sample {sample['sample_id']}: table {name} is unknown ({coverage['reason']}); collect a fresh guarded sample to verify it",
+                        ))
         # fields of the mapping that no matched sample filled (a test passes on its required
         # fields only; an optional field empty everywhere is worth a loud warning)
         empty = [f["name"] for f in fields_out if evaluated and f["filled_count"] == 0]

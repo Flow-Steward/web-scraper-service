@@ -65,7 +65,7 @@ class SampleStore:
                 existing[key].update(value)
             else:
                 existing[key] = value
-        (self.dir / f"{sample_id}.extra.json").write_text(json.dumps(existing), "utf-8")
+        (self.dir / f"{sample_id}.extra.json").write_text(json.dumps(existing, ensure_ascii=False, separators=(",", ":")), "utf-8")
 
     def load_extra(self, sample_id: str) -> dict:
         import json

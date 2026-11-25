@@ -22,15 +22,21 @@ _SNAPSHOT = r"""s => {
     const loaders = s.loading_selector ? Array.from(document.querySelectorAll(s.loading_selector)) : [];
     if (loaders.some(visible) || table.getAttribute('aria-busy') === 'true') return {loading:true};
     const empties = s.empty_selector ? Array.from(table.querySelectorAll(s.empty_selector)).filter(visible) : [];
-    const headers = s.header_selector ? Array.from(table.querySelectorAll(s.header_selector), el => el.textContent) : [];
+    const headerCells = s.header_selector ? Array.from(table.querySelectorAll(s.header_selector)) : [];
+    if (headerCells.some(el => !['TD','TH'].includes(el.tagName) || Number(el.getAttribute('colspan') || '1') !== 1 || Number(el.getAttribute('rowspan') || '1') !== 1)) return {error:'unsupported_row'};
+    const headers = headerCells.map(el => el.textContent);
     if (headers.length > 64) return {error:'column_limit'};
     const encode = value => new TextEncoder().encode(JSON.stringify(value)).length;
     let used = 80 + encode(headers) * 2 + headers.length * 9, rows = [], fragments = [], truncated = null;
+    let width = s.expected_width || headers.length || null;
+    if (headers.length && width !== headers.length) return {error:'column_mismatch'};
     const allRows = table.querySelectorAll(s.row_selector);
     for (const row of allRows) {
         if (!visible(row) || empties.some(empty => empty === row || row.contains(empty))) continue;
         const cells = Array.from(row.querySelectorAll(s.cell_selector));
-        if (!cells.length || cells.length > 64 || cells.some(cell => Number(cell.getAttribute('colspan') || '1') !== 1 || Number(cell.getAttribute('rowspan') || '1') !== 1)) return {error:'unsupported_row'};
+        if (row.tagName !== 'TR' || !cells.length || cells.length > 64 || cells.some(cell => !['TD','TH'].includes(cell.tagName) || cell.parentElement !== row || Number(cell.getAttribute('colspan') || '1') !== 1 || Number(cell.getAttribute('rowspan') || '1') !== 1)) return {error:'unsupported_row'};
+        if (width === null) width = cells.length;
+        if (cells.length !== width) return {error:'column_mismatch'};
         const values = cells.map(cell => cell.textContent);
         const fragment = '<tr>' + cells.map(cell => cell.outerHTML).join('') + '</tr>';
         const size = encode([values, fragment]);
@@ -52,7 +58,7 @@ _SNAPSHOT = r"""s => {
         const disabled = !!el.disabled || el.getAttribute('aria-disabled') === 'true' || !!el.closest('.disabled, [disabled], [aria-disabled="true"]');
         next = {disabled, visible:visible(el), label:(el.getAttribute('aria-label') || el.textContent || '').trim(), href:el.getAttribute('href')};
     }
-    return {index, headers, rows, fragments, next, used, truncated, empty:empties.length > 0, ready:rows.length > 0 || empties.length > 0 || !!truncated};
+    return {index, headers, rows, fragments, next, used, truncated, width, empty:empties.length > 0, ready:rows.length > 0 || empties.length > 0 || !!truncated};
 }"""
 
 _REVALIDATE = r"""(el, expected) => {
@@ -72,7 +78,7 @@ async def _resolved(value):
     return await value if inspect.isawaitable(value) else value
 
 
-async def collect_table(page, source: dict, *, before_action=None, cancelled=None, pace_action=None, on_progress=None) -> dict:
+async def collect_table(page, source: dict, *, before_action=None, cancelled=None, pace_action=None, on_progress=None, resource_policy=None, restart_document=None) -> dict:
     """Collect raw ordered cells and HTML; incomplete captures remain evidence only."""
     result = unavailable()
     max_pages = min(64, max(1, int(source.get("max_pages", 32))))
@@ -81,10 +87,10 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
     max_seconds = min(120.0, max(.01, float(source.get("max_seconds", 30))))
     fragments = []
     original_url = page.url
-    blocked = None
-    routes = set()
-    installed = False
+    lease = None
+    expected_width = None
     pinned_table = None
+    deadline = asyncio.get_running_loop().time() + max_seconds
 
     def stop(reason, complete=False):
         result.update(complete=complete, reason=reason)
@@ -100,24 +106,15 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
     async def is_cancelled():
         return bool(await _resolved(cancelled())) if cancelled else False
 
-    async def guard(route):
-        nonlocal blocked
-        task = asyncio.current_task()
-        routes.add(task)
-        try:
-            request = route.request
-            if request.is_navigation_request() and request.frame == page.main_frame:
-                blocked = 'document_navigation'
-                await route.fulfill(status=204, body='')
-            elif request.method != 'GET':
-                blocked = 'unsupported_method'
-                await route.abort('blockedbyclient')
-            else:
-                # Private-address, native destination, proxy auth and resource
-                # policy still run. Never continue_ here: it skips earlier guards.
-                await route.fallback()
-        finally:
-            routes.discard(task)
+    def remaining():
+        return max(.001, deadline - asyncio.get_running_loop().time())
+
+    async def quiet():
+        if lease is None:
+            return False
+        result = await lease.quiescent(remaining(), quiet_s=.1)
+        lease.raise_if_denied()
+        return result
 
     async def table_is_current():
         return pinned_table is not None and await pinned_table.evaluate(
@@ -130,15 +127,18 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
         stable_since = None
         loop = asyncio.get_running_loop()
         while True:
-            if blocked:
-                return {'error': blocked}
+            lease.raise_if_denied()
+            if not await quiet():
+                return {'error': 'time_limit'}
+            if lease.load_failure:
+                return {'error': lease.load_failure}
             if await is_cancelled():
                 return {'error': 'cancelled'}
             if page.url != original_url:
                 return {'error': 'document_changed'}
             if not await table_is_current():
                 return {'error': 'table_changed'}
-            snapshot = await page.evaluate(_SNAPSHOT, source | {'remaining_rows': max_rows - len(result['rows']), 'remaining_bytes': max_bytes - result['bytes']})
+            snapshot = await page.evaluate(_SNAPSHOT, source | {'remaining_rows': max_rows - len(result['rows']), 'remaining_bytes': max_bytes - result['bytes'], 'expected_width': expected_width})
             if snapshot.get('error'):
                 return snapshot
             if not snapshot.get('loading') and snapshot.get('ready'):
@@ -151,7 +151,18 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
                     signature = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
                     if signature == prior:
                         if stable_since is not None and loop.time() - stable_since >= .1:
-                            return snapshot
+                            # Native completion must still be quiet after the
+                            # DOM stabilizes: an early page index/disabled Next
+                            # does not prove its asynchronous rows have arrived.
+                            if not await quiet():
+                                return {'error': 'time_limit'}
+                            if lease.load_failure:
+                                return {'error': lease.load_failure}
+                            verified = await page.evaluate(_SNAPSHOT, source | {'remaining_rows': max_rows - len(result['rows']), 'remaining_bytes': max_bytes - result['bytes'], 'expected_width': expected_width})
+                            lease.raise_if_denied()
+                            if json.dumps(verified, ensure_ascii=False, sort_keys=True) == signature:
+                                return snapshot
+                            prior, stable_since = None, None
                     else:
                         prior, stable_since = signature, loop.time()
             else:
@@ -160,8 +171,35 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
 
     try:
         async with asyncio.timeout(max_seconds):
-            await page.route('**/*', guard)
-            installed = True
+            if await is_cancelled():
+                return stop('cancelled')
+            policy = getattr(page, '_wss_native_document_policy', None)
+            if policy is None:
+                return stop('unsupported_browser')
+            policy.raise_if_denied()
+            if source.get('current_page_selector') and restart_document is not None:
+                initial_index = await page.evaluate(r"""selector => {
+                    const indices = document.querySelectorAll(selector);
+                    return indices.length === 1 && /^\d+$/.test(indices[0].textContent.trim()) ? Number(indices[0].textContent.trim()) : null;
+                }""", source['current_page_selector'])
+                if initial_index is not None and initial_index != 1:
+                    action = NavigationAction('table_reset', 'Reload table start', original_url)
+                    if before_action and not await _resolved(before_action(action)):
+                        return stop('policy_denied')
+                    if pace_action:
+                        await _resolved(pace_action(action))
+                    policy.raise_if_denied()  # Never clear a prior security denial by rebinding.
+                    if await is_cancelled():
+                        return stop('cancelled')
+                    if not await _resolved(restart_document()) or page.url != original_url:
+                        return stop('document_changed')
+                    policy = getattr(page, '_wss_native_document_policy', None)
+                    if policy is None:
+                        return stop('unsupported_browser')
+                    policy.raise_if_denied()
+            lease = await policy.enable_table_readonly(resource_policy=resource_policy)
+            if not await quiet():
+                return stop('time_limit')
             pinned_table = await page.locator(source['selector']).element_handle(timeout=max_seconds * 1000)
             index = 1
             while True:
@@ -170,6 +208,7 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
                     return stop(snapshot['error'])
                 if result['pages'] and snapshot['headers'] != result['headers']:
                     return stop('headers_changed')
+                expected_width = snapshot.get('width') or expected_width
                 result['headers'] = snapshot['headers']
                 result['rows'].extend(snapshot['rows'])
                 fragments.extend(snapshot['fragments'])
@@ -202,8 +241,7 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
                         return stop('cancelled')
                     if pace_action:
                         await _resolved(pace_action(action))
-                    if blocked:
-                        return stop(blocked)
+                    lease.raise_if_denied()
                     if await is_cancelled():
                         return stop('cancelled')
                     if not await table_is_current():
@@ -216,21 +254,15 @@ async def collect_table(page, source: dict, *, before_action=None, cancelled=Non
                         await element.dispose()
                 index += 1
     except TimeoutError:
-        return stop(blocked or 'time_limit')
-    except Exception:
-        return stop(blocked or 'action_error')
+        return stop((lease.stop_reason if lease else None) or 'time_limit')
+    except Exception as exc:
+        reason = (lease.stop_reason if lease else None) or getattr(exc, 'reason', None) or 'action_error'
+        return stop(reason)
     finally:
         if pinned_table is not None:
             try:
                 await pinned_table.dispose()
             except Exception:
                 pass
-        for task in list(routes):
-            task.cancel()
-        if routes:
-            await asyncio.gather(*list(routes), return_exceptions=True)
-        if installed:
-            try:
-                await page.unroute('**/*', guard)
-            except Exception:
-                pass  # A closed page has no active routes to release.
+        # The lease deliberately remains armed. Its native policy destroys the
+        # old document and drains/cancels requests before releasing enforcement.

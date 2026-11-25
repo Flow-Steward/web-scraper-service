@@ -677,16 +677,48 @@ Document navigation and non-GET browser requests (including fetch/XHR and beacon
 are refused during acquisition. HTTP-only jobs
 report `browser_required`; automatic mode uses the normal browser escalation.
 Other product fields and variants continue reading the original product HTML.
-Each successful JSON Lines record includes `table_coverage` with page/row/byte
-counts. A missing, partial or differently configured capture cannot satisfy the
-mapping, even when the table field is optional or another source could supply
-specification years. Its partial rows and stop reason remain in stored evidence.
+A table field cannot also be overridden by a variant field; use separate names
+so table coverage describes the value that is exported.
+Each JSON Lines record includes `table_coverage` with page/row/byte counts.
+A missing, partial or differently configured capture never falls back to
+specification years. Required table failures block extraction. An optional table
+failure leaves that field null and preserves the product, with false coverage,
+a warning and a partial run outcome. Native destination/method policy violations
+remain page failures; optionality never bypasses a security denial.
 
 To test a proposed source before activating its mapping, pass the same source
 object in `POST /v1/samples`' optional `table_sources` array (at most five), using
 explicit synthetic URLs such as `https://parts.example.test/products/mock-part`.
-Active mappings' table sources are captured automatically with their samples.
-Samples expose bounded raw-cell evidence and retain their captures privately;
-`POST /v1/mappings/test` replays those captures without new network requests.
-Changing a source requires new samples. Stored page re-extraction also retains
-its original capture and never treats an initial table page as the full result.
+When `table_sources` is supplied, samples acquire exactly those candidate sources;
+otherwise they acquire the active mapping's sources. Overlapping sources restart
+from the approved product URL through the same guards and action/time budgets.
+Samples expose table previews sharing a 64 KiB budget, with full `row_count`,
+`column_count`, capped `rows_preview`/`headers_preview` and `preview_truncated`.
+Known table fields are omitted from sample `extracted` and listed in
+`table_fields_omitted`; run records retain their complete values. Samples report
+`table_evidence` retention;
+`POST /v1/mappings/test` replays retained captures without new network requests.
+Changing a source, or missing replay evidence, requires fresh acquisition. Optional
+unknown fields remain optional in mapping tests, with warnings and false coverage.
+Stored page re-extraction never treats an initial table page as the full result.
+
+Table jobs use an internally dedicated browser/context with one active page.
+The cleared context is reused only after the previous page's native lease has
+finished cleanup; session rotation waits for the same barrier. Other jobs keep
+their normal pooling behavior. The lease refuses unproved ownership, blocks new
+workers and popup requests, and keeps native resource/method/redirect enforcement
+armed after capture until the old document is destroyed. Firefox table browsers are launched with an immutable native CSP that blocks
+workers before merchant scripts; worker-dependent initial pages may therefore be
+unsupported. This mode is restricted to worker-free table acquisition and does
+not change ordinary Firefox jobs. A later mapping repair that adds a table
+to an ordinary browser may require a fresh run to establish ownership.
+
+Partial or repair-needed table evidence is stored once in the run's private KVS;
+outcomes, stored pages and repair samples retain references. Its per-job archive
+allowance uses the existing `max_result_bytes` ceiling separately from product
+result capacity, with durable conservative reservations. Fully successful pages
+can rely on exported field HTML and coverage. Archive exhaustion never erases
+already acquired values or prevents later bounded acquisition; it reports
+`storage_limit`, and unavailable offline evidence requires fresh acquisition.
+Fresh sample calls apply the same ceiling to their private table archives.
+Private evidence follows the existing working-file/sample retention policies.

@@ -15,6 +15,11 @@ def requested_sources(mapping: dict | None) -> list[dict]:
     return [source for field in (mapping or {}).get("fields", []) for source in field.get("sources", []) if source.get("kind") == "browser_table"]
 
 
+def table_field_names(mapping: dict | None) -> list[str]:
+    return [field["name"] for field in (mapping or {}).get("fields", [])
+            if any(source.get("kind") == "browser_table" for source in field.get("sources", []))]
+
+
 def unavailable(reason: str = "uncaptured") -> dict[str, Any]:
     return {"complete": False, "reason": reason, "pages": 0, "rows": [], "headers": [], "bytes": 0, "html": ""}
 
@@ -166,3 +171,28 @@ def restore_captures(page, saved) -> None:
                 if len(page.table_captures) >= MAX_CAPTURE_SOURCES:
                     break
     TableCaptureBudget(page.table_captures, [])
+
+
+def referenced_captures(data_dir, receipt: dict, *, run_id=None) -> dict:
+    """Read a bounded private KVS reference, or retain an explicit replay gap."""
+    from pathlib import Path
+
+    receipt = receipt if isinstance(receipt, dict) else {}
+    key = receipt.get("key")
+    run_id = run_id or receipt.get("run_id")
+    if (receipt.get("retained") is True and data_dir is not None
+            and isinstance(key, str) and re.fullmatch(r"table_evidence_[a-f0-9]{64}", key)
+            and isinstance(run_id, str) and re.fullmatch(r"run_[A-Z0-9]{26}", run_id)):
+        directory = Path(data_dir) / "jobs" / run_id / "crawlee" / "key_value_stores" / "default"
+        # Exact names: prefix globs could pick up the reservation marker.
+        for path in (directory / key, directory / (key + ".json")):
+            try:
+                if path.stat().st_size <= MAX_CAPTURE_BYTES:
+                    captured = json.loads(path.read_text("utf-8"))
+                    if isinstance(captured, dict):
+                        return captured
+            except (OSError, ValueError):
+                pass
+    reason = "storage_limit" if receipt.get("reason") == "storage_limit" else "evidence_unavailable"
+    return {source: unavailable(reason) for source in (receipt.get("source_keys") or [])[:MAX_CAPTURE_SOURCES]
+            if isinstance(source, str) and re.fullmatch(r"[a-f0-9]{64}", source)}
