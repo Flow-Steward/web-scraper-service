@@ -553,6 +553,17 @@ including validated pagination URLs. Such an observation reports bounded coverag
 Browser contexts block Service Workers so request guards remain effective;
 layouts that require Service Workers may remain partially discovered.
 
+`block_heavy_resources` (default `true`) applies to setup browser sessions as well
+as crawl pages. It suppresses images, media and fonts, plus known third-party
+chat/marketing host families: tawk.to, Omnisend's snippet/tracking/form hosts,
+CookieYes's CDN/log hosts, facebook.net, clarity.ms and analytics.tiktok.com.
+This is independent of crawl link scope: other external scripts, product APIs,
+CDNs and Cloudflare challenge resources remain available. Main documents retain
+native destination authorization; a listed family used as the actual target is
+not suppressed as third-party. Set `block_heavy_resources=false` when a page
+requires these optional resources. No additional UI control or supplier-specific
+rule is needed. Savings depend on each site's actual resource requests.
+
 Embedded JSON variants may declare `children_path` relative to each object selected
 by `path`. A source with `path: "editions"` and `children_path: "packages"` emits
 each package with its own `raw` data and its corresponding edition at `parent.raw`.

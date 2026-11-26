@@ -307,7 +307,7 @@
     },
     "block_heavy_resources": {
       "type": "boolean",
-      "description": "Browser fetches skip images, media and fonts.",
+      "description": "Browser setup and crawl fetches skip images, media, fonts and known third-party chat/marketing widgets. Required external scripts, APIs and challenge resources remain available. Set false to disable this resource economy policy.",
       "default": true
     },
     "extraction_mode": {
